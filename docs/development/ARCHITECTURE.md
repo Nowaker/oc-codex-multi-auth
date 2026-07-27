@@ -24,14 +24,15 @@ Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, C
 Install / refresh / standalone CLI
   |
   | npx -y oc-codex-multi-auth@latest
-  |   default compact modern | --full | --legacy
+  |   install: default compact modern | --plugin-only | --full | --legacy
+  |   update: managed package cache only
   |   [--dry-run] [--no-cache-clear]
   | standalone: doctor | status | list | limits | dashboard | health | diag | warm
   v
 scripts/install-oc-codex-multi-auth.js
   |- delegates to scripts/install-oc-codex-multi-auth-core.js
-  |- writes ~/.config/opencode/opencode.json
-  |- writes ~/.config/opencode/tui.json
+  |- install writes changed ~/.config/opencode/opencode.json and tui.json
+  |- update never reads or writes OpenCode config
   |- merges config/opencode-modern.json and/or config/opencode-legacy.json
   |- normalizes old package/plugin entries
   |- clears OpenCode plugin cache (unless --no-cache-clear)

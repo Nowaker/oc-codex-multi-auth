@@ -46,7 +46,7 @@ Use it when you want OpenCode to run Codex-style coding workflows from your own 
 
 | Surface | Purpose |
 | --- | --- |
-| `oc-codex-multi-auth` | npm installer bin; updates `~/.config/opencode/opencode.json`, manages `tui.json`, normalizes stale plugin entries, and clears OpenCode plugin cache. Also runs standalone commands: `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm` |
+| `oc-codex-multi-auth` | npm CLI; explicit install modes manage OpenCode provider/TUI config, while `update` only clears the managed package cache. Also runs standalone commands: `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm` |
 | OpenCode plugin entry (`index.ts`) | auth loader, OAuth login modes, provider fetch pipeline, account rotation, retry/failover, and `codex-*` tool registry |
 | OpenCode TUI plugin (`tui.ts`) | prompt quota status, quota details, shared quota cache, and active-account-aware display |
 | 24 `codex-*` tools | setup, help, status, list, switch, warm, limits, health, metrics, doctor, dashboard, pool, backup, keychain, diagnostics, and recovery actions |
@@ -89,6 +89,7 @@ Installer flags:
 | Flag | Effect |
 | --- | --- |
 | (default) / `--modern` | Compact modern catalog: 12 bases, 53 variants |
+| `--plugin-only` | Register the plugin and TUI integration without changing `provider.openai` |
 | `--full` | Compact bases plus 53 explicit selector IDs |
 | `--legacy` | Explicit-only catalog for older OpenCode |
 | `--dry-run` | Show actions without writing |
@@ -102,7 +103,23 @@ Use this when you want direct selector IDs such as `openai/gpt-5.5-medium` in ad
 npx -y oc-codex-multi-auth@latest --full
 ```
 
-### Option C: Verify wiring
+### Option C: Preserve existing OpenAI provider config
+
+```bash
+npx -y oc-codex-multi-auth@latest install --plugin-only
+```
+
+This registers the plugin and TUI integration but leaves `provider.openai` unchanged. Models must already be available from OpenCode or your existing configuration.
+
+### Updating without config changes
+
+```bash
+npx -y oc-codex-multi-auth@latest update
+```
+
+`update` clears only the OpenCode-managed package cache. It does not read or write `opencode.json` or `tui.json`; restart OpenCode afterward to install the current package.
+
+### Option D: Verify wiring
 
 ```bash
 opencode --version

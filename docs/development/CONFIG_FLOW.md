@@ -51,9 +51,9 @@ That file controls plugin behavior such as retry policy, rotation strategy, begi
    - default / `--modern`: `config/opencode-modern.json` (compact 12 bases / 53 variants)
    - `--full`: modern bases merged with `config/opencode-legacy.json` explicit entries
    - `--legacy`: `config/opencode-legacy.json` only (53 explicit IDs)
-2. Back up an existing `~/.config/opencode/opencode.json`.
+2. Back up an existing `~/.config/opencode/opencode.json` only when the merged result changes.
 3. Normalize the plugin list so it ends with plain `oc-codex-multi-auth`.
-4. Replace `provider.openai` with the selected shipped template block.
+4. Merge `provider.openai` with the selected shipped template block; `--plugin-only` skips this step entirely.
 5. Enable the TUI plugin in `~/.config/opencode/tui.json`.
 6. Clear the cached OpenCode plugin copy under `~/.cache/opencode/` unless `--no-cache-clear`.
 
@@ -63,6 +63,8 @@ Additional flags:
 |------|--------|
 | `--dry-run` | Print planned actions without writing |
 | `--no-cache-clear` | Skip OpenCode plugin cache cleanup |
+| `--plugin-only` | Register plugin/TUI entries without changing `provider.openai` |
+| `update [--dry-run]` | Clear managed package caches without reading or writing OpenCode config |
 | standalone first arg | Run CLI without install: `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm` |
 
 Important detail:
@@ -70,6 +72,7 @@ Important detail:
 - The installer intentionally writes the plugin entry as `oc-codex-multi-auth`, not `oc-codex-multi-auth@latest`.
 - The default install mode uses the compact modern base-model template so the TUI model picker shows real OAuth model families and leaves reasoning depth to the variant picker.
 - `--full` merges the modern base-model template with the explicit legacy preset entries for scripts that require direct selector IDs.
+- `update` returns before template loading and config parsing, so even malformed user config is left untouched.
 
 ## Shipped Template Structure
 

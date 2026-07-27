@@ -43,6 +43,20 @@ If you explicitly want the older explicit-only layout (53 individual model keys)
 npx -y oc-codex-multi-auth@latest --legacy
 ```
 
+To register the plugin without changing an existing `provider.openai` configuration:
+
+```bash
+npx -y oc-codex-multi-auth@latest install --plugin-only
+```
+
+To refresh an existing installation without reading or writing either OpenCode config file:
+
+```bash
+npx -y oc-codex-multi-auth@latest update
+```
+
+The update command clears only the managed package cache. Restart OpenCode afterward. The plugin's automatic updater uses the same cache-only behavior.
+
 ## Install from Source
 
 Use this only when you want to develop or test the plugin locally.

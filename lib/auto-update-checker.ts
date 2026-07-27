@@ -112,6 +112,7 @@ function getManagedPackageNames(): string[] {
 
 function getManagedCachePaths(): string[] {
   return getManagedPackageNames().flatMap((name) => [
+    join(OPENCODE_CACHE_DIR, "packages", name),
     join(OPENCODE_CACHE_DIR, "packages", `${name}@latest`),
     join(OPENCODE_CACHE_DIR, "node_modules", name),
   ]);
@@ -158,7 +159,7 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckResult>
       hasUpdate,
       currentVersion,
       latestVersion: cache.latestVersion,
-      updateCommand: `npm update -g ${PACKAGE_NAME}`,
+      updateCommand: `npx -y ${PACKAGE_NAME}@latest update`,
     };
   }
 
@@ -176,7 +177,7 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckResult>
     hasUpdate,
     currentVersion,
     latestVersion,
-    updateCommand: `npm update -g ${PACKAGE_NAME}`,
+    updateCommand: `npx -y ${PACKAGE_NAME}@latest update`,
   };
 }
 

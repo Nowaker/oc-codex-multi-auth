@@ -15,6 +15,22 @@ npx -y oc-codex-multi-auth@latest
 
 This is the default. It installs the compact modern catalog: 12 base OAuth model families with OpenCode variant presets (53 total variants). The TUI model picker shows bases such as `gpt-5.5` and `gpt-5.6-sol`; reasoning depth is selected with `--variant`.
 
+## Config-safe update
+
+```bash
+npx -y oc-codex-multi-auth@latest update
+```
+
+Use this to refresh an existing installation. It only clears the managed package cache and never reads or writes `opencode.json` or `tui.json`. Restart OpenCode afterward.
+
+## Plugin-only install
+
+```bash
+npx -y oc-codex-multi-auth@latest install --plugin-only
+```
+
+Use this when the user already manages `provider.openai`. It registers the OpenCode and TUI plugin entries without changing that provider configuration.
+
 ## Full install (explicit selector IDs)
 
 ```bash
@@ -36,6 +52,7 @@ Use this on older OpenCode versions that do not support variant-based model entr
 - `--dry-run` — show planned actions without writing files
 - `--no-cache-clear` — skip clearing the OpenCode plugin cache
 - `--modern` — same compact modern catalog as the default
+- `--plugin-only` — preserve `provider.openai`; cannot be combined with a catalog mode
 
 ## Standalone CLI (no agent cost)
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added a cache-only `update` command and provider-preserving `install --plugin-only` mode. Updating no longer requires invoking the provider/model installer, and manual update notifications now recommend the config-safe command.
+
+### Changed
+- Installer writes and backups are skipped when merged OpenCode configuration is semantically unchanged. Managed cache cleanup now covers both bare and `@latest` OpenCode package layouts.
+
 ## [6.10.0] - 2026-07-20
 
 ### Added
