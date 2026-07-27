@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
 	deduplicateUsageAccountIndices,
+	fetchCodexUsage,
 	getUsageLeftPercent,
 	hasUsageWindow,
 	parseCodexUsagePayload,
@@ -247,5 +248,55 @@ describe("disabled usage windows (issue #194)", () => {
 
 		expect(hasUsageWindow(usage.primary)).toBe(true);
 		expect(usage.limits[0]).toMatchObject({ name: "quota limit", leftPercent: 90 });
+	});
+});
+
+describe("Codex usage endpoint", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("fetches free-plan quotas without selecting a model", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ plan_type: "free", rate_limit: null }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(fetchCodexUsage({
+			accountId: "account-free",
+			accessToken: "access-free",
+			organizationId: undefined,
+			timeoutMs: 1_000,
+		})).resolves.toMatchObject({ plan_type: "free" });
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(url).toContain("/wham/usage");
+		expect(init.method).toBe("GET");
+		expect(init.body).toBeUndefined();
+	});
+
+	it("normalizes usage endpoint workspace and token failures", async () => {
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ detail: { code: "deactivated_workspace" } }), {
+					status: 402,
+				}),
+			)
+			.mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const request = {
+			accountId: "account-1",
+			accessToken: "access-1",
+			organizationId: undefined,
+			timeoutMs: 1_000,
+			normalizeAccountErrors: true,
+		};
+		await expect(fetchCodexUsage(request)).rejects.toThrow("deactivated_workspace");
+		await expect(fetchCodexUsage(request)).rejects.toThrow("authentication token has been invalidated");
 	});
 });

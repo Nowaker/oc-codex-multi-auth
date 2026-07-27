@@ -5954,7 +5954,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		);
 	});
 
-	it("removes only the deactivated org-scoped workspace during quota-check cleanup", async () => {
+	it("uses model-independent usage for free plans and removes only a deactivated workspace", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const cliModule = await import("../lib/cli.js");
 		const refreshQueueModule = await import("../lib/refresh-queue.js");
@@ -6035,18 +6035,23 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 					headers: { "content-type": "application/json" },
 				});
 			}
-			return new Response("", {
-				status: 200,
-				headers: {
-					"x-codex-primary-used-percent": "20",
-					"x-codex-primary-window-minutes": "180",
-					"x-codex-primary-reset-after-seconds": "900",
-					"x-codex-secondary-used-percent": "10",
-					"x-codex-secondary-window-minutes": "10080",
-					"x-codex-secondary-reset-after-seconds": "86400",
-					"x-codex-plan-type": "plus",
-					"x-codex-active-limit": "40",
+			return new Response(JSON.stringify({
+				plan_type: "free",
+				rate_limit: {
+					primary_window: {
+						used_percent: 20,
+						limit_window_seconds: 18_000,
+						reset_after_seconds: 900,
+					},
+					secondary_window: {
+						used_percent: 10,
+						limit_window_seconds: 604_800,
+						reset_after_seconds: 86_400,
+					},
 				},
+			}), {
+				status: 200,
+				headers: { "content-type": "application/json" },
 			});
 		});
 
@@ -6063,6 +6068,11 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(authResult.instructions).toBe("Authentication cancelled");
 
 		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		for (const [url, init] of vi.mocked(globalThis.fetch).mock.calls) {
+			expect(String(url)).toContain("/wham/usage");
+			expect(init?.method).toBe("GET");
+			expect(init?.body).toBeUndefined();
+		}
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts.some((account) => account.accountId === "workspace-dead")).toBe(false);
 		expect(mockStorage.accounts[0]?.accountId).toBe("workspace-live");

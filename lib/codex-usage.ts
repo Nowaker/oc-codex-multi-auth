@@ -3,10 +3,17 @@ import { createHash } from "node:crypto";
 import { extractAccountId } from "./accounts.js";
 import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
 import { CODEX_BASE_URL, PLUGIN_NAME } from "./constants.js";
-import { createUsageRequestTimeoutError } from "./error-sentinels.js";
+import {
+	createDeactivatedWorkspaceError,
+	createUsageRequestTimeoutError,
+} from "./error-sentinels.js";
 import { logWarn } from "./logger.js";
 import { queuedRefresh } from "./refresh-queue.js";
-import { createCodexHeaders } from "./request/fetch-helpers.js";
+import {
+	createCodexHeaders,
+	isDeactivatedWorkspaceError,
+	isInvalidatedAuthTokenError,
+} from "./request/fetch-helpers.js";
 import {
 	withAccountStorageTransaction,
 	type AccountMetadataV3,
@@ -330,6 +337,7 @@ export async function fetchCodexUsage(params: {
 	accessToken: string;
 	organizationId: string | undefined;
 	timeoutMs?: number;
+	normalizeAccountErrors?: boolean;
 }): Promise<UsagePayload> {
 	const headers = createCodexHeaders(
 		undefined,
@@ -364,6 +372,26 @@ export async function fetchCodexUsage(params: {
 			}
 			if (controller.signal.aborted) {
 				throw createUsageRequestTimeoutError();
+			}
+			let errorBody: unknown = bodyText;
+			try {
+				errorBody = bodyText ? (JSON.parse(bodyText) as unknown) : undefined;
+			} catch {
+				// Keep non-JSON bodies available to the shared error matchers.
+			}
+			if (
+				params.normalizeAccountErrors &&
+				isDeactivatedWorkspaceError(errorBody, response.status)
+			) {
+				throw createDeactivatedWorkspaceError();
+			}
+			if (
+				params.normalizeAccountErrors &&
+				isInvalidatedAuthTokenError(errorBody, response.status)
+			) {
+				throw new Error(
+					"Your authentication token has been invalidated. Please try signing in again.",
+				);
 			}
 			throw new Error(sanitizeCodexApiErrorMessage(response.status, bodyText));
 		}
