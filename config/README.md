@@ -13,17 +13,19 @@ This directory contains the official OpenCode config templates for `oc-codex-mul
 
 | Installer flag | What gets written |
 |----------------|-------------------|
-| default / `--modern` | Compact modern: 12 base OAuth families + variant picker |
+| default / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
+| `--modern` | Compact modern: 12 base OAuth families + variant picker |
 | `--full` | Modern bases **plus** explicit legacy selector IDs |
 | `--legacy` | Explicit-only catalog (53 preset model entries) |
 
 ```bash
-npx -y oc-codex-multi-auth@latest          # compact modern (default)
+npx -y oc-codex-multi-auth@latest          # plugin entries only
+npx -y oc-codex-multi-auth@latest --modern # compact modern catalog
 npx -y oc-codex-multi-auth@latest --full   # modern + explicit IDs
 npx -y oc-codex-multi-auth@latest --legacy # explicit only
 ```
 
-Rerun the default installer to remove explicit preset IDs and stale base models left by earlier plugin catalogs.
+Run the installer with `--modern` to remove explicit preset IDs and stale base models left by earlier plugin catalogs.
 
 ## Quick pick
 

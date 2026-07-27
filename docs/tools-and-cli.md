@@ -144,7 +144,7 @@ Bin: `oc-codex-multi-auth` (also via `npx -y oc-codex-multi-auth@latest …`).
 | `warm` | Open every enabled account's usage window (same idea as `codex-warm`) |
 
 ```bash
-oc-codex-multi-auth                 # install (default)
+oc-codex-multi-auth                 # register plugin entries; preserve provider.openai
 oc-codex-multi-auth install
 oc-codex-multi-auth update          # cache-only; does not change config
 oc-codex-multi-auth doctor
@@ -163,11 +163,11 @@ oc-codex-multi-auth warm
 
 | Flag | Effect |
 |------|--------|
-| `--plugin-only` | Register plugin/TUI entries without changing `provider.openai` |
-| `--modern` | Force compact modern config (12 bases + variants) |
+| (default) / `--plugin-only` | Register plugin/TUI entries without changing `provider.openai` |
+| `--modern` | Install compact modern config (12 bases + variants) |
 | `--full` | Compact bases plus explicit selector entries |
 | `--legacy` | Explicit-only catalog (53 entries) |
-| `--dry-run` | Show actions without writing |
+| `--dry-run` | Show changed config paths without values or writes |
 | `--no-cache-clear` | Skip clearing OpenCode plugin cache |
 
 Choose only one of `--plugin-only`, `--modern`, `--full`, or `--legacy`. Use `update [--dry-run]` when refreshing the package; it clears the managed OpenCode cache without reading or writing `opencode.json` or `tui.json`.

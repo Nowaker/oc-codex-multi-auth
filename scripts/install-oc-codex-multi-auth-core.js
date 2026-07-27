@@ -78,7 +78,7 @@ export function isDirectRunPath(argvPath, modulePath, resolveRealPath = realpath
 function printHelp() {
 	console.log(`Usage: ${PACKAGE_NAME} [command] [options]\n\n` +
 		"Commands:\n" +
-		"  install             Install/update OpenCode config (default with no command)\n" +
+		"  install             Register plugin entries (default with no command)\n" +
 		"  update              Refresh the cached package without changing OpenCode config\n" +
 		"  doctor              Run local account/config diagnostics\n" +
 		"  status              Show account/config status\n" +
@@ -91,9 +91,9 @@ function printHelp() {
 		`Installer usage: ${PACKAGE_NAME} install [--plugin-only|--modern|--full|--legacy] [--dry-run] [--no-cache-clear]\n` +
 		`Updater usage:   ${PACKAGE_NAME} update [--dry-run]\n\n` +
 		"Default behavior:\n" +
-		"  - Installs/updates global config at ~/.config/opencode/opencode.json\n" +
+		"  - Registers plugin entries without changing provider.openai\n" +
 		"  - Enables the prompt status bar TUI plugin at ~/.config/opencode/tui.json\n" +
-		"  - Uses compact UI config by default (12 base OAuth models + variant picker presets)\n" +
+		"  - Installs model catalogs only with --modern, --full, or --legacy\n" +
 		"  - Ensures plugin is unpinned (latest)\n" +
 		"  - Clears OpenCode plugin cache\n\n" +
 		"Options:\n" +
@@ -166,16 +166,17 @@ function parseCliArgs(argv = process.argv.slice(2)) {
 	const requestedModern = args.has("--modern");
 	const requestedFull = args.has("--full");
 	const requestedLegacy = args.has("--legacy");
-	const pluginOnly = args.has("--plugin-only");
+	const explicitPluginOnly = args.has("--plugin-only");
 
 	const requestedModes = [requestedModern, requestedFull, requestedLegacy]
 		.filter(Boolean).length;
 	if (requestedModes > 1) {
 		throw new Error("Choose only one of --modern, --full, or --legacy.");
 	}
-	if (pluginOnly && requestedModes > 0) {
+	if (explicitPluginOnly && requestedModes > 0) {
 		throw new Error("--plugin-only cannot be combined with --modern, --full, or --legacy.");
 	}
+	const pluginOnly = explicitPluginOnly || requestedModes === 0;
 
 	return {
 		wantsHelp: false,
@@ -628,6 +629,51 @@ function formatConfigDiff(existingConfig, nextConfig) {
 	return lines.join("\n");
 }
 
+function formatRedactedConfigDiff(existingConfig, nextConfig) {
+	const missing = Symbol("missing");
+	const changes = [];
+	const visit = (existing, next, path) => {
+		if (existing === missing) {
+			changes.push(`+ ${path}`);
+			return;
+		}
+		if (next === missing) {
+			changes.push(`- ${path}`);
+			return;
+		}
+		if (Object.is(existing, next)) return;
+
+		if (Array.isArray(existing) && Array.isArray(next)) {
+			const length = Math.max(existing.length, next.length);
+			for (let index = 0; index < length; index += 1) {
+				visit(
+					index < existing.length ? existing[index] : missing,
+					index < next.length ? next[index] : missing,
+					`${path}[${index}]`,
+				);
+			}
+			return;
+		}
+
+		if (isPlainObject(existing) && isPlainObject(next)) {
+			const keys = new Set([...Object.keys(existing), ...Object.keys(next)]);
+			for (const key of keys) {
+				visit(
+					Object.hasOwn(existing, key) ? existing[key] : missing,
+					Object.hasOwn(next, key) ? next[key] : missing,
+					`${path}.${key}`,
+				);
+			}
+			return;
+		}
+
+		changes.push(`~ ${path}`);
+	};
+
+	visit(existingConfig === undefined ? missing : existingConfig, nextConfig, "$");
+	return changes.length > 0 ? changes.join("\n") : "(no changes)";
+}
+
 function mergeFullTemplate(modernTemplate, legacyTemplate) {
 	const modernModels = modernTemplate.provider?.openai?.models ?? {};
 	const legacyModels = legacyTemplate.provider?.openai?.models ?? {};
@@ -875,11 +921,14 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 	}
 
 	const { configMode, dryRun, skipCacheClear, pluginOnly } = parsed;
-	const requiredTemplatePaths = configMode === "modern"
-		? [paths.modernTemplatePath]
-		: configMode === "legacy"
-			? [paths.legacyTemplatePath]
-			: [paths.modernTemplatePath, paths.legacyTemplatePath];
+	const effectiveConfigMode = pluginOnly ? "plugin-only" : configMode;
+	const requiredTemplatePaths = pluginOnly
+		? []
+		: configMode === "modern"
+			? [paths.modernTemplatePath]
+			: configMode === "legacy"
+				? [paths.legacyTemplatePath]
+				: [paths.modernTemplatePath, paths.legacyTemplatePath];
 
 	for (const templatePath of requiredTemplatePaths) {
 		if (!existsSync(templatePath)) {
@@ -887,7 +936,9 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 		}
 	}
 
-	const template = await loadTemplate(configMode, paths);
+	const template = pluginOnly
+		? { $schema: "https://opencode.ai/config.json", plugin: [PACKAGE_NAME] }
+		: await loadTemplate(configMode, paths);
 	template.plugin = [PACKAGE_NAME];
 	const modelKeysToRemove = new Set(STALE_MANAGED_MODEL_KEYS);
 	if (!pluginOnly && configMode === "modern") {
@@ -908,6 +959,9 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 	if (existsSync(paths.configPath)) {
 		try {
 			const existing = await readJson(paths.configPath);
+			if (!isPlainObject(existing)) {
+				throw new Error("config root must be a JSON object");
+			}
 			existingConfig = existing;
 			const merged = { ...existing };
 			merged.plugin = normalizePluginList(existing.plugin);
@@ -940,6 +994,9 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 	if (existsSync(paths.tuiConfigPath)) {
 		try {
 			const existing = await readJson(paths.tuiConfigPath);
+			if (!isPlainObject(existing)) {
+				throw new Error("TUI config root must be a JSON object");
+			}
 			existingTuiConfig = existing;
 			nextTuiConfig = mergeTuiConfig(existing);
 		} catch (error) {
@@ -960,12 +1017,12 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 	const tuiConfigChanged = existingTuiConfig === undefined || formatJson(existingTuiConfig) !== formatJson(nextTuiConfig);
 	let wrote = false;
 	if (dryRun) {
-		log(`[dry-run] ${configChanged ? "Would write" : "Would leave unchanged"} ${paths.configPath} using ${pluginOnly ? "plugin-only" : configMode} config`);
+		log(`[dry-run] ${configChanged ? "Would write" : "Would leave unchanged"} ${paths.configPath} using ${effectiveConfigMode} config`);
 		log(`[dry-run] Diff for ${paths.configPath}:`);
-		log(formatConfigDiff(existingConfig, nextConfig));
+		log(formatRedactedConfigDiff(existingConfig, nextConfig));
 		log(`[dry-run] ${tuiConfigChanged ? "Would write" : "Would leave unchanged"} ${paths.tuiConfigPath} with the TUI status plugin`);
 		log(`[dry-run] Diff for ${paths.tuiConfigPath}:`);
-		log(formatConfigDiff(existingTuiConfig, nextTuiConfig));
+		log(formatRedactedConfigDiff(existingTuiConfig, nextTuiConfig));
 	} else {
 		if (configChanged) {
 			if (existsSync(paths.configPath)) {
@@ -974,7 +1031,7 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 			}
 			await writeFileAtomic(paths.configPath, formatJson(nextConfig));
 			wrote = true;
-			log(`Wrote ${paths.configPath} (${pluginOnly ? "plugin-only" : configMode} config)`);
+			log(`Wrote ${paths.configPath} (${effectiveConfigMode} config)`);
 		} else {
 			log(`Left ${paths.configPath} unchanged`);
 		}
@@ -995,20 +1052,20 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 
 	log("\nDone. Restart OpenCode to (re)install the plugin.");
 	log("Example: opencode");
-	if (configMode === "modern") {
+	if (!pluginOnly && configMode === "modern") {
 		log("Note: Modern config intentionally shows 12 base OAuth model entries; use the variant picker for reasoning presets.");
 	}
-	if (configMode === "legacy") {
+	if (!pluginOnly && configMode === "legacy") {
 		log("Note: Legacy config writes 53 explicit preset entries and is also safe for older OpenCode versions.");
 	}
-	if (configMode === "full") {
+	if (!pluginOnly && configMode === "full") {
 		log("Note: Full config installs both compact base models and explicit preset entries for direct selector IDs.");
 	}
 
 	return {
 		exitCode: 0,
 		action: "install",
-		configMode,
+		configMode: effectiveConfigMode,
 		pluginOnly,
 		configPath: paths.configPath,
 		tuiConfigPath: paths.tuiConfigPath,
@@ -1022,6 +1079,7 @@ export const __test = {
 	backupConfig,
 	copyFileWithWindowsRetry,
 	formatConfigDiff,
+	formatRedactedConfigDiff,
 	mergeFullTemplate,
 	mergeOpenaiProvider,
 	mergeTuiConfig,

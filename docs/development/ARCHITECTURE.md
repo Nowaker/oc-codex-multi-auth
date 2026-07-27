@@ -24,7 +24,7 @@ Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, C
 Install / refresh / standalone CLI
   |
   | npx -y oc-codex-multi-auth@latest
-  |   install: default compact modern | --plugin-only | --full | --legacy
+  |   install: default plugin-only | --modern | --full | --legacy
   |   update: managed package cache only
   |   [--dry-run] [--no-cache-clear]
   | standalone: doctor | status | list | limits | dashboard | health | diag | warm
@@ -261,7 +261,7 @@ The request path also writes quota snapshots from response headers, so the TUI c
 
 ## Model Catalog and Fallback Notes
 
-The default installer writes the modern OpenCode template (`config/opencode-modern.json`):
+The default installer preserves `provider.openai`. `--modern` writes the modern OpenCode template (`config/opencode-modern.json`):
 
 - 12 base model families in the picker:
   - `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`

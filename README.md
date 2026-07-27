@@ -76,9 +76,9 @@ The plugin does not replace OpenCode. OpenCode remains the host; this package in
 <details open>
 <summary><b>For Humans</b></summary>
 
-### Option A: Standard install (compact modern)
+### Option A: Standard install (preserve provider config)
 
-Default mode writes 12 base OAuth model families and leaves reasoning depth to OpenCode's variant picker.
+Default mode registers the OpenCode and TUI plugin entries without changing `provider.openai`.
 
 ```bash
 npx -y oc-codex-multi-auth@latest
@@ -88,28 +88,28 @@ Installer flags:
 
 | Flag | Effect |
 | --- | --- |
-| (default) / `--modern` | Compact modern catalog: 12 bases, 53 variants |
-| `--plugin-only` | Register the plugin and TUI integration without changing `provider.openai` |
+| (default) / `--plugin-only` | Register the plugin and TUI integration without changing `provider.openai` |
+| `--modern` | Install compact modern catalog: 12 bases, 53 variants |
 | `--full` | Compact bases plus 53 explicit selector IDs |
 | `--legacy` | Explicit-only catalog for older OpenCode |
-| `--dry-run` | Show actions without writing |
+| `--dry-run` | Show changed config paths without values or writes |
 | `--no-cache-clear` | Skip clearing the OpenCode plugin cache |
 
-### Option B: Full explicit model catalog
+### Option B: Compact modern model catalog
+
+```bash
+npx -y oc-codex-multi-auth@latest --modern
+```
+
+Use this when OpenCode does not already provide the OAuth model definitions or you want the shipped variant presets.
+
+### Option C: Full explicit model catalog
 
 Use this when you want direct selector IDs such as `openai/gpt-5.5-medium` in addition to OpenCode variants.
 
 ```bash
 npx -y oc-codex-multi-auth@latest --full
 ```
-
-### Option C: Preserve existing OpenAI provider config
-
-```bash
-npx -y oc-codex-multi-auth@latest install --plugin-only
-```
-
-This registers the plugin and TUI integration but leaves `provider.openai` unchanged. Models must already be available from OpenCode or your existing configuration.
 
 ### Updating without config changes
 
@@ -127,7 +127,7 @@ opencode debug config
 opencode auth login
 ```
 
-The installer updates `~/.config/opencode/opencode.json`, backs up the previous config, normalizes the plugin entry to `"oc-codex-multi-auth"`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the OpenCode cached plugin copy so OpenCode reinstalls the latest package.
+The default installer only normalizes the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the cached plugin copy. Catalog modes additionally merge their selected `provider.openai` definitions. Changed config files are backed up before writing.
 
 ### Standalone CLI (no agent / no token cost)
 
@@ -150,13 +150,14 @@ oc-codex-multi-auth diag
 
 ### Step-by-step
 
-1. Install or refresh config:
+1. Register the plugin without changing `provider.openai`:
    - `npx -y oc-codex-multi-auth@latest`
+   - Use `--modern` only when the shipped compact model catalog is required.
 2. Run first login flow:
    - `opencode auth login`
 3. Validate config:
    - `opencode debug config`
-4. Run a smoke request (compact modern selectors):
+4. Run a smoke request (after OpenCode or `--modern` supplies the selector):
    - `opencode run "Explain this repository" --model=openai/gpt-5.5 --variant=medium`
 5. Inspect plugin state with the OpenCode tool surface:
    - `codex-status`

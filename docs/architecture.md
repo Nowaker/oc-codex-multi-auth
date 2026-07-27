@@ -33,7 +33,8 @@ Install modes:
 
 | Flag | Config written |
 | --- | --- |
-| (default) / `--modern` | Compact modern: 12 base model families + variant picker (53 variants total) |
+| (default) / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
+| `--modern` | Compact modern: 12 base model families + variant picker (53 variants total) |
 | `--full` | Compact modern bases **plus** explicit legacy selector IDs |
 | `--legacy` | Explicit-only catalog (53 model entries) |
 

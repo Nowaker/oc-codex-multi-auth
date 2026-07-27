@@ -44,7 +44,7 @@ The shipped templates include **12 base families** and **53 presets** total:
 
 GPT-5.6 is entitlement-gated for some accounts. Without access, the plugin auto-falls back `sol → terra → luna → gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`). Optional or entitlement-gated model IDs can be added manually when your workspace supports them. `gpt-5.5-pro` is ChatGPT-only and is not routed through this Codex plugin.
 
-Default install is compact modern (bases + variants). Use `--full` for modern + explicit IDs, or `--legacy` for explicit-only.
+Default install preserves `provider.openai` and only registers plugin entries. Use `--modern` for compact bases + variants, `--full` for modern + explicit IDs, or `--legacy` for explicit-only.
 
 ## Can I use multiple accounts?
 
