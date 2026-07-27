@@ -850,4 +850,31 @@ describe("install-oc-codex-multi-auth script", () => {
 		expect(renameMock).toHaveBeenNthCalledWith(1, "from.tmp", "to.json");
 		expect(renameMock).toHaveBeenNthCalledWith(2, "from.tmp", "to.json");
 	});
+
+	it("retries update cache removal after transient Windows lock errors", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const rmMock = vi.fn()
+			.mockRejectedValueOnce(Object.assign(new Error("locked"), { code: "EPERM" }))
+			.mockResolvedValue(undefined);
+
+		vi.doMock("node:fs/promises", async () => {
+			const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+			return {
+				...actual,
+				rm: rmMock,
+			};
+		});
+
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		await expect(
+			runInstaller(["update"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ action: "update", exitCode: 0 });
+
+		const firstCachePath = join(tempHome, ".cache", "opencode", "node_modules", "oc-codex-multi-auth");
+		expect(rmMock).toHaveBeenNthCalledWith(1, firstCachePath, { recursive: true, force: true });
+		expect(rmMock).toHaveBeenNthCalledWith(2, firstCachePath, { recursive: true, force: true });
+	});
 });

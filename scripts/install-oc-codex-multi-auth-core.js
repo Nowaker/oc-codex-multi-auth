@@ -683,6 +683,28 @@ async function renameWithWindowsRetry(sourcePath, destinationPath) {
 	}
 }
 
+async function removeWithWindowsRetry(path, options) {
+	let lastError = null;
+
+	for (let attempt = 0; attempt < WINDOWS_RENAME_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await rm(path, options);
+			return;
+		} catch (error) {
+			if (isWindowsLockError(error)) {
+				lastError = error;
+				await delay(WINDOWS_RENAME_RETRY_BASE_DELAY_MS * 2 ** attempt);
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	if (lastError) {
+		throw lastError;
+	}
+}
+
 async function writeFileAtomic(filePath, content) {
 	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 	const tempPath = `${filePath}.${uniqueSuffix}.tmp`;
@@ -810,12 +832,12 @@ async function clearCache(paths, dryRun, skipCacheClear) {
 		log(`[dry-run] Would remove ${paths.cacheBunLock}`);
 	} else {
 		for (const cacheNodeModulesPath of paths.cacheNodeModulesPaths) {
-			await rm(cacheNodeModulesPath, { recursive: true, force: true });
+			await removeWithWindowsRetry(cacheNodeModulesPath, { recursive: true, force: true });
 		}
 		for (const cachePackagePath of paths.cachePackagePaths) {
-			await rm(cachePackagePath, { recursive: true, force: true });
+			await removeWithWindowsRetry(cachePackagePath, { recursive: true, force: true });
 		}
-		await rm(paths.cacheBunLock, { force: true });
+		await removeWithWindowsRetry(paths.cacheBunLock, { force: true });
 	}
 
 	await removePluginFromCachePackage(paths, dryRun);
@@ -1004,6 +1026,7 @@ export const __test = {
 	mergeOpenaiProvider,
 	mergeTuiConfig,
 	parseCliArgs,
+	removeWithWindowsRetry,
 	runStandaloneCommand,
 	splitCommandArgv,
 	writeFileAtomic,
