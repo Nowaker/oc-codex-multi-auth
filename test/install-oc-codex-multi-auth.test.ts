@@ -586,9 +586,33 @@ describe("install-oc-codex-multi-auth script", () => {
 			runInstaller(["install", "--plugin-only"], {
 				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
 			}),
-		).rejects.toThrow("Refusing to replace it in --plugin-only mode");
+		).rejects.toThrow("Could not parse existing config");
 		await expect(readFile(configPath, "utf-8")).resolves.toBe(invalidConfig);
 		await expect(readdir(configDir)).resolves.toEqual(["opencode.json"]);
+	});
+
+	it("install --plugin-only refuses to replace malformed TUI config", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+		const tuiConfigPath = join(configDir, "tui.json");
+		const configText = '{"plugin":["oc-codex-multi-auth"]}';
+		const invalidTuiConfig = "{ invalid";
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(configPath, configText, "utf-8");
+		await writeFile(tuiConfigPath, invalidTuiConfig, "utf-8");
+
+		await expect(
+			runInstaller(["install", "--plugin-only"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).rejects.toThrow("Could not parse existing TUI config");
+		await expect(readFile(configPath, "utf-8")).resolves.toBe(configText);
+		await expect(readFile(tuiConfigPath, "utf-8")).resolves.toBe(invalidTuiConfig);
+		await expect(readdir(configDir)).resolves.toEqual(["opencode.json", "tui.json"]);
 	});
 
 	it("mergeOpenaiProvider unit: strips unknown managed keys even when template omits them", async () => {
