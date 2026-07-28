@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added a cache-only `update` command and provider-preserving `install --plugin-only` mode. Updating no longer requires invoking the provider/model installer, and manual update notifications now recommend the config-safe command.
+
+### Changed
+- Default install now manages only the OpenCode/TUI plugin entries and preserves `provider.openai`; model catalogs require explicit `--modern`, `--full`, or `--legacy`. Installer writes and backups are skipped when merged configuration is semantically unchanged, plugin-only mode rejects non-object JSON roots, dry-run diffs report changed paths without values, and managed cache cleanup covers bare and `@latest` layouts with retries for transient Windows cache locks.
+
 ## [6.10.1] - 2026-07-23
 
 ### Fixed

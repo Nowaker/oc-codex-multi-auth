@@ -62,7 +62,7 @@ describe("install-oc-codex-multi-auth script", () => {
 		expect(isDirectRunPath(undefined, scriptPath)).toBe(false);
 	});
 
-	it("writes compact UI catalog by default, preserves user model entries, and normalizes plugin entries", async () => {
+	it("writes compact UI catalog with --modern, preserves user model entries, and normalizes plugin entries", async () => {
 		vi.resetModules();
 		tempHome = await createTempHome();
 		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
@@ -96,7 +96,7 @@ describe("install-oc-codex-multi-auth script", () => {
 		);
 
 		await expect(
-			runInstaller(["--no-cache-clear"], {
+			runInstaller(["--modern", "--no-cache-clear"], {
 				env: {
 					...process.env,
 					HOME: tempHome,
@@ -143,6 +143,45 @@ describe("install-oc-codex-multi-auth script", () => {
 				expect.stringMatching(/^opencode\.json\.bak-/),
 			]),
 		);
+	});
+
+	it("default install registers plugin entries without changing provider.openai", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+		const openai = {
+			baseURL: "https://example.invalid/v1",
+			apiKey: "{env:OPENAI_API_KEY}",
+			options: { store: true, customOption: "keep" },
+			models: { custom: { name: "Custom model" } },
+		};
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(
+			configPath,
+			JSON.stringify({ plugin: ["existing-plugin"], provider: { openai } }, null, 2),
+			"utf-8",
+		);
+
+		await expect(
+			runInstaller(["--no-cache-clear"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({
+			action: "install",
+			configMode: "plugin-only",
+			pluginOnly: true,
+			exitCode: 0,
+		});
+
+		const saved = JSON.parse(await readFile(configPath, "utf-8")) as {
+			plugin: string[];
+			provider: { openai: typeof openai };
+		};
+		expect(saved.plugin).toEqual(["existing-plugin", "oc-codex-multi-auth"]);
+		expect(saved.provider.openai).toEqual(openai);
 	});
 
 	it("writes the merged full catalog when --full is requested", async () => {
@@ -267,7 +306,7 @@ describe("install-oc-codex-multi-auth script", () => {
 		await writeFile(configPath, `\uFEFF${JSON.stringify(existing, null, 2)}`, "utf-8");
 
 		await expect(
-			runInstaller(["--no-cache-clear"], {
+			runInstaller(["--modern", "--no-cache-clear"], {
 				env: {
 					...process.env,
 					HOME: tempHome,
@@ -324,7 +363,7 @@ describe("install-oc-codex-multi-auth script", () => {
 		);
 
 		await expect(
-			runInstaller(["--no-cache-clear"], {
+			runInstaller(["--modern", "--no-cache-clear"], {
 				env: {
 					...process.env,
 					HOME: tempHome,
@@ -379,7 +418,7 @@ describe("install-oc-codex-multi-auth script", () => {
 		);
 
 		await expect(
-			runInstaller(["--no-cache-clear"], {
+			runInstaller(["--modern", "--no-cache-clear"], {
 				env: {
 					...process.env,
 					HOME: tempHome,
@@ -428,8 +467,12 @@ describe("install-oc-codex-multi-auth script", () => {
 			configPath,
 			JSON.stringify({
 				plugin: ["existing-plugin"],
+				secretToken: "do-not-print-this-token",
+				accountEmail: "private@example.com",
+				rawPrompt: "do not print this prompt",
 				provider: {
 					openai: {
+						apiKey: "do-not-print-this-api-key",
 						models: { "pre-existing": { name: "pre-existing" } },
 					},
 				},
@@ -437,7 +480,7 @@ describe("install-oc-codex-multi-auth script", () => {
 			"utf-8",
 		);
 
-		const result = await runInstaller(["--dry-run", "--no-cache-clear"], {
+		const result = await runInstaller(["--modern", "--dry-run", "--no-cache-clear"], {
 			env: {
 				...process.env,
 				HOME: tempHome,
@@ -449,9 +492,11 @@ describe("install-oc-codex-multi-auth script", () => {
 
 		const stdout = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
 		expect(stdout).toContain("[dry-run] Diff for");
-		expect(stdout).toContain("provider");
-		expect(stdout).toContain("--- existing");
-		expect(stdout).toContain("+++ proposed");
+		expect(stdout).toContain("$.provider");
+		expect(stdout).not.toContain("do-not-print-this-token");
+		expect(stdout).not.toContain("private@example.com");
+		expect(stdout).not.toContain("do not print this prompt");
+		expect(stdout).not.toContain("do-not-print-this-api-key");
 
 		// Disk state must remain the literal prior contents (no overwrite, no backup write).
 		const onDisk = JSON.parse(await readFile(configPath, "utf-8")) as {
@@ -473,6 +518,194 @@ describe("install-oc-codex-multi-auth script", () => {
 		expect(diff).toContain("- (no existing config)");
 		expect(diff).toContain("+ ");
 		expect(diff).toContain("provider");
+	});
+
+	it("update clears bare and latest cache layouts without reading or writing config", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+		const tuiConfigPath = join(configDir, "tui.json");
+		const cacheDir = join(tempHome, ".cache", "opencode", "packages");
+		const bareCache = join(cacheDir, "oc-codex-multi-auth");
+		const latestCache = join(cacheDir, "oc-codex-multi-auth@latest");
+		const invalidConfig = "{ this is intentionally invalid json";
+		const invalidTuiConfig = "{ this is also intentionally invalid json";
+
+		await mkdir(configDir, { recursive: true });
+		await mkdir(bareCache, { recursive: true });
+		await mkdir(latestCache, { recursive: true });
+		await writeFile(configPath, invalidConfig, "utf-8");
+		await writeFile(tuiConfigPath, invalidTuiConfig, "utf-8");
+		await writeFile(join(bareCache, "package.json"), "{}", "utf-8");
+		await writeFile(join(latestCache, "package.json"), "{}", "utf-8");
+
+		await expect(
+			runInstaller(["update"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ action: "update", dryRun: false, exitCode: 0 });
+
+		await expect(readFile(configPath, "utf-8")).resolves.toBe(invalidConfig);
+		await expect(readFile(tuiConfigPath, "utf-8")).resolves.toBe(invalidTuiConfig);
+		await expect(readdir(cacheDir)).resolves.toEqual([]);
+		await expect(readdir(configDir)).resolves.toEqual(["opencode.json", "tui.json"]);
+	});
+
+	it("install --plugin-only preserves provider.openai while registering the plugin", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+		const openai = {
+			baseURL: "https://example.invalid/v1",
+			apiKey: "{env:OPENAI_API_KEY}",
+			options: { store: true, customOption: "keep" },
+			models: { custom: { name: "Custom model" } },
+		};
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(
+			configPath,
+			JSON.stringify({ plugin: ["existing-plugin"], provider: { openai } }, null, 2),
+			"utf-8",
+		);
+
+		await expect(
+			runInstaller(["install", "--plugin-only", "--no-cache-clear"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({
+			action: "install",
+			pluginOnly: true,
+			exitCode: 0,
+		});
+
+		const saved = JSON.parse(await readFile(configPath, "utf-8")) as {
+			plugin: string[];
+			provider: { openai: typeof openai };
+		};
+		expect(saved.plugin).toEqual(["existing-plugin", "oc-codex-multi-auth"]);
+		expect(saved.provider.openai).toEqual(openai);
+	});
+
+	it("does not rewrite or back up semantically unchanged plugin-only config", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+		const tuiConfigPath = join(configDir, "tui.json");
+		const configText = '{"plugin":["oc-codex-multi-auth"],"provider":{"openai":{"custom":true}}}';
+		const tuiText = '{"$schema":"https://opencode.ai/tui.json","plugin":["oc-codex-multi-auth"]}';
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(configPath, configText, "utf-8");
+		await writeFile(tuiConfigPath, tuiText, "utf-8");
+
+		await expect(
+			runInstaller(["install", "--plugin-only", "--no-cache-clear"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ wrote: false, pluginOnly: true, exitCode: 0 });
+
+		await expect(readFile(configPath, "utf-8")).resolves.toBe(configText);
+		await expect(readFile(tuiConfigPath, "utf-8")).resolves.toBe(tuiText);
+		await expect(readdir(configDir)).resolves.toEqual(["opencode.json", "tui.json"]);
+	});
+
+	it("install --plugin-only refuses to replace malformed config", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+		const invalidConfig = "{ invalid";
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(configPath, invalidConfig, "utf-8");
+
+		await expect(
+			runInstaller(["install", "--plugin-only"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).rejects.toThrow("Could not parse existing config");
+		await expect(readFile(configPath, "utf-8")).resolves.toBe(invalidConfig);
+		await expect(readdir(configDir)).resolves.toEqual(["opencode.json"]);
+	});
+
+	it.each([
+		{ label: "null", content: "null" },
+		{ label: "array", content: "[]" },
+		{ label: "string", content: '"invalid"' },
+		{ label: "number", content: "42" },
+	])("default install refuses structurally invalid $label config", async ({ content }) => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(configPath, content, "utf-8");
+
+		await expect(
+			runInstaller([], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).rejects.toThrow("config root must be a JSON object");
+		await expect(readFile(configPath, "utf-8")).resolves.toBe(content);
+		await expect(readdir(configDir)).resolves.toEqual(["opencode.json"]);
+	});
+
+	it("install --plugin-only refuses to replace malformed TUI config", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+		const tuiConfigPath = join(configDir, "tui.json");
+		const configText = '{"plugin":["oc-codex-multi-auth"]}';
+		const invalidTuiConfig = "{ invalid";
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(configPath, configText, "utf-8");
+		await writeFile(tuiConfigPath, invalidTuiConfig, "utf-8");
+
+		await expect(
+			runInstaller(["install", "--plugin-only"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).rejects.toThrow("Could not parse existing TUI config");
+		await expect(readFile(configPath, "utf-8")).resolves.toBe(configText);
+		await expect(readFile(tuiConfigPath, "utf-8")).resolves.toBe(invalidTuiConfig);
+		await expect(readdir(configDir)).resolves.toEqual(["opencode.json", "tui.json"]);
+	});
+
+	it("default install refuses structurally invalid TUI config", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+		const tuiConfigPath = join(configDir, "tui.json");
+		const configText = '{"plugin":["oc-codex-multi-auth"]}';
+		const invalidTuiConfig = "[]";
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(configPath, configText, "utf-8");
+		await writeFile(tuiConfigPath, invalidTuiConfig, "utf-8");
+
+		await expect(
+			runInstaller([], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).rejects.toThrow("TUI config root must be a JSON object");
+		await expect(readFile(configPath, "utf-8")).resolves.toBe(configText);
+		await expect(readFile(tuiConfigPath, "utf-8")).resolves.toBe(invalidTuiConfig);
+		await expect(readdir(configDir)).resolves.toEqual(["opencode.json", "tui.json"]);
 	});
 
 	it("mergeOpenaiProvider unit: strips unknown managed keys even when template omits them", async () => {
@@ -577,7 +810,7 @@ describe("install-oc-codex-multi-auth script", () => {
 			}),
 		).resolves.toMatchObject({
 			action: "install",
-			configMode: "modern",
+			configMode: "plugin-only",
 			exitCode: 0,
 		});
 
@@ -643,7 +876,7 @@ describe("install-oc-codex-multi-auth script", () => {
 			}),
 		).resolves.toMatchObject({
 			action: "install",
-			configMode: "modern",
+			configMode: "plugin-only",
 			exitCode: 0,
 		});
 
@@ -733,5 +966,32 @@ describe("install-oc-codex-multi-auth script", () => {
 		expect(renameMock).toHaveBeenCalledTimes(2);
 		expect(renameMock).toHaveBeenNthCalledWith(1, "from.tmp", "to.json");
 		expect(renameMock).toHaveBeenNthCalledWith(2, "from.tmp", "to.json");
+	});
+
+	it.each(["EPERM", "EBUSY"])("retries update cache removal after transient Windows %s errors", async (code) => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const rmMock = vi.fn()
+			.mockRejectedValueOnce(Object.assign(new Error("locked"), { code }))
+			.mockResolvedValue(undefined);
+
+		vi.doMock("node:fs/promises", async () => {
+			const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+			return {
+				...actual,
+				rm: rmMock,
+			};
+		});
+
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		await expect(
+			runInstaller(["update"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ action: "update", exitCode: 0 });
+
+		const firstCachePath = join(tempHome, ".cache", "opencode", "node_modules", "oc-codex-multi-auth");
+		expect(rmMock).toHaveBeenNthCalledWith(1, firstCachePath, { recursive: true, force: true });
+		expect(rmMock).toHaveBeenNthCalledWith(2, firstCachePath, { recursive: true, force: true });
 	});
 });

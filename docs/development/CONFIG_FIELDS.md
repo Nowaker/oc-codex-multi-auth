@@ -278,7 +278,7 @@ the tool does not automatically prune them because they may be valid elsewhere.
 
 Use these commands when validating config fields.
 
-### Compact modern (default install)
+### Compact modern (`--modern` install)
 
 ```bash
 opencode debug config

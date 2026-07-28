@@ -232,7 +232,7 @@ describe("auto-update-checker", () => {
 
 			const result = await checkForUpdates(true);
 
-			expect(result.updateCommand).toContain("npm update -g");
+			expect(result.updateCommand).toBe("npx -y oc-codex-multi-auth@latest update");
 		});
 	});
 
@@ -268,7 +268,7 @@ describe("auto-update-checker", () => {
 			});
 
 			expect(showToast).toHaveBeenCalledWith(
-				expect.stringContaining("Run: npm update -g"),
+				expect.stringContaining("Run: npx -y oc-codex-multi-auth@latest update"),
 				"info"
 			);
 			expect(scheduleCacheClear).not.toHaveBeenCalled();

@@ -61,7 +61,7 @@ Package version: 6.9.1
 - Canonical package/plugin name is `oc-codex-multi-auth`.
 - The npm bin is an installer and thin standalone CLI, not a long-running runtime daemon.
 - OpenCode loads the provider plugin and TUI plugin from built package exports.
-- Default installer mode writes compact modern OpenCode config (12 bases / 53 variants); `--full` adds 53 explicit selector IDs; `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
+- Default installer mode only registers plugin entries and preserves `provider.openai`; `--modern` writes compact config (12 bases / 53 variants), `--full` adds 53 explicit selector IDs, and `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
 - Runtime requests preserve Codex stateless requirements: `store: false` and `reasoning.encrypted_content`.
 - GPT-5.6 uses responses-lite shaping and default client identity `opencode`; other models default to `codex_cli_rs`.
 - Account selection uses `rotationStrategy` (`hybrid` default) with health scoring in `lib/rotation.ts`.

@@ -27,9 +27,15 @@ opencode auth login
 opencode run "Explain this repository" --model=openai/gpt-5.5 --variant=medium
 ```
 
-The installer updates `~/.config/opencode/opencode.json`, backs up the previous config, normalizes the plugin entry to `oc-codex-multi-auth`, enables the TUI status plugin, and clears the cached plugin copy so OpenCode reinstalls the latest package.
+The default installer normalizes the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin, and clears the cached plugin copy so OpenCode reinstalls the latest package. It preserves `provider.openai`.
 
-By default, the installer writes the **compact modern** config so the model picker shows **12 base OAuth model families** (including `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-fast`, and the Codex families). The separate model variant picker selects reasoning presets. Altogether the modern catalog covers **53 variants**. Rerunning the default installer also removes explicit preset entries and stale base models left by earlier plugin catalogs.
+To install the **compact modern** config so the model picker shows **12 base OAuth model families** and **53 variants**, opt in explicitly:
+
+```bash
+npx -y oc-codex-multi-auth@latest --modern
+```
+
+Rerunning `--modern` also removes explicit preset entries and stale base models left by earlier plugin catalogs.
 
 If you want direct explicit selector IDs such as `openai/gpt-5.5-medium` (modern bases **plus** explicit entries):
 
@@ -42,6 +48,20 @@ If you explicitly want the older explicit-only layout (53 individual model keys)
 ```bash
 npx -y oc-codex-multi-auth@latest --legacy
 ```
+
+To register the plugin without changing an existing `provider.openai` configuration:
+
+```bash
+npx -y oc-codex-multi-auth@latest install --plugin-only
+```
+
+To refresh an existing installation without reading or writing either OpenCode config file:
+
+```bash
+npx -y oc-codex-multi-auth@latest update
+```
+
+The update command clears only the managed package cache. Restart OpenCode afterward. The plugin's automatic updater uses the same cache-only behavior.
 
 ## Install from Source
 
@@ -163,7 +183,7 @@ ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5 --var
 
 The first request should create logs under `~/.opencode/logs/codex-plugin/`.
 
-Use `opencode debug config` when you want to verify that template-defined or custom models were merged into your effective config. The default install exposes compact OAuth model entries such as `gpt-5.5` and `gpt-5.6-sol`; `--full` additionally exposes explicit entries such as `gpt-5.5-medium` / `gpt-5.5-fast-medium` / `gpt-5.5-high`.
+Use `opencode debug config` when you want to verify custom or template-defined models. Default install preserves the existing model catalog; `--modern` installs compact entries such as `gpt-5.5` and `gpt-5.6-sol`, while `--full` additionally exposes explicit entries such as `gpt-5.5-medium` / `gpt-5.5-fast-medium` / `gpt-5.5-high`.
 
 ## Multi-Account Setup
 
