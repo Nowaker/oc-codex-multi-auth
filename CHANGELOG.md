@@ -7,11 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.11.0] - 2026-07-28
+
 ### Added
-- Added a cache-only `update` command and provider-preserving `install --plugin-only` mode. Updating no longer requires invoking the provider/model installer, and manual update notifications now recommend the config-safe command.
+- Added a cache-only `update` command and provider-preserving `install --plugin-only` mode. Updating no longer requires invoking the provider/model installer, and manual update notifications now recommend the config-safe command. Contributed by @lubshad. (#207)
 
 ### Changed
-- Default install now manages only the OpenCode/TUI plugin entries and preserves `provider.openai`; model catalogs require explicit `--modern`, `--full`, or `--legacy`. Installer writes and backups are skipped when merged configuration is semantically unchanged, plugin-only mode rejects non-object JSON roots, dry-run diffs report changed paths without values, and managed cache cleanup covers bare and `@latest` layouts with retries for transient Windows cache locks.
+- **Default install now manages only the OpenCode/TUI plugin entries and preserves `provider.openai`**; model catalogs require explicit `--modern`, `--full`, or `--legacy`. Installer writes and backups are skipped when merged configuration is semantically unchanged, plugin-only mode rejects non-object JSON roots, dry-run diffs report changed paths without values, and managed cache cleanup covers bare and `@latest` layouts with retries for transient Windows cache locks. Note that the `--variant` reasoning presets and `gpt-5.5-fast` are defined only by the shipped catalogs, so a flagless install leaves model definitions entirely to OpenCode — install with `--modern` if you want them. Contributed by @lubshad. (#207)
+
+### Fixed
+- **Terminal quota checks no longer send a synthetic model request.** Checking quotas from the account menu previously POSTed a "quota ping" completion to `/codex/responses`, walking a list of candidate models until one was accepted, purely to scrape `x-codex-*` rate-limit headers off the response. It now reads the model-independent `/wham/usage` endpoint directly and formats the shared usage windows, plan type, credits, code-review limit, and any additional limits. Free-plan accounts are handled without selecting a model at all. Deactivated-workspace and invalidated-token responses are still normalized to the canonical errors that flag an account for `codex-doctor --fix`, and the sanitized `codex-limits` error path is unchanged. Contributed by @lubshad. (#208)
+- Corrected the install documentation for the new plugin-only default: the getting-started quickstart now leads with `--modern` so the `--variant` presets it demonstrates actually exist, and `config/README.md`, `CONFIG_FIELDS.md`, `troubleshooting.md`, and the `ARCHITECTURE.md` CLI diagram no longer attribute the base OAuth catalog to a flagless install or imply `update` accepts `--no-cache-clear`.
+
+### Security
+- **Cleared every outstanding dependency advisory; `npm run audit:ci` now reports 0 vulnerabilities.** `hono` moved to 4.12.32, resolving a `hono/jsx` cross-request context disclosure, a server-side XSS via the `cx()` escaping bypass, and a header de-duplication defect — this also cleared the advisory inherited by `@openauthjs/openauth`. `seroval`/`seroval-plugins` moved to 1.5.6, resolving a critical `fromJSON()` promise-resolver type confusion that could invoke attacker-controlled methods during deserialization (CVSS 9.8) reached through `solid-js`. `brace-expansion` and `postcss` were also pinned to patched releases.
 
 ## [6.10.1] - 2026-07-23
 
