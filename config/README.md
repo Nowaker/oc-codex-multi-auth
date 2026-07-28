@@ -78,7 +78,7 @@ Shared template requirements:
   - `gpt-5.4-mini` / `gpt-5.4-nano` / Codex models (`gpt-5-codex`, `gpt-5.1-codex*`, …): context **400,000**, output **128,000**
   - `gpt-5.1`: context **272,000**, output **128,000**
 
-Use `opencode debug config` to verify that these template entries were merged into your effective config. The default compact install shows base OAuth entries such as `gpt-5.5` / `gpt-5.6-sol`; the separate OpenCode variant picker exposes the reasoning presets.
+Use `opencode debug config` to verify that these template entries were merged into your effective config. A `--modern` install shows base OAuth entries such as `gpt-5.5` / `gpt-5.6-sol`; the separate OpenCode variant picker exposes the reasoning presets. The default install writes no catalog, so these entries appear only if OpenCode supplies them itself.
 
 If your OpenCode runtime supports global compaction tuning, you can also set values near the largest context windows (for example ~1M context / slightly lower auto-compact limit). Prefer values that match your selected model family.
 

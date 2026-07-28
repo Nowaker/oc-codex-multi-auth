@@ -297,7 +297,7 @@ ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-5.5-mediu
 Important behavior:
 
 - `opencode debug config` shows merged config-defined models and variants.
-- Default compact installs expose base OAuth entries such as `gpt-5.5`, `gpt-5.5-fast`, and `gpt-5.6-sol`.
+- Compact modern (`--modern`) installs expose base OAuth entries such as `gpt-5.5`, `gpt-5.5-fast`, and `gpt-5.6-sol`. The default plugin-only install writes no catalog, so `gpt-5.5-fast` and the `--variant` presets are unavailable until you install one.
 - Bare `openai/gpt-5.5` works with `--variant=medium` on compact modern installs.
 - Explicit IDs such as `openai/gpt-5.5-medium` require `--full` or `--legacy` unless you added them manually.
 - Do not use `gpt-5.5-medium` for verification unless the full/legacy catalog is installed.

@@ -25,8 +25,9 @@ Install / refresh / standalone CLI
   |
   | npx -y oc-codex-multi-auth@latest
   |   install: default plugin-only | --modern | --full | --legacy
+  |           [--dry-run] [--no-cache-clear]
   |   update: managed package cache only
-  |   [--dry-run] [--no-cache-clear]
+  |           [--dry-run]
   | standalone: doctor | status | list | limits | dashboard | health | diag | warm
   v
 scripts/install-oc-codex-multi-auth.js

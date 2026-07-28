@@ -22,20 +22,20 @@ This guide covers the full installation and first-run flow for `oc-codex-multi-a
 ## Fastest Install Path
 
 ```bash
-npx -y oc-codex-multi-auth@latest
+npx -y oc-codex-multi-auth@latest --modern
 opencode auth login
 opencode run "Explain this repository" --model=openai/gpt-5.5 --variant=medium
 ```
 
-The default installer normalizes the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin, and clears the cached plugin copy so OpenCode reinstalls the latest package. It preserves `provider.openai`.
+`--modern` writes the **compact modern** config so the model picker shows **12 base OAuth model families** and **53 variants**. The `--variant` presets shown above are defined by that catalog, so install with `--modern` (or `--full` / `--legacy`) if you want them. Rerunning `--modern` also removes explicit preset entries and stale base models left by earlier plugin catalogs.
 
-To install the **compact modern** config so the model picker shows **12 base OAuth model families** and **53 variants**, opt in explicitly:
+The **default** install takes no flag and does not write a model catalog at all:
 
 ```bash
-npx -y oc-codex-multi-auth@latest --modern
+npx -y oc-codex-multi-auth@latest
 ```
 
-Rerunning `--modern` also removes explicit preset entries and stale base models left by earlier plugin catalogs.
+It normalizes the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin, and clears the cached plugin copy so OpenCode reinstalls the latest package. It preserves `provider.openai` and leaves model definitions to OpenCode. Use it when OpenCode already supplies the OAuth model entries you need; note that `--variant` presets and `gpt-5.5-fast` come only from this plugin's catalogs.
 
 If you want direct explicit selector IDs such as `openai/gpt-5.5-medium` (modern bases **plus** explicit entries):
 
@@ -160,7 +160,7 @@ On OpenCode `v1.0.210+`, the modern template shows the 12 base entries because a
 
 ## Verify the Setup
 
-Run one of these commands:
+Run one of these commands. The `--variant` presets and `gpt-5.5-fast` require a catalog install (`--modern`, `--full`, or `--legacy`); after a default plugin-only install only the model entries OpenCode itself supplies are selectable.
 
 ```bash
 # Recommended current GPT-5.5 path

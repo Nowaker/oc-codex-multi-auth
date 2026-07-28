@@ -330,7 +330,7 @@ opencode run "test" --model=openai/gpt-5-codex-low  # Must match config key
 
 **Note:** `opencode models openai` currently shows only OpenCode's built-in provider catalog. If you add template-defined or custom models, use `opencode debug config` to confirm they were merged into the effective config.
 
-**Selector note:** the default compact install exposes base OAuth families. Prefer:
+**Selector note:** a compact modern (`--modern`) install exposes base OAuth families with the `--variant` presets. The default install writes no catalog, so if a selector below is missing, reinstall with `--modern`. Prefer:
 
 ```bash
 opencode run "test" --model=openai/gpt-5.5 --variant=medium
