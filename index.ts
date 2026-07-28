@@ -158,7 +158,6 @@ import {
 } from "./lib/request/fetch-helpers.js";
 import { shapeBodyForModel } from "./lib/request/helpers/responses-lite.js";
 import {
-	createDeactivatedWorkspaceError,
 	DEACTIVATED_WORKSPACE_ERROR_CODE,
 	isDeactivatedWorkspaceErrorMessage,
 	isInvalidatedAuthTokenMessage,
@@ -225,7 +224,15 @@ import {
 	createToolRegistry,
 	type ToolContext,
 } from "./lib/tools/index.js";
-import { createUsageAccountFingerprint } from "./lib/codex-usage.js";
+import {
+	createUsageAccountFingerprint,
+	fetchCodexUsage,
+	formatUsageLimitSummary,
+	formatUsageLimitTitle,
+	hasUsageWindow,
+	parseCodexUsagePayload,
+	type CodexUsageSummary,
+} from "./lib/codex-usage.js";
 import {
 	clearTuiQuotaSnapshot,
 	parseTuiQuotaSnapshotFromHeaders,
@@ -3049,266 +3056,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								);
 							};
 
-							type CodexQuotaWindow = {
-								usedPercent?: number;
-								windowMinutes?: number;
-								resetAtMs?: number;
-							};
-
-							type CodexQuotaSnapshot = {
-								status: number;
-								planType?: string;
-								activeLimit?: number;
-								primary: CodexQuotaWindow;
-								secondary: CodexQuotaWindow;
-							};
-
-							const parseFiniteNumberHeader = (headers: Headers, name: string): number | undefined => {
-								const raw = headers.get(name);
-								if (!raw) return undefined;
-								const parsed = Number(raw);
-								return Number.isFinite(parsed) ? parsed : undefined;
-							};
-
-							const parseFiniteIntHeader = (headers: Headers, name: string): number | undefined => {
-								const raw = headers.get(name);
-								if (!raw) return undefined;
-								const parsed = Number.parseInt(raw, 10);
-								return Number.isFinite(parsed) ? parsed : undefined;
-							};
-
-							const parseResetAtMs = (headers: Headers, prefix: string): number | undefined => {
-								const resetAfterSeconds = parseFiniteIntHeader(
-									headers,
-									`${prefix}-reset-after-seconds`,
-								);
-								if (
-									typeof resetAfterSeconds === "number" &&
-									Number.isFinite(resetAfterSeconds) &&
-									resetAfterSeconds > 0
-								) {
-									return Date.now() + resetAfterSeconds * 1000;
+							const formatCodexQuotaLine = (usage: CodexUsageSummary): string => {
+								const parts: string[] = [];
+								for (const window of [usage.primary, usage.secondary]) {
+									if (!hasUsageWindow(window)) continue;
+									parts.push(
+										`${formatUsageLimitTitle(window.windowMinutes)} ${formatUsageLimitSummary(window)}`,
+									);
 								}
-
-								const resetAtRaw = headers.get(`${prefix}-reset-at`);
-								if (!resetAtRaw) return undefined;
-
-								const trimmed = resetAtRaw.trim();
-								if (/^\d+$/.test(trimmed)) {
-									const parsedNumber = Number.parseInt(trimmed, 10);
-									if (Number.isFinite(parsedNumber) && parsedNumber > 0) {
-										// Upstream sometimes returns seconds since epoch.
-										return parsedNumber < 10_000_000_000 ? parsedNumber * 1000 : parsedNumber;
+								if (hasUsageWindow(usage.codeReview)) {
+									parts.push(`Code review ${formatUsageLimitSummary(usage.codeReview)}`);
+								}
+								for (const limit of usage.additionalLimits) {
+									if (hasUsageWindow(limit.window)) {
+										parts.push(`${limit.name} ${formatUsageLimitSummary(limit.window)}`);
 									}
 								}
-
-								const parsedDate = Date.parse(trimmed);
-								return Number.isFinite(parsedDate) ? parsedDate : undefined;
-							};
-
-							const hasCodexQuotaHeaders = (headers: Headers): boolean => {
-								const keys = [
-									"x-codex-primary-used-percent",
-									"x-codex-primary-window-minutes",
-									"x-codex-primary-reset-at",
-									"x-codex-primary-reset-after-seconds",
-									"x-codex-secondary-used-percent",
-									"x-codex-secondary-window-minutes",
-									"x-codex-secondary-reset-at",
-									"x-codex-secondary-reset-after-seconds",
-								];
-								return keys.some((key) => headers.get(key) !== null);
-							};
-
-							const parseCodexQuotaSnapshot = (headers: Headers, status: number): CodexQuotaSnapshot | null => {
-								if (!hasCodexQuotaHeaders(headers)) return null;
-
-								const primaryPrefix = "x-codex-primary";
-								const secondaryPrefix = "x-codex-secondary";
-								const primary: CodexQuotaWindow = {
-									usedPercent: parseFiniteNumberHeader(headers, `${primaryPrefix}-used-percent`),
-									windowMinutes: parseFiniteIntHeader(headers, `${primaryPrefix}-window-minutes`),
-									resetAtMs: parseResetAtMs(headers, primaryPrefix),
-								};
-								const secondary: CodexQuotaWindow = {
-									usedPercent: parseFiniteNumberHeader(headers, `${secondaryPrefix}-used-percent`),
-									windowMinutes: parseFiniteIntHeader(headers, `${secondaryPrefix}-window-minutes`),
-									resetAtMs: parseResetAtMs(headers, secondaryPrefix),
-								};
-
-								const planTypeRaw = headers.get("x-codex-plan-type");
-								const planType = planTypeRaw && planTypeRaw.trim() ? planTypeRaw.trim() : undefined;
-								const activeLimit = parseFiniteIntHeader(headers, "x-codex-active-limit");
-
-								return { status, planType, activeLimit, primary, secondary };
-							};
-
-							const formatQuotaWindowLabel = (windowMinutes: number | undefined): string => {
-								if (!windowMinutes || !Number.isFinite(windowMinutes) || windowMinutes <= 0) {
-									return "quota";
-								}
-								if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`;
-								if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
-								return `${windowMinutes}m`;
-							};
-
-							const formatResetAt = (resetAtMs: number | undefined): string | undefined => {
-								if (!resetAtMs || !Number.isFinite(resetAtMs) || resetAtMs <= 0) return undefined;
-								const date = new Date(resetAtMs);
-								if (!Number.isFinite(date.getTime())) return undefined;
-
-								const now = new Date();
-								const sameDay =
-									now.getFullYear() === date.getFullYear() &&
-									now.getMonth() === date.getMonth() &&
-									now.getDate() === date.getDate();
-
-								const time = date.toLocaleTimeString(undefined, {
-									hour: "2-digit",
-									minute: "2-digit",
-									hour12: false,
-								});
-
-								if (sameDay) return time;
-								const day = date.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
-								return `${time} on ${day}`;
-							};
-
-							const formatCodexQuotaLine = (snapshot: CodexQuotaSnapshot): string => {
-								const summarizeWindow = (label: string, window: CodexQuotaWindow): string => {
-									const used = window.usedPercent;
-									const left =
-										typeof used === "number" && Number.isFinite(used)
-											? Math.max(0, Math.min(100, Math.round(100 - used)))
-											: undefined;
-									const reset = formatResetAt(window.resetAtMs);
-									let summary = label;
-									if (left !== undefined) summary = `${summary} ${left}% left`;
-									if (reset) summary = `${summary} (resets ${reset})`;
-									return summary;
-								};
-
-								const primaryLabel = formatQuotaWindowLabel(snapshot.primary.windowMinutes);
-								const secondaryLabel = formatQuotaWindowLabel(snapshot.secondary.windowMinutes);
-								const parts = [
-									summarizeWindow(primaryLabel, snapshot.primary),
-									summarizeWindow(secondaryLabel, snapshot.secondary),
-								];
-								if (snapshot.planType) parts.push(`plan:${snapshot.planType}`);
-								if (typeof snapshot.activeLimit === "number" && Number.isFinite(snapshot.activeLimit)) {
-									parts.push(`active:${snapshot.activeLimit}`);
-								}
-								if (snapshot.status === 429) parts.push("rate-limited");
-								return parts.join(", ");
-							};
-
-							const fetchCodexQuotaSnapshot = async (params: {
-								accountId: string;
-								accessToken: string;
-								organizationId: string | undefined;
-							}): Promise<CodexQuotaSnapshot> => {
-								const QUOTA_PROBE_MODELS = ["gpt-5.4", "gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"];
-								let lastError: Error | null = null;
-
-								for (const model of QUOTA_PROBE_MODELS) {
-									try {
-										const instructions = await getCodexInstructions(model);
-										const probeBody: RequestBody = {
-											model,
-											stream: true,
-											store: false,
-											include: ["reasoning.encrypted_content"],
-											instructions,
-											input: [
-												{
-													type: "message",
-													role: "user",
-													content: [{ type: "input_text", text: "quota ping" }],
-												},
-											],
-											reasoning: { effort: "none", summary: "auto" },
-											text: { verbosity: "low" },
-										};
-
-										const headers = createCodexHeaders(undefined, params.accountId, params.accessToken, {
-											model,
-											organizationId: params.organizationId,
-										});
-								headers.set("content-type", "application/json");
-
-										const controller = new AbortController();
-										const timeout = setTimeout(() => controller.abort(), 15_000);
-										let response: Response;
-										try {
-											response = await fetch(`${CODEX_BASE_URL}/codex/responses`, {
-												method: "POST",
-												headers,
-												body: JSON.stringify(probeBody),
-												signal: controller.signal,
-											});
-										} finally {
-											clearTimeout(timeout);
-										}
-
-										const snapshot = parseCodexQuotaSnapshot(response.headers, response.status);
-										if (snapshot) {
-											// We only need headers; cancel the SSE stream immediately.
-											try {
-												await response.body?.cancel();
-											} catch {
-												// Ignore cancellation failures.
-											}
-											return snapshot;
-										}
-
-										if (!response.ok) {
-											const bodyText = await response.text().catch(() => "");
-											let errorBody: unknown = undefined;
-											try {
-												errorBody = bodyText ? (JSON.parse(bodyText) as unknown) : undefined;
-											} catch {
-												errorBody = { error: { message: bodyText } };
-											}
-
-											const unsupportedInfo = getUnsupportedCodexModelInfo(errorBody);
-											if (unsupportedInfo.isUnsupported) {
-												lastError = new Error(
-													unsupportedInfo.message ?? `Model '${model}' unsupported for this account`,
-												);
-												continue;
-											}
-
-											const message =
-												(typeof (errorBody as { error?: { message?: unknown } })?.error?.message === "string"
-													? (errorBody as { error?: { message?: string } }).error?.message
-													: bodyText) || `HTTP ${response.status}`;
-											if (isDeactivatedWorkspaceError(errorBody, response.status)) {
-												throw createDeactivatedWorkspaceError();
-											}
-											// A 401 here proves the token is invalid even when the body
-											// carries only a generic "Unauthorized" string. The status is
-											// dropped once we throw a plain Error, so normalize to the
-											// canonical message the catch below matches — otherwise a
-											// non-specific 401 would leave a dead routing slot unflagged
-											// for codex-doctor --fix (issue #171).
-											if (isInvalidatedAuthTokenError(errorBody, response.status)) {
-												throw new Error(
-													"Your authentication token has been invalidated. Please try signing in again.",
-												);
-											}
-											throw new Error(message);
-										}
-
-										lastError = new Error("Codex response did not include quota headers");
-									} catch (error) {
-										lastError = error instanceof Error ? error : new Error(String(error));
-										if (isDeactivatedWorkspaceErrorMessage(lastError.message)) {
-											throw lastError;
-										}
-									}
-								}
-
-								throw lastError ?? new Error("Failed to fetch quotas");
+								if (usage.planType) parts.push(`plan:${usage.planType}`);
+								if (usage.credits) parts.push(`credits:${usage.credits}`);
+								return parts.length > 0 ? parts.join(", ") : "quota unavailable";
 							};
 
 							const runAccountCheck = async (deepProbe: boolean): Promise<void> => {
@@ -3524,14 +3290,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												throw new Error("Missing accountId for quota probe");
 											}
 
-											const snapshot = await fetchCodexQuotaSnapshot({
+											const payload = await fetchCodexUsage({
 												accountId: requestAccountId,
 												accessToken,
 												organizationId: account.organizationId,
+												normalizeAccountErrors: true,
 											});
+											const usage = parseCodexUsagePayload(payload);
 											ok += 1;
 											console.log(
-												`[${i + 1}/${total}] ${label}: ${formatCodexQuotaLine(snapshot)}`,
+												`[${i + 1}/${total}] ${label}: ${formatCodexQuotaLine(usage)}`,
 											);
 										} catch (error) {
 											errors += 1;
