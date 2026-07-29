@@ -505,7 +505,7 @@ function extractRuntimeToolNames(tools: unknown): string[] {
  * - opencode explicitly excludes gpt-5-codex from automatic reasoning configuration
  * - Codex CLI has been thoroughly tested against this backend
  *
- * @param originalModel - Original model name before normalization
+ * @param modelName - Model name before normalization
  * @param userConfig - User configuration object
  * @returns Reasoning configuration
  */
@@ -1014,6 +1014,7 @@ export async function filterOpenCodeSystemPrompts(
  * Add Codex-OpenCode bridge message to input if tools are present
  * @param input - Input array
  * @param hasTools - Whether tools are present in request
+ * @param tools - Raw tool definitions, used to extract runtime tool names for the bridge text
  * @returns Input array with bridge message prepended if needed
  */
 export function addCodexBridgeMessage(
@@ -1077,6 +1078,8 @@ export function addToolRemapMessage(
  * @param userConfig - User configuration from loader
  * @param codexMode - Enable CODEX_MODE (bridge prompt instead of tool remap) - defaults to true
  * @param fastSession - Force low-latency output settings for faster responses
+ * @param fastSessionStrategy - `hybrid` applies fast settings only to short inputs; `always` applies them unconditionally
+ * @param fastSessionMaxInputItems - Input-item ceiling used by the `hybrid` strategy
  * @returns Transformed request body
  */
 export async function transformRequestBody(

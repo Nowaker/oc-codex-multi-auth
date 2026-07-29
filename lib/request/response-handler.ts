@@ -148,6 +148,7 @@ function parseSseStream(sseText: string): ParsedSseResult | null {
  * Convert SSE stream response to JSON for generateText()
  * @param response - Fetch response with SSE stream
  * @param headers - Response headers
+ * @param options - Optional `streamStallTimeoutMs` override (floored at 1000ms)
  * @returns Response with JSON body
  */
 export async function convertSseToJson(

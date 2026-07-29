@@ -27,7 +27,7 @@ function closeServer(server: http.Server): void {
  * client registration expects. Bind both concrete loopback interfaces so
  * Windows dual-stack localhost resolution can reach either 127.0.0.1 or ::1.
  *
- * @param options - OAuth state for validation
+ * @param options.state - OAuth state for callback validation
  * @returns Promise that resolves to server info
  */
 export async function startLocalOAuthServer({ state }: { state: string }): Promise<OAuthServerInfo> {

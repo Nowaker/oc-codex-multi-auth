@@ -558,7 +558,8 @@ export function isDeactivatedWorkspaceError(errorBody: unknown, status?: number)
 /**
  * Determines if the current auth token needs to be refreshed
  * @param auth - Current authentication state
- * @returns True if token is expired or invalid
+ * @param skewMs - Refresh this many ms before actual expiry (clamped to >= 0)
+ * @returns True if token is expired, invalid, or expires within `skewMs`
  */
 export function shouldRefreshToken(auth: Auth, skewMs = 0): boolean {
 	if (auth.type !== "oauth") return true;
@@ -671,6 +672,8 @@ export function rewriteUrlForCodex(url: string): string {
  * @param userConfig - User configuration
  * @param codexMode - Enable CODEX_MODE (bridge prompt instead of tool remap)
  * @param parsedBody - Pre-parsed body to avoid double JSON.parse (optional)
+ * @param options - Transform overrides: `requestTransformMode` (`native` | `legacy`),
+ *   `fastSession`, `fastSessionStrategy`, and `fastSessionMaxInputItems`
  * @returns Transformed body and updated init, or undefined if no body
  */
 export async function transformRequestForCodex(
@@ -883,7 +886,9 @@ export function createCodexHeaders(
 /**
  * Handles error responses from the Codex API
  * @param response - Error response from API
- * @returns Original response or mapped retryable response
+ * @param options - Diagnostic-extraction options used to enrich the error
+ * @returns An `ErrorHandlingResult` bundling the (possibly remapped) response,
+ *   parsed rate-limit info, and the decoded error body
  */
 export async function handleErrorResponse(
         response: Response,
@@ -942,6 +947,7 @@ export async function handleErrorResponse(
  * Passes through SSE for streaming requests (streamText)
  * @param response - Success response from API
  * @param isStreaming - Whether this is a streaming request (stream=true in body)
+ * @param options - Optional `streamStallTimeoutMs` override for stall detection
  * @returns Processed response (SSE→JSON for non-streaming, stream for streaming)
  */
 export async function handleSuccessResponse(

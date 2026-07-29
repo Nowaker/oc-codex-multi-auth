@@ -320,13 +320,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object";
 }
 
-/**
- * Get the effective CODEX_MODE setting
- * Priority: environment variable > config file > default (true)
- *
- * @param pluginConfig - Plugin configuration from file
- * @returns True if CODEX_MODE should be enabled
- */
 // RC-9: the env-var parsing helpers below are thin wrappers around Zod
 // schemas that live in `lib/schemas.ts`. Keeping them here (instead of
 // inlining the schema use at every call site) preserves the existing
@@ -401,6 +394,13 @@ function resolveStringSetting<T extends string>(
 	return defaultValue;
 }
 
+/**
+ * Get the effective CODEX_MODE setting.
+ * Priority: environment variable > config file > default (true).
+ *
+ * @param pluginConfig - Plugin configuration from file
+ * @returns True if CODEX_MODE should be enabled
+ */
 export function getCodexMode(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting("CODEX_MODE", pluginConfig.codexMode, true);
 }
