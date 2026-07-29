@@ -77,3 +77,6 @@ __pycache__/
 *.so
 .Python
 *.egg-info/
+
+# oh-my-claudecode agent state
+.omc/
