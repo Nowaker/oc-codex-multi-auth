@@ -299,7 +299,7 @@ async function loadAccountsInternal(
   // fails for any reason (native module missing, keychain locked, no entry
   // yet) we fall through to the existing JSON load path so the plugin never
   // silently loses credentials. This preserves the default-off contract
-  // documented in docs/audits/13-phased-roadmap.md#phase-4-f1.
+  // default-off keychain contract.
   if (isKeychainOptInEnabled()) {
     const projectKey = getCurrentProjectStorageKey();
     try {

@@ -20,8 +20,7 @@
  * - "what is different between worktree A and worktree B config?"
  * - "compare a per-project account file against the global file"
  *
- * See docs/audits/08-feature-recommendations.md and
- * docs/audits/13-phased-roadmap.md §4 (Phase 4 F3).
+ * Covered by `test/tools-codex-diff.test.ts`.
  */
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";

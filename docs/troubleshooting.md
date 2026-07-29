@@ -13,7 +13,7 @@ If you prefer guided recovery before manual debugging, run:
 ```text
 codex-setup
 codex-doctor
-codex-doctor --fix
+codex-doctor fix=true
 codex-next
 ```
 
@@ -286,12 +286,12 @@ Failed to access Codex API
 6. Run guided diagnostics and safe auto-remediation:
    ```text
    codex-doctor
-   codex-doctor --fix
+   codex-doctor fix=true
    ```
 7. If you are onboarding or returning after a long gap, run:
    ```text
    codex-setup
-   codex-setup --wizard
+   codex-setup wizard=true
    codex-next
 ```
 

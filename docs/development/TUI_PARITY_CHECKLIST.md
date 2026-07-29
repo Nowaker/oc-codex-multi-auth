@@ -78,7 +78,7 @@ Use this checklist to keep `oc-codex-multi-auth` aligned with the Antigravity-st
 - Visual controls:
   - `codexTuiColorProfile`: `truecolor` / `ansi256` / `ansi16`
   - `codexTuiGlyphMode`: `ascii` / `unicode` / `auto`
-- Privacy controls: `maskEmail: true` or `CODEX_TUI_MASK_EMAIL=1` hides account email in prompt quota status only; `maskEmailInQuotaDetails: true` or `CODEX_TUI_MASK_EMAIL_DETAILS=1` extends masking to quota details.
+- Privacy controls: `maskEmail: true` or `CODEX_TUI_MASK_EMAIL=1` masks the account email across **every** human-facing surface — interactive auth menu, `codex-list` / `codex-status` / `codex-limits` / `codex-health` / `codex-dashboard` output, runtime and log messages, the standalone CLI login menu, and TUI prompt quota status. A user-defined account label is preferred over the email wherever one exists. `maskEmailInQuotaDetails: true` or `CODEX_TUI_MASK_EMAIL_DETAILS=1` additionally masks the email in the quota **details** view. The shared helpers live in `lib/account-display.ts`; new display surfaces must route through them rather than formatting the email directly.
 
 ## Tooling Parity
 

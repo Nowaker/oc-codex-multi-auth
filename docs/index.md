@@ -21,12 +21,6 @@ Use your ChatGPT Plus/Pro subscription inside OpenCode with OAuth login, Codex/G
 - [Testing Guide](development/TESTING.md)
 - [TUI Parity Checklist](development/TUI_PARITY_CHECKLIST.md)
 
-## Historical audits
-
-The `audits/` tree is a **historical** review snapshot. Prefer current user and development docs above for live behavior; treat audit findings as dated context, not the product contract.
-
-- [Audits index](audits/INDEX.md)
-
 ## Repository Links
 
 - [README](../README.md)

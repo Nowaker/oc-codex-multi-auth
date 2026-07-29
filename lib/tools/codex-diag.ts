@@ -11,7 +11,7 @@
  * - The final JSON string is passed through `maskString` as a defence in
  *   depth against any caller-accidental token substring in the payload.
  *
- * Ledger reference: docs/audits/08-feature-recommendations.md.
+ * Redaction depth is asserted in `test/tools-codex-diag.test.ts`.
  */
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";

@@ -2,7 +2,7 @@
  * Plugin runtime scaffolding.
  *
  * Holds module-level helpers and pure types hoisted out of `index.ts` as the
- * first step of RC-1 (see `docs/audits/07-refactoring-plan.md#rc-1`). Everything
+ * the first step of the tool-registry extraction. Everything
  * in this file is independent of the plugin closure — it may be imported freely
  * by `index.ts` and by any future `lib/tools/*` modules without dragging
  * plugin state into the call graph.

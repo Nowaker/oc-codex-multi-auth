@@ -1,7 +1,5 @@
 # LIB KNOWLEDGE BASE
 
-Generated: 2026-05-03
-
 ## OVERVIEW
 
 Core plugin logic for authentication, request routing, account management, storage, model/prompt mapping, diagnostics, UI helpers, and TUI quota status support.
@@ -10,12 +8,14 @@ Core plugin logic for authentication, request routing, account management, stora
 
 ```text
 lib/
+├── account-display.ts      # shared account identity rendering + maskEmail privacy behavior
 ├── accounts.ts             # account manager facade, storage orchestration, health scoring helpers
 ├── accounts/               # state, persistence, rotation, recovery, rate limits
 ├── auth/                   # OAuth PKCE, callback server, browser/device/manual login, scopes
 ├── auto-update-checker.ts  # npm version check and OpenCode cache refresh notification
 ├── circuit-breaker.ts      # failure isolation
 ├── cli.ts                  # auth/login CLI prompt helpers
+├── codex-reset.ts          # banked rate-limit reset credit client (list + redeem)
 ├── codex-usage.ts          # usage/quota endpoint helpers for TUI status
 ├── config.ts               # plugin config parsing and env overrides
 ├── constants.ts            # URLs, provider ids, limits, labels
@@ -78,6 +78,8 @@ lib/
 | TUI quota status | `tui-status.ts`, `tui-quota-cache.ts`, `codex-usage.ts` | prompt quota display and usage cache |
 | Error types | `errors.ts`, `error-sentinels.ts` | StorageError and structured sentinel errors |
 | Health monitoring | `health.ts` | account health status |
+| Account display / masking | `account-display.ts` | label-preferred rendering, `maskEmail` behavior |
+| Reset credits | `codex-reset.ts` | banked rate-limit reset credit list/redeem |
 | Parallel probes | `parallel-probe.ts` | concurrent health checks |
 | Runtime helpers | `runtime.ts` | routing visibility, metrics, pure helper types |
 | Graceful shutdown | `shutdown.ts` | cleanup on exit |

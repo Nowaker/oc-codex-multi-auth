@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide covers the full installation and first-run flow for `oc-codex-multi-auth` v6.9.1.
+This guide covers the full installation and first-run flow for `oc-codex-multi-auth`.
 
 ## Before You Begin
 

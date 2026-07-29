@@ -193,9 +193,17 @@ Examples:
 | `openai/gpt-5.6-terra-medium` | `gpt-5.6-terra` |
 | `openai/gpt-5.6-luna-max` | `gpt-5.6-luna` |
 | `openai/gpt-5.4-mini-xhigh` | `gpt-5.4-mini` |
-| `openai/gpt-5.1-codex-high` | `gpt-5.1-codex` |
+| `openai/gpt-5.1-codex-high` | `gpt-5-codex` |
+| `openai/gpt-5.1-codex-max-high` | `gpt-5.1-codex-max` |
 | `openai/gpt-5-mini` | `gpt-5.4-mini` |
 | `openai/gpt-5-nano` | `gpt-5.4-nano` |
+
+Note that the `gpt-5.1-codex` catalog entry normalizes to the canonical
+`gpt-5-codex` family upstream, while `gpt-5.1-codex-max` and
+`gpt-5.1-codex-mini` are each their own family. The catalog ID you select and
+the family actually sent to the backend are therefore not always the same
+string; `MODEL_MAP` in `lib/request/helpers/model-map.ts` is the authoritative
+mapping.
 
 This normalization is why legacy aliases and snapshot-like IDs can still route to a stable family while preserving the user-facing config surface. GPT-5.6 tiers also trigger the responses-lite request shape after normalization.
 
@@ -232,6 +240,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `tokenRefreshSkewMs` | `60000` | `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` | Refresh tokens this many ms before expiry |
 | `rateLimitToastDebounceMs` | `60000` | `CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS` | Debounce rate-limit toasts |
 | `toastDurationMs` | `5000` | `CODEX_AUTH_TOAST_DURATION_MS` | Toast visibility duration |
+| `accountToasts` | `true` | `CODEX_AUTH_ACCOUNT_TOASTS` | Gates only the informational "Using \<account\> (N/N)" selection toast; warning/error toasts are unaffected |
 | `perProjectAccounts` | `true` | `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | Project-scoped account pools |
 | `sessionRecovery` | `true` | `CODEX_AUTH_SESSION_RECOVERY` | Auto-recover common API errors |
 | `autoResume` | `true` | `CODEX_AUTH_AUTO_RESUME` | Auto-resume after thinking-block recovery |
@@ -333,4 +342,4 @@ These fields are updated by `codex-label`, `codex-tag`, and `codex-note`.
 
 - [CONFIG_FLOW.md](./CONFIG_FLOW.md)
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
-- [../../docs/configuration.md](../../configuration.md)
+- [Public configuration reference](../configuration.md)

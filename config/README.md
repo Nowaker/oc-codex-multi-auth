@@ -1,6 +1,6 @@
 # Configuration
 
-This directory contains the official OpenCode config templates for `oc-codex-multi-auth` v6.9.1.
+This directory contains the official OpenCode config templates for `oc-codex-multi-auth`.
 
 ## Required: choose the right config file
 

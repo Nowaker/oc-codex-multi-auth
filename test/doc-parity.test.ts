@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -323,9 +323,6 @@ describe("runtime documentation parity", () => {
 
 		expect(advertisedTopics).toEqual(sectionTopics);
 		expect(advertisedTopics).not.toContain("metrics");
-		expect(readRepoFile("docs/audits/11-dx-cli-docs.md")).toContain(
-			"no longer advertises a `metrics` topic without a matching help section",
-		);
 	});
 
 	it("keeps the documented docs layout aligned with the live docs tree", () => {
@@ -348,26 +345,17 @@ describe("runtime documentation parity", () => {
 			"docs/development/CONFIG_FLOW.md",
 			"docs/development/TESTING.md",
 			"docs/development/TUI_PARITY_CHECKLIST.md",
-			"docs/audits/INDEX.md",
-			"docs/audits/_findings/T01-architecture.md",
-			"docs/audits/_findings/T16-code-health.md",
-			"docs/audits/_meta/findings-ledger.csv",
-			"docs/audits/_meta/verification-report.md",
 		];
 
 		for (const relativePath of requiredDocs) {
 			expect(docsFiles).toContain(relativePath);
 		}
 
-		const numberedAuditFiles = docsFiles.filter((relativePath) =>
-			/^docs\/audits\/\d{2}-[a-z0-9-]+\.md$/.test(relativePath),
+		// The historical audit corpus was removed; nothing may reintroduce a
+		// pointer to it without also restoring the files.
+		expect(docsFiles.filter((relativePath) => relativePath.startsWith("docs/audits/"))).toEqual(
+			[],
 		);
-		const findingFiles = docsFiles.filter((relativePath) =>
-			/^docs\/audits\/_findings\/T\d{2}-[a-z0-9-]+\.md$/.test(relativePath),
-		);
-
-		expect(numberedAuditFiles).toHaveLength(16);
-		expect(findingFiles).toHaveLength(16);
 
 		const docsExpectations: Array<[string, string[]]> = [
 			[
@@ -377,9 +365,6 @@ describe("runtime documentation parity", () => {
 					"OPENCODE_PR_PROPOSAL.md",
 					"GITHUB_DISCOVERABILITY.md",
 					"development/",
-					"audits/",
-					"_findings/",
-					"_meta/",
 				],
 			],
 			[
@@ -388,17 +373,6 @@ describe("runtime documentation parity", () => {
 					"## Documentation Layout",
 					"DOCUMENTATION.md",
 					"OPENCODE_PR_PROPOSAL.md",
-					"current-structure audit corpus",
-				],
-			],
-			[
-				"docs/audits/02-system-map.md",
-				[
-					"Documentation map:",
-					"docs/",
-					"development/",
-					"audits/",
-					"Doc/code alignment rule",
 				],
 			],
 		];
@@ -411,29 +385,6 @@ describe("runtime documentation parity", () => {
 		}
 	});
 
-	it("keeps regenerated audit docs free of stale pre-split anchors", () => {
-		const stalePatterns = [
-			/d92a8/i,
-			/5975-line/i,
-			/1296-line/i,
-			/18 inline/i,
-			/index\.ts:5995/i,
-			/index\.ts:4992/i,
-		];
-		const hits: string[] = [];
-
-		for (const relativePath of collectRepoFiles("docs/audits")) {
-			const fileContents = readRepoFile(relativePath);
-			for (const pattern of stalePatterns) {
-				if (pattern.test(fileContents)) {
-					hits.push(`${relativePath}: ${pattern.source}`);
-				}
-			}
-		}
-
-		expect(hits).toEqual([]);
-	});
-
 	it("keeps current documentation free of stale structure anchors", () => {
 		const stalePatterns: Array<[RegExp, string]> = [
 			[/7[- ]step/i, "old fetch-pipeline count"],
@@ -444,6 +395,7 @@ describe("runtime documentation parity", () => {
 			[/tmp\/(?:codex|opencode)\//, "non-repo temp source path"],
 			[/\b19 OpenCode tools\b/, "old tool count"],
 			[/\b19 `codex-\*` tools\b/, "old tool count"],
+			[/docs\/audits/, "removed historical audit corpus"],
 		];
 		const hits: string[] = [];
 
@@ -601,6 +553,59 @@ describe("runtime documentation parity", () => {
 				const normalized = normalizeRepoPathReference(reference);
 				if (normalized && !repoPathPatternExists(normalized)) {
 					hits.push(`${relativePath}: ${reference}`);
+				}
+			}
+		}
+
+		expect(hits).toEqual([]);
+	});
+
+	it("keeps package versions quoted in documentation aligned with package.json", () => {
+		// Docs that pin a version go stale silently at every release. Any
+		// `x.y.z` that looks like this package's own version must match the
+		// version currently in package.json.
+		const { version } = JSON.parse(readRepoFile("package.json")) as { version: string };
+		const hits: string[] = [];
+
+		for (const relativePath of collectCurrentDocumentationFiles()) {
+			const fileContents = readRepoFile(relativePath);
+			for (const match of fileContents.matchAll(
+				/(?:package |version[: ]|v)(\d+\.\d+\.\d+)\b/gi,
+			)) {
+				const quoted = match[1];
+				// Only flag versions in this package's own major line; OpenCode
+				// and Codex CLI versions are quoted legitimately.
+				if (!quoted.startsWith(`${version.split(".")[0]}.`)) continue;
+				if (quoted !== version) {
+					hits.push(`${relativePath}: ${match[0].trim()} (package.json is ${version})`);
+				}
+			}
+		}
+
+		expect(hits).toEqual([]);
+	});
+
+	it("keeps relative markdown links resolvable from the file that contains them", () => {
+		// `normalizeRepoPathReference` strips leading `./` and `../`, so a link
+		// like `../../configuration.md` normalizes to a repo-root-relative path
+		// and silently passes the reference check above even when it points
+		// outside the repository. Resolve link targets against the containing
+		// file's own directory instead.
+		const hits: string[] = [];
+
+		for (const relativePath of collectCurrentDocumentationFiles()) {
+			const fileContents = readRepoFile(relativePath);
+			const containingDir = path.dirname(path.resolve(testDir, "..", relativePath));
+
+			for (const match of fileContents.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+				const rawHref = match[1].trim();
+				if (/^(?:https?:|mailto:|#)/.test(rawHref)) continue;
+
+				const href = rawHref.split("#")[0];
+				if (href.length === 0) continue;
+
+				if (!existsSync(path.resolve(containingDir, href))) {
+					hits.push(`${relativePath}: ${rawHref}`);
 				}
 			}
 		}

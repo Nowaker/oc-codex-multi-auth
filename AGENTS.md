@@ -1,8 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-Generated: 2026-07-18
 Branch: main
-Package version: 6.9.1
+Package version: see `package.json` (`version` field).
 
 ## OVERVIEW
 
@@ -18,7 +17,7 @@ Package version: 6.9.1
 ├── test/                 # vitest suites (see test/AGENTS.md)
 ├── scripts/              # installer, standalone CLI, build, audit, and validation helpers
 ├── config/               # opencode.json examples (modern/full/legacy/minimal)
-├── docs/                 # public docs, architecture, audits, maintainer guides
+├── docs/                 # public docs, architecture, maintainer guides
 ├── skills/               # repo-local setup skill
 ├── assets/               # static assets
 ├── .codex-plugin/        # plugin metadata for Codex skill/plugin tooling

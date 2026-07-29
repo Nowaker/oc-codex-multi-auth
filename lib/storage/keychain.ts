@@ -1,8 +1,8 @@
 /**
  * Opt-in OS-keychain credential backend.
  *
- * Phase 4 F1. Addresses the audit finding (docs/audits/09-security-trust.md)
- * that per-project accounts are stored as plaintext V3 JSON on disk. This
+ * Addresses the concern that per-project accounts are otherwise stored as
+ * plaintext V3 JSON on disk. This
  * module introduces an alternate storage backend that persists the SAME
  * V3 JSON blob as a secret value in the OS keychain:
  *

@@ -107,7 +107,7 @@ export class AccountState {
 	 * Per-refresh-token promise chain used to serialize concurrent
 	 * `incrementAuthFailures` calls. Prevents lost updates when two org-variant
 	 * accounts that share a refresh token observe an auth failure at once — see
-	 * audit finding `docs/audits/03-critical-issues.md` (ledger id `47`).
+	 * the lost-update fix for shared-refresh-token accounts.
 	 */
 	incrementAuthFailuresChain: Map<string, Promise<number>> = new Map();
 

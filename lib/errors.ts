@@ -5,7 +5,7 @@
  * role of `BaseError`: every subclass inherits `code: string`, `cause?: unknown`,
  * optional `context`, stack capture, and a stable `name`.
  *
- * Consolidated in RC-3 (docs/audits/07-refactoring-plan.md#rc-3):
+ * Consolidated error surface:
  * - `StorageError` moved here from `lib/storage/errors.ts` (that path stays as
  *   a thin re-export so existing imports keep working).
  * - `CircuitOpenError` moved here from `lib/circuit-breaker.ts` (same re-export

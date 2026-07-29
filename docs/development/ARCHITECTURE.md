@@ -2,7 +2,7 @@
 
 Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, ChatGPT Plus/Pro OAuth flow, Codex/GPT-5 request bridge (including GPT-5.6 responses-lite), multi-account rotation, `codex-*` tool registry, TUI quota status plugin, and local storage model.
 
-> Reflects the codebase as of the current `main` branch. Historical audit section markers are retained in the docs tree for traceability, but this file is the current maintainer architecture source.
+> Reflects the codebase as of the current `main` branch. This file is the maintainer architecture source of truth; `docs/architecture.md` is the shorter public-facing overview.
 
 ---
 
@@ -110,7 +110,7 @@ tui.ts
 
 ## Documentation Layout
 
-The current docs tree mirrors the codebase boundaries above: user docs cover setup and operations, maintainer docs cover internal architecture and validation, and the regenerated audit corpus records point-in-time architecture findings.
+The current docs tree mirrors the codebase boundaries above: user docs cover setup and operations, and maintainer docs cover internal architecture and validation.
 
 ```text
 docs/
@@ -119,24 +119,20 @@ docs/
 ├── DOCUMENTATION.md          # repository documentation map
 ├── architecture.md           # public architecture overview
 ├── getting-started.md        # install, auth, and first-run guide
+├── tools-and-cli.md          # codex-* tool catalog and standalone CLI
 ├── configuration.md          # public config reference
 ├── troubleshooting.md        # operational failure modes and fixes
 ├── faq.md                    # short common answers
 ├── privacy.md                # local data and upstream request notes
 ├── OPENCODE_PR_PROPOSAL.md   # upstream OpenCode proposal notes
 ├── _config.yml               # docs site config
-├── development/              # maintainer architecture and validation docs
-│   ├── ARCHITECTURE.md
-│   ├── GITHUB_DISCOVERABILITY.md
-│   ├── CONFIG_FIELDS.md
-│   ├── CONFIG_FLOW.md
-│   ├── TESTING.md
-│   └── TUI_PARITY_CHECKLIST.md
-└── audits/                   # current-structure audit corpus
-    ├── INDEX.md
-    ├── 01-executive-summary.md ... 16-verdict.md
-    ├── _findings/            # T01 through T16 detailed findings
-    └── _meta/                # audit rubric, ledger, environment, verification
+└── development/              # maintainer architecture and validation docs
+    ├── ARCHITECTURE.md
+    ├── GITHUB_DISCOVERABILITY.md
+    ├── CONFIG_FIELDS.md
+    ├── CONFIG_FLOW.md
+    ├── TESTING.md
+    └── TUI_PARITY_CHECKLIST.md
 ```
 
 ---

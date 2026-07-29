@@ -187,8 +187,29 @@ Contract tests in `test/contracts/` pin external API response shapes (OAuth toke
 
 **Never commit real tokens, real account ids, real organization ids, real JWT payloads, or any PII in fixtures.** The fixtures live in version control; treat them as public.
 
-### Debug OAuth flow locally
-Set `CODEX_DEBUG_AUTH=1` in your shell before running. See `docs/development/ARCHITECTURE.md#oauth-flow` for protocol details.
+### Debug the OAuth flow locally
+
+Turn on plugin debug logging before running:
+
+```bash
+DEBUG_CODEX_PLUGIN=1 CODEX_CONSOLE_LOG=1 opencode auth login
+```
+
+| Variable | Effect |
+|----------|--------|
+| `DEBUG_CODEX_PLUGIN=1` | Enable debug-level plugin logging |
+| `ENABLE_PLUGIN_REQUEST_LOGGING=1` | Log request metadata to `~/.opencode/logs/codex-plugin/` (also implies debug) |
+| `CODEX_CONSOLE_LOG=1` | Mirror plugin logs to the console |
+| `CODEX_PLUGIN_LOG_LEVEL=<level>` | Override the log level |
+| `CODEX_PLUGIN_LOG_BODIES=1` | Include raw request/response bodies — **sensitive**, use sparingly |
+
+Boolean environment overrides are truthy only for the literal string `"1"`.
+
+The auth implementation lives in `lib/auth/` (`auth.ts` for PKCE and token
+exchange, `server.ts` for the callback server on port `1455`, `device-code.ts`
+and `login-runner.ts` for the headless paths). See the "Core Subsystems" table
+in [docs/development/ARCHITECTURE.md](docs/development/ARCHITECTURE.md) for how
+those fit together.
 
 ### Testing the OS-keychain backend
 

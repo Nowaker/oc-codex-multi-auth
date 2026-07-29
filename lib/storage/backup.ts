@@ -5,7 +5,7 @@
  * pure path builder that every backup caller can use without taking a
  * dependency on the import pipeline. `writePreImportBackupFile` is the
  * bounded-time writer used inside `importAccounts` to snapshot the existing
- * accounts file before apply (audit `docs/audits/04-high-priority.md`).
+ * accounts file before apply.
  */
 
 import { promises as fs } from "node:fs";

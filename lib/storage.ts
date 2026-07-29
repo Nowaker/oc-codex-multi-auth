@@ -6,8 +6,8 @@
  * so every consumer that imports from `./storage` / `../storage` resolves
  * exactly as it did before the refactor.
  *
- * See `docs/audits/07-refactoring-plan.md#rc-2` and
- * `docs/audits/16-code-health.md` for the motivation.
+ * Split into `lib/storage/` submodules so each concern (paths, migrations,
+ * keychain, backups, import/export) stays independently reviewable.
  */
 
 // --- Types re-exported from migrations ---------------------------------------

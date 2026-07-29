@@ -21,10 +21,6 @@ This documentation set is split by purpose so the main README can stay focused o
 - [Testing Guide](development/TESTING.md)
 - [TUI Parity Checklist](development/TUI_PARITY_CHECKLIST.md)
 
-## Historical audits
-
-Files under [audits/](audits/INDEX.md) are a **historical** review archive. They are useful for context but are not the source of truth for current package behavior (v6.9.1). Prefer the guides above and `CHANGELOG.md` for live contracts.
-
 ## Notes
 
 - The root [README](../README.md) is the landing page and 60-second start.

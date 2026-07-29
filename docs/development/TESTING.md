@@ -110,9 +110,9 @@ Run these in an interactive session:
 
 ```text
 codex-setup
-codex-setup --wizard
+codex-setup wizard=true
 codex-doctor
-codex-doctor --fix
+codex-doctor fix=true
 codex-next
 codex-list
 ```

@@ -1,6 +1,6 @@
 # oc-codex-multi-auth Architecture
 
-Public overview of how `oc-codex-multi-auth` v6.9.1 installs config, handles ChatGPT Plus/Pro OAuth, routes Codex/GPT-5 requests, rotates local account pools, exposes diagnostics, and publishes TUI quota status.
+Public overview of how `oc-codex-multi-auth` installs config, handles ChatGPT Plus/Pro OAuth, routes Codex/GPT-5 requests, rotates local account pools, exposes diagnostics, and publishes TUI quota status.
 
 ---
 

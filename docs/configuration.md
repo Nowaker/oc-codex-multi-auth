@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Complete reference for configuring `oc-codex-multi-auth` v6.9.1. Most of this is optional; the defaults work for most people.
+Complete reference for configuring `oc-codex-multi-auth`. Most of this is optional; the defaults work for most people.
 
 Boolean environment overrides are truthy only for the literal string `"1"`.
 

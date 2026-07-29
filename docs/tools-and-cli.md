@@ -1,6 +1,6 @@
 # Tools and CLI
 
-Reference for the **24** OpenCode `codex-*` tools and the standalone `oc-codex-multi-auth` bin commands (package v6.9.1).
+Reference for the **24** OpenCode `codex-*` tools and the standalone `oc-codex-multi-auth` bin commands.
 
 Tools run inside OpenCode (agent/tool surface). Several diagnostics also run as a **direct CLI** with no agent loop and no model token cost.
 
