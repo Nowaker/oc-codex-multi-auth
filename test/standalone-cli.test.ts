@@ -191,5 +191,111 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		expect(output.results[0].email).not.toBe("warm@example.com");
 		expect(output.results[0].email).toContain("...");
 	});
+
+	const usagePayload = {
+		plan_type: "plus",
+		rate_limit: {
+			primary_window: {
+				used_percent: 18,
+				limit_window_seconds: 18_000,
+				reset_at: Math.floor(Date.now() / 1000) + 3_600,
+			},
+			secondary_window: {
+				used_percent: 42,
+				limit_window_seconds: 604_800,
+				reset_at: Math.floor(Date.now() / 1000) + 86_400,
+			},
+		},
+	};
+
+	it("limits: empty pool reports no accounts and exits 0 (#209)", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, []);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(
+			runInstaller(["limits", "--json"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ action: "limits", exitCode: 0 });
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output).toMatchObject({ totalAccounts: 0, accounts: [] });
+	});
+
+	it("limits: reports live 5h and weekly windows per account (#209)", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => usagePayload,
+			text: async () => JSON.stringify(usagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(
+			runInstaller(["limits", "--json"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ action: "limits", exitCode: 0 });
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.totalAccounts).toBe(1);
+		const names = output.accounts[0].limits.map((limit: { name: string }) => limit.name);
+		expect(names).toContain("5h limit");
+		expect(names).toContain("Weekly limit");
+		expect(output.accounts[0].limits[0].leftPercent).toBe(82);
+		expect(output.accounts[0].planType).toBe("plus");
+		expect(String(fetchSpy.mock.calls.at(-1)?.[0])).toContain("/wham/usage");
+	});
+
+	it("limits: renders the windows in text output rather than a bare account list (#209)", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => usagePayload,
+			text: async () => JSON.stringify(usagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const printed = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(printed).toContain("5h limit: 82% left");
+		expect(printed).toContain("Weekly limit: 58% left");
+	});
+
+	it("limits: an account whose usage fetch fails is reported and exits 1 (#209)", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: false,
+			status: 500,
+			text: async () => "upstream boom",
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(
+			runInstaller(["limits", "--json"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ action: "limits", exitCode: 1 });
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.accounts[0].error).toContain("500");
+	});
 });
 

@@ -83,7 +83,7 @@ function printHelp() {
 		"  doctor              Run local account/config diagnostics\n" +
 		"  status              Show account/config status\n" +
 		"  list                List configured accounts\n" +
-		"  limits              Show stored rate-limit state\n" +
+		"  limits              Show live 5-hour and weekly usage for each account\n" +
 		"  dashboard           Print dashboard guidance\n" +
 		"  health              Check local token/account health\n" +
 		"  diag                Alias for doctor --deep\n" +
@@ -380,32 +380,52 @@ function printStandaloneResult(command, payload, json) {
 	if (payload.nextAction) console.log(`Next: ${payload.nextAction}`);
 }
 
-async function loadWarmRuntime(env) {
-	// Reuse the COMPILED warm logic from dist/ so the standalone CLI behaves
-	// identically to the in-conversation codex-warm tool. dist/ ships in the
-	// npm package (files allowlist) and none of these modules import the
-	// OpenCode plugin runtime, so they load cleanly in plain Node.
+/**
+ * Import compiled modules from dist/ so the standalone CLI behaves identically
+ * to the in-conversation tools. dist/ ships in the npm package (files
+ * allowlist) and none of these modules import the OpenCode plugin runtime, so
+ * they load cleanly in plain Node.
+ */
+async function loadDistModules(relativePaths, label) {
 	const distRoot = join(repoRoot, "dist", "lib");
 	const toUrl = (rel) => pathToFileURL(join(distRoot, rel)).href;
 	try {
-		const [storageMod, usageMod, warmReqMod, warmMod, shutdownMod] = await Promise.all([
-			import(toUrl("storage.js")),
-			import(toUrl("codex-usage.js")),
-			import(toUrl("accounts/warm-request.js")),
-			import(toUrl("accounts/warm.js")),
-			import(toUrl("shutdown.js")),
-		]);
-		// Unlike the plugin, this CLI *is* the process, so it owns termination:
-		// Ctrl+C must abort the warm run rather than wait for it to drain.
-		// Refreshing a token here persists credentials, which registers the
-		// shutdown handler via the storage lock.
-		shutdownMod.setShutdownOwnsProcess(true);
-		return { storageMod, usageMod, warmReqMod, warmMod, shutdownMod };
+		return await Promise.all(relativePaths.map((rel) => import(toUrl(rel))));
 	} catch (error) {
 		throw new Error(
-			`Could not load warm runtime from dist/. Build the package first (npm run build). Cause: ${formatErrorForLog(error)}`,
+			`Could not load ${label} runtime from dist/. Build the package first (npm run build). Cause: ${formatErrorForLog(error)}`,
 		);
 	}
+}
+
+async function loadWarmRuntime(env) {
+	const [storageMod, usageMod, warmReqMod, warmMod, shutdownMod] = await loadDistModules(
+		[
+			"storage.js",
+			"codex-usage.js",
+			"accounts/warm-request.js",
+			"accounts/warm.js",
+			"shutdown.js",
+		],
+		"warm",
+	);
+	// Unlike the plugin, this CLI *is* the process, so it owns termination:
+	// Ctrl+C must abort the warm run rather than wait for it to drain.
+	// Refreshing a token here persists credentials, which registers the
+	// shutdown handler via the storage lock.
+	shutdownMod.setShutdownOwnsProcess(true);
+	return { storageMod, usageMod, warmReqMod, warmMod, shutdownMod };
+}
+
+async function loadLimitsRuntime(env) {
+	const [storageMod, usageMod, shutdownMod] = await loadDistModules(
+		["storage.js", "codex-usage.js", "shutdown.js"],
+		"limits",
+	);
+	// Fetching usage can refresh (and therefore persist) a token, so the same
+	// process-owns-termination rule as `warm` applies.
+	shutdownMod.setShutdownOwnsProcess(true);
+	return { storageMod, usageMod, shutdownMod };
 }
 
 export async function runWarmCommand(parsed, options = {}) {
@@ -505,6 +525,129 @@ function printWarmResult(payload, json) {
 	if (payload.nextAction) console.log(`Next: ${payload.nextAction}`);
 }
 
+/**
+ * `limits` — show live 5-hour and weekly Codex usage per account (#209).
+ *
+ * Reuses the compiled `codex-usage` runtime so the CLI reports the same windows
+ * as the in-conversation `codex-limits` tool. The locally persisted
+ * `rateLimitResetTimes` is carried in the payload as well: it is the only
+ * rate-limit state available for an account whose live fetch fails, and
+ * `--json` consumers of the previous behavior still find the field.
+ */
+export async function runLimitsCommand(parsed, options = {}) {
+	const { env = process.env } = options;
+	const storagePath = getStandaloneStoragePath(parsed, env);
+
+	let runtime;
+	try {
+		runtime = await loadLimitsRuntime(env);
+	} catch (error) {
+		const payload = { command: "limits", storagePath, error: formatErrorForLog(error) };
+		printLimitsResult(payload, parsed.json);
+		return { exitCode: 1, action: "limits", storagePath };
+	}
+
+	const { storageMod, usageMod } = runtime;
+	// Point dist storage at the resolved accounts file so a refreshed token is
+	// persisted to the SAME file the rest of the toolchain reads.
+	storageMod.setStoragePathDirect(storagePath);
+
+	const storage = await storageMod.loadAccounts();
+	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
+	if (accounts.length === 0) {
+		const payload = {
+			command: "limits",
+			storagePath,
+			totalAccounts: 0,
+			accounts: [],
+			message: "No accounts configured.",
+			nextAction: "Run opencode auth login.",
+		};
+		printLimitsResult(payload, parsed.json);
+		return { exitCode: 0, action: "limits", storagePath };
+	}
+
+	// Same workspace dedupe the codex-limits tool applies, so two entries for one
+	// workspace are not billed and printed twice.
+	const indices = usageMod.deduplicateUsageAccountIndices(storage);
+	const results = [];
+	let failedCount = 0;
+
+	for (const index of indices) {
+		const account = accounts[index];
+		if (!account) continue;
+		const entry = {
+			index,
+			label: account.accountLabel ?? `Account ${index + 1}`,
+			email: maskValue(account.email, parsed.includeSensitive),
+			rateLimitResetTimes: account.rateLimitResetTimes ?? {},
+		};
+		try {
+			const { accessToken } = await usageMod.ensureCodexUsageAccessToken({ storage, account });
+			const accountId = usageMod.resolveCodexUsageAccountId({ account, accessToken });
+			if (!accountId) {
+				throw new Error("could not resolve account id (re-login may be required)");
+			}
+			const usage = usageMod.parseCodexUsagePayload(
+				await usageMod.fetchCodexUsage({
+					accountId,
+					accessToken,
+					organizationId: account.organizationId,
+				}),
+			);
+			entry.planType = usage.planType;
+			entry.credits = usage.credits;
+			entry.limits = usage.limits;
+		} catch (error) {
+			entry.error = formatErrorForLog(error).slice(0, 160);
+			failedCount += 1;
+		}
+		results.push(entry);
+	}
+
+	const payload = {
+		command: "limits",
+		storagePath,
+		totalAccounts: accounts.length,
+		shownAccounts: results.length,
+		accounts: results,
+	};
+	printLimitsResult(payload, parsed.json);
+	return { exitCode: failedCount > 0 ? 1 : 0, action: "limits", storagePath };
+}
+
+function printLimitsResult(payload, json) {
+	if (json) {
+		console.log(JSON.stringify(payload, null, 2));
+		return;
+	}
+	console.log(`oc-codex-multi-auth limits`);
+	if (payload.message) console.log(payload.message);
+	console.log(`Storage: ${payload.storagePath}`);
+	if (payload.error) {
+		console.log(`Error: ${payload.error}`);
+		return;
+	}
+	console.log(`Accounts: ${payload.totalAccounts}`);
+	for (const account of payload.accounts ?? []) {
+		const label = account.email ? `${account.label} (${account.email})` : account.label;
+		console.log(`- [${account.index}] ${label}`);
+		if (account.error) {
+			console.log(`  Error: ${account.error}`);
+			continue;
+		}
+		for (const limit of account.limits ?? []) {
+			console.log(`  ${limit.name}: ${limit.summary}`);
+		}
+		if ((account.limits ?? []).length === 0) {
+			console.log("  No usage windows reported yet.");
+		}
+		if (account.planType) console.log(`  Plan: ${account.planType}`);
+		if (account.credits) console.log(`  Credits: ${account.credits}`);
+	}
+	if (payload.nextAction) console.log(`Next: ${payload.nextAction}`);
+}
+
 export async function runStandaloneCommand(command, argv = [], options = {}) {
 	const parsed = parseStandaloneArgs(argv);
 	if (command === "diag") {
@@ -517,6 +660,9 @@ export async function runStandaloneCommand(command, argv = [], options = {}) {
 	}
 	if (command === "warm") {
 		return runWarmCommand(parsed, options);
+	}
+	if (command === "limits") {
+		return runLimitsCommand(parsed, options);
 	}
 	const { env = process.env } = options;
 	const storagePath = getStandaloneStoragePath(parsed, env);
@@ -541,8 +687,6 @@ export async function runStandaloneCommand(command, argv = [], options = {}) {
 		payload.deep = parsed.deep;
 		payload.fixApplied = parsed.fix ? false : undefined;
 		payload.nextAction = totalAccounts > 0 ? "Run oc-codex-multi-auth health --json for scriptable checks." : "Run opencode auth login.";
-	} else if (command === "limits") {
-		payload.rateLimits = accounts.map((account) => ({ index: account.index, rateLimitResetTimes: account.rateLimitResetTimes }));
 	} else if (command === "health") {
 		payload.healthyCount = accounts.filter((account) => account.enabled && account.hasRefreshToken).length;
 		payload.unhealthyCount = accounts.filter((account) => !account.enabled || !account.hasRefreshToken).length;
