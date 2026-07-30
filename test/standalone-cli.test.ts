@@ -308,13 +308,46 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("limits: --tag matches a workspace tagged on a deduplicated-away record", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		// Both records are the same workspace (same accountId), so dedupe keeps
+		// only the later one — but the tag lives on the earlier record.
+		await writeAccounts(tempHome, [
+			freshAccount({ email: "old@example.com", accountTags: ["work"] }),
+			freshAccount({ email: "new@example.com", refreshToken: "rt-newer" }),
+		]);
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => usagePayload,
+			text: async () => JSON.stringify(usagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits", "--tag", "work", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.accounts).toHaveLength(1);
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+	});
+
 	it("limits: redacts token material leaked by a failing refresh", async () => {
 		vi.resetModules();
 		tempHome = await createTempHome();
-		await writeAccounts(tempHome, [freshAccount()]);
+		// Expired, so ensureCodexUsageAccessToken actually performs the OAuth
+		// refresh — a future expiry would skip it and only exercise /wham/usage.
+		await writeAccounts(tempHome, [freshAccount({ expiresAt: Date.now() - 60_000 })]);
 		vi.spyOn(globalThis, "fetch").mockResolvedValue({
 			ok: false,
 			status: 401,
+			json: async () => ({
+				error: "invalid_grant",
+				refresh_token: "rt-super-secret-value",
+			}),
 			text: async () =>
 				'{"error":"invalid_grant","refresh_token":"rt-super-secret-value"}',
 		} as unknown as Response);
