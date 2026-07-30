@@ -418,14 +418,14 @@ async function loadWarmRuntime(env) {
 }
 
 async function loadLimitsRuntime(env) {
-	const [storageMod, usageMod, shutdownMod] = await loadDistModules(
-		["storage.js", "codex-usage.js", "shutdown.js"],
+	const [storageMod, usageMod, shutdownMod, loggerMod] = await loadDistModules(
+		["storage.js", "codex-usage.js", "shutdown.js", "logger.js"],
 		"limits",
 	);
 	// Fetching usage can refresh (and therefore persist) a token, so the same
 	// process-owns-termination rule as `warm` applies.
 	shutdownMod.setShutdownOwnsProcess(true);
-	return { storageMod, usageMod, shutdownMod };
+	return { storageMod, usageMod, shutdownMod, loggerMod };
 }
 
 export async function runWarmCommand(parsed, options = {}) {
@@ -547,7 +547,7 @@ export async function runLimitsCommand(parsed, options = {}) {
 		return { exitCode: 1, action: "limits", storagePath };
 	}
 
-	const { storageMod, usageMod } = runtime;
+	const { storageMod, usageMod, loggerMod } = runtime;
 	// Point dist storage at the resolved accounts file so a refreshed token is
 	// persisted to the SAME file the rest of the toolchain reads.
 	storageMod.setStoragePathDirect(storagePath);
@@ -570,12 +570,26 @@ export async function runLimitsCommand(parsed, options = {}) {
 	// Same workspace dedupe the codex-limits tool applies, so two entries for one
 	// workspace are not billed and printed twice.
 	const indices = usageMod.deduplicateUsageAccountIndices(storage);
+	// `--tag` must gate which accounts are contacted at all, not just which are
+	// printed: an untagged account would otherwise be billed a usage fetch and
+	// could have its refreshed credentials persisted.
+	const normalizedTag =
+		typeof parsed.tag === "string" ? parsed.tag.trim().toLowerCase() : "";
 	const results = [];
 	let failedCount = 0;
 
 	for (const index of indices) {
 		const account = accounts[index];
 		if (!account) continue;
+		if (
+			normalizedTag &&
+			!(
+				Array.isArray(account.accountTags) &&
+				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)
+			)
+		) {
+			continue;
+		}
 		const entry = {
 			index,
 			label: account.accountLabel ?? `Account ${index + 1}`,
@@ -599,7 +613,11 @@ export async function runLimitsCommand(parsed, options = {}) {
 			entry.credits = usage.credits;
 			entry.limits = usage.limits;
 		} catch (error) {
-			entry.error = formatErrorForLog(error).slice(0, 160);
+			// `ensureCodexUsageAccessToken` can surface a raw OAuth refresh
+			// response, so the message is redacted through the logger's token
+			// patterns before it reaches stdout, JSON output, or CI logs.
+			// Truncation alone does not protect bearer/JWT/refresh-token material.
+			entry.error = loggerMod.maskString(formatErrorForLog(error)).slice(0, 160);
 			failedCount += 1;
 		}
 		results.push(entry);

@@ -11,7 +11,10 @@ vi.mock("../lib/prompts/codex.js", async (importOriginal) => {
 import {
 	buildWarmRequestBody,
 	warmAccountWindow,
+	WARM_ATTEMPT_HARD_CEILING,
 } from "../lib/accounts/warm-request.js";
+import { DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN } from "../lib/request/fetch-helpers.js";
+import { getReasoningConfig } from "../lib/request/request-transformer.js";
 import { CODEX_BASE_URL } from "../lib/constants.js";
 
 function fakeResponse(status: number, bodyText = ""): Response {
@@ -53,6 +56,50 @@ describe("buildWarmRequestBody (#182)", () => {
 	it("clamps effort to 'low' for a model that rejects 'none' (#210)", async () => {
 		const body = await buildWarmRequestBody("gpt-5.6-sol");
 		expect(body.reasoning).toMatchObject({ effort: "low" });
+	});
+
+	it("derives its effort from the transformer's canonical clamp, not a local copy", async () => {
+		for (const model of [
+			"gpt-5.5",
+			"gpt-5.4",
+			"gpt-5.4-mini",
+			"gpt-5.4-nano",
+			"gpt-5.6-sol",
+			"gpt-5.4-pro",
+			"gpt-5-codex",
+		]) {
+			const body = await buildWarmRequestBody(model);
+			expect(body.reasoning).toEqual(
+				getReasoningConfig(model, {
+					reasoningEffort: "none",
+					reasoningSummary: "auto",
+				}),
+			);
+		}
+	});
+});
+
+describe("warm fallback chain invariants (#210)", () => {
+	it("the attempt budget covers every model reachable from the warm entry point", () => {
+		const reachable = new Set<string>(["gpt-5.5"]);
+		const queue = ["gpt-5.5"];
+		while (queue.length > 0) {
+			const current = queue.shift() as string;
+			for (const target of DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[current] ?? []) {
+				if (reachable.has(target)) continue;
+				reachable.add(target);
+				queue.push(target);
+			}
+		}
+		// If this fails the default chain grew a tail past the warm attempt
+		// budget, so warming would stop before reaching an entitled model.
+		expect(reachable.size).toBeLessThanOrEqual(WARM_ATTEMPT_HARD_CEILING);
+		expect([...reachable]).toEqual([
+			"gpt-5.5",
+			"gpt-5.4",
+			"gpt-5.4-mini",
+			"gpt-5.4-nano",
+		]);
 	});
 });
 

@@ -18,7 +18,9 @@ import { CODEX_BASE_URL } from "../constants.js";
 import {
 	createCodexHeaders,
 	resolveUnsupportedCodexFallbackModel,
+	DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN,
 } from "../request/fetch-helpers.js";
+import { getReasoningConfig } from "../request/request-transformer.js";
 import { shapeBodyForModel } from "../request/helpers/responses-lite.js";
 import { GPT_55_MODEL_ID } from "../request/helpers/model-map.js";
 import { sanitizeCodexApiErrorMessage } from "../codex-usage.js";
@@ -41,31 +43,42 @@ const log = createLogger("warm-request");
 const WARM_MODEL: string = GPT_55_MODEL_ID;
 
 /**
- * Hard ceiling on how many models one warm ping will try (#210).
+ * Absolute ceiling on warm attempts, independent of the chain's shape.
  *
- * `warm.ts` fans out across every enabled account concurrently, so an
- * unbounded walk down the fallback chain would multiply the batch's request
- * count by the chain length on accounts that are entitled to none of it. Four
- * covers the deepest chain a warm ping can enter
- * (`gpt-5.5 -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`).
+ * `warm.ts` fans out across every enabled account concurrently, so attempts
+ * multiply by the account count. This bounds the batch even if the shared
+ * chain later grows a long tail.
  */
-const WARM_MAX_MODEL_ATTEMPTS = 4;
+export const WARM_ATTEMPT_HARD_CEILING = 6;
+
+let cachedMaxModelAttempts: number | undefined;
 
 /**
- * Models that accept `reasoning.effort: "none"`, mirroring the `supportsNone`
- * rule in `request-transformer.ts`. The warm body is built outside the request
- * transformer, so it has to apply the same clamp itself: sending "none" to a
- * model that rejects it is its own 400, which would turn a fallback hop into a
- * fresh failure. Anything not listed here gets the universally-accepted "low".
+ * How many models one warm ping will try before giving up (#210).
+ *
+ * Derived from the shared fallback chain rather than hardcoded, so extending
+ * `DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN` cannot silently leave warming
+ * unable to reach an entitled model at the end of the chain.
+ *
+ * Resolved on first call, not at module scope: `fetch-helpers` and this module
+ * are mutually reachable through `codex-warm.ts`, so the chain is still
+ * uninitialized while this module's top level runs.
  */
-const WARM_EFFORT_NONE_MODELS: ReadonlySet<string> = new Set([
-	GPT_55_MODEL_ID,
-	"gpt-5.4",
-	"gpt-5.4-mini",
-	"gpt-5.4-nano",
-	"gpt-5.2",
-	"gpt-5.1",
-]);
+function getWarmMaxModelAttempts(): number {
+	if (cachedMaxModelAttempts !== undefined) return cachedMaxModelAttempts;
+	const seen = new Set<string>([WARM_MODEL]);
+	const queue: string[] = [WARM_MODEL];
+	while (queue.length > 0) {
+		const current = queue.shift() as string;
+		for (const target of DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[current] ?? []) {
+			if (seen.has(target)) continue;
+			seen.add(target);
+			queue.push(target);
+		}
+	}
+	cachedMaxModelAttempts = Math.min(seen.size, WARM_ATTEMPT_HARD_CEILING);
+	return cachedMaxModelAttempts;
+}
 
 /** Hard ceiling on a warm request so a hung upstream cannot wedge the batch. */
 const WARM_TIMEOUT_MS = 15_000;
@@ -113,10 +126,15 @@ export async function buildWarmRequestBody(model = WARM_MODEL): Promise<RequestB
 				content: [{ type: "input_text", text: "warm ping" }],
 			},
 		],
-		reasoning: {
-			effort: WARM_EFFORT_NONE_MODELS.has(model) ? "none" : "low",
-			summary: "auto",
-		},
+		// The warm body is built outside the request transformer, so it asks the
+		// transformer's canonical clamp what "none" resolves to on this model
+		// rather than keeping its own copy of the rule. Sending "none" to a model
+		// that rejects it is its own 400 — that would turn a fallback hop into a
+		// fresh failure.
+		reasoning: getReasoningConfig(model, {
+			reasoningEffort: "none",
+			reasoningSummary: "auto",
+		}),
 		text: { verbosity: "low" },
 	};
 }
@@ -232,7 +250,7 @@ async function attemptWarm(
  *
  * A 400 carrying `model_not_supported_with_chatgpt_account` is retried down the
  * shared unsupported-model fallback chain (bounded by
- * {@link WARM_MAX_MODEL_ATTEMPTS}) before the account is failed, mirroring the
+ * {@link getWarmMaxModelAttempts}) before the account is failed, mirroring the
  * live request path.
  */
 export async function warmAccountWindow(
@@ -242,7 +260,8 @@ export async function warmAccountWindow(
 	let model = WARM_MODEL;
 	let lastUnsupported: { kind: "unsupported-model"; errorBody: unknown; message: string } | undefined;
 
-	for (let i = 0; i < WARM_MAX_MODEL_ATTEMPTS; i += 1) {
+	const maxAttempts = getWarmMaxModelAttempts();
+	for (let i = 0; i < maxAttempts; i += 1) {
 		const attempt = await attemptWarm(params, model);
 		if (attempt.kind === "opened") return { status: "opened" };
 		if (attempt.kind === "exhausted") {

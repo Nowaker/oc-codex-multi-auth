@@ -276,6 +276,59 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		expect(printed).toContain("Weekly limit: 58% left");
 	});
 
+	it("limits: --tag only contacts matching accounts", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [
+			freshAccount({ email: "tagged@example.com", accountTags: ["work"] }),
+			freshAccount({
+				email: "untagged@example.com",
+				accountId: "acct_other",
+				refreshToken: "rt-other",
+			}),
+		]);
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => usagePayload,
+			text: async () => JSON.stringify(usagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits", "--tag", "work", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		// The untagged account must not be fetched: that would bill it a usage
+		// request and could persist refreshed credentials for it.
+		expect(output.accounts).toHaveLength(1);
+		expect(output.accounts[0].index).toBe(0);
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("limits: redacts token material leaked by a failing refresh", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: false,
+			status: 401,
+			text: async () =>
+				'{"error":"invalid_grant","refresh_token":"rt-super-secret-value"}',
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.accounts[0].error).not.toContain("rt-super-secret-value");
+	});
+
 	it("limits: an account whose usage fetch fails is reported and exits 1 (#209)", async () => {
 		vi.resetModules();
 		tempHome = await createTempHome();
