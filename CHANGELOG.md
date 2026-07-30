@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.11.1] - 2026-07-30
+
+### Fixed
+- **`warm` failed every account with `HTTP 400`**, from two independent causes. The warm ping was pinned to `gpt-5.4`, an id no longer present in the installer's shipped model catalog and listed in the installer's stale managed keys, so it is actively removed from user config — accounts without that entitlement were being pinged with a model they could not use. The entry point is now `gpt-5.5`, the generally-available anchor that every GPT-5.6 preview tier already degrades toward in the shared fallback chain. Separately, `warmAccountWindow` classified only `429` and dead-ended every other status, so an entitlement `400` could not recover the way live chat traffic does: a `model_not_supported_with_chatgpt_account` response now walks the shared unsupported-model chain (`gpt-5.5` → `gpt-5.4` → `gpt-5.4-mini` → `gpt-5.4-nano`), bounded by an attempt budget derived from the chain itself rather than hardcoded, since `warm` fans out across accounts concurrently. Because the warm body is built outside the request transformer, it now asks the transformer's canonical clamp what `"none"` resolves to on the target model instead of keeping a private copy of that rule — a fallback hop onto a model that rejects `"none"` would otherwise be a fresh `400`. Warm failures now report the sanitized upstream response body instead of a bare status code. Reported by @Grelo4ka. (#210)
+- **`limits` printed the account list and no limits at all.** The command computed rate-limit state into its payload but the printer never rendered that field, so its output was byte-identical to `list`. Rendering it alone would not have been sufficient: the persisted `rateLimitResetTimes` stays empty until an account has already been rate-limited, and it holds reset timestamps rather than the weekly and 5-hour usage the command advertises. `limits` now reads the model-independent `/wham/usage` endpoint through the same compiled runtime the in-conversation `codex-limits` tool uses, with matching workspace deduplication, window titles, and summaries, and reports per-account failures inline with a non-zero exit. This makes `limits` a network call that can refresh a token where it was previously a purely local read; `rateLimitResetTimes` is retained in the `--json` payload for existing consumers, and `--tag` now gates which accounts are contacted rather than only which are displayed, so an untagged account is neither billed a usage fetch nor has its credentials refreshed. Reported by @Grelo4ka. (#209)
+
+### Security
+- **Per-account `limits` errors are redacted before output.** The error path formatted messages with a helper that performs no redaction, and `ensureCodexUsageAccessToken` can surface a raw OAuth refresh response body — truncation alone does not protect bearer, JWT, API-key, or refresh-token material from stdout, `--json` output, terminal history, or CI logs. Messages now pass through the logger's token patterns.
+
+### Internal
+- CI runs `npm run build` before `npm test`. `dist/` is gitignored and the standalone CLI tests load the compiled warm/limits runtime out of it, so the previous step order could not have passed on a clean checkout; removing `dist/` fails 12 of the 14 standalone tests, confirming the ordering was load-bearing rather than cosmetic.
+
 ## [6.11.0] - 2026-07-28
 
 ### Added
