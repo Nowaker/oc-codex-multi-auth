@@ -17,6 +17,7 @@
 import { CODEX_BASE_URL } from "../constants.js";
 import {
 	createCodexHeaders,
+	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
 	DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN,
 } from "../request/fetch-helpers.js";
@@ -37,8 +38,13 @@ const log = createLogger("warm-request");
  * GPT-5.5 is the generally-available anchor the shared fallback chain degrades
  * *toward* (every 5.6 preview tier lands on it), and it ships in the installer's
  * model catalog. The previous entry point, `gpt-5.4`, was dropped from that
- * catalog and is removed from user config as a stale key, so accounts without
- * it got a hard `HTTP 400` on every warm ping (#210).
+ * catalog and is removed from user config as a stale key, so it is the weaker
+ * anchor to start from.
+ *
+ * Note this was *not* the cause of the `HTTP 400` in #210 — that was the missing
+ * request content type, fixed in `attemptWarm`. The error body which would have
+ * shown it was read but discarded, so warming reported a bare `HTTP 400` and the
+ * retired model looked like the likeliest explanation.
  */
 const WARM_MODEL: string = GPT_55_MODEL_ID;
 
@@ -174,6 +180,14 @@ async function attemptWarm(
 		model,
 		organizationId: params.organizationId,
 	});
+	// `createCodexHeaders` never sets a content type: on the live request path it
+	// wraps opencode's own `RequestInit`, which already carries one. Warming
+	// builds its headers from nothing, and `fetch` defaults a string body to
+	// `text/plain;charset=UTF-8`, which the backend rejects with
+	// `400 {"detail":"Unsupported content type"}` before it ever looks at the
+	// model (#210). Set it explicitly, as the other bodied POST caller
+	// (`codex-reset.ts`) already does.
+	headers.set("content-type", "application/json");
 
 	const controller = new AbortController();
 	const timeout = setTimeout(
@@ -228,9 +242,17 @@ async function attemptWarm(
 		// The account is not entitled to `model`. The live request path degrades
 		// down the shared fallback chain here rather than failing (#210); warming
 		// does the same so an entitlement gap does not read as a broken account.
+		//
+		// Only an *entitlement* 400 is retryable. Gate on the same predicate
+		// `resolveUnsupportedCodexFallbackModel` uses, so a transport-level 400
+		// (malformed body, bad content type) is terminal instead of being
+		// relabelled a model problem and burning a retry that cannot help.
 		const message = sanitizeCodexApiErrorMessage(response.status, bodyText);
 		if (response.status === 400) {
-			return { kind: "unsupported-model", errorBody: parseErrorBody(bodyText), message };
+			const errorBody = parseErrorBody(bodyText);
+			if (getUnsupportedCodexModelInfo(errorBody).isUnsupported) {
+				return { kind: "unsupported-model", errorBody, message };
+			}
 		}
 
 		throw new Error(`Warm request failed: ${message}`);
