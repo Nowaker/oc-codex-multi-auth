@@ -229,6 +229,44 @@ describe("warmAccountWindow (#182)", () => {
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 	});
 
+	it("sends content-type: application/json on the warm POST (#210)", async () => {
+		const fetchImpl = vi.fn(async () => fakeResponse(200));
+		await warmAccountWindow({ ...PARAMS, fetchImpl });
+		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		const headers = init.headers as Headers;
+		expect(headers.get("content-type")).toBe("application/json");
+	});
+
+	it("puts a JSON content type on the wire, not fetch's text/plain default (#210)", async () => {
+		const fetchImpl = vi.fn(async () => fakeResponse(200));
+		await warmAccountWindow({ ...PARAMS, fetchImpl });
+		const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+
+		// Asserting on `init.headers` alone cannot catch the original bug: when no
+		// content type is set, `fetch` silently stamps `text/plain;charset=UTF-8`
+		// on a string body and the backend answers
+		// `400 {"detail":"Unsupported content type"}`. Materializing the real
+		// Request pins what actually leaves the process.
+		const wire = new Request(url, { ...init, headers: init.headers });
+		expect(wire.headers.get("content-type")).toBe("application/json");
+		expect(wire.headers.get("content-type")).not.toMatch(/text\/plain/);
+		expect(() => JSON.parse(init.body as string)).not.toThrow();
+	});
+
+	it("fails fast on the backend's 'Unsupported content type' 400 (#210)", async () => {
+		// The exact body reported on #210 after the v6.11.1 fix. It is not an
+		// entitlement error, so warming must surface it as-is rather than sweep
+		// the fallback chain and blame the model.
+		const fetchImpl = vi.fn(async () =>
+			fakeResponse(400, JSON.stringify({ detail: "Unsupported content type" })),
+		);
+
+		await expect(warmAccountWindow({ ...PARAMS, fetchImpl })).rejects.toThrow(
+			/HTTP 400.*Unsupported content type/,
+		);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
+
 	it("redacts bearer tokens leaked in an error body", async () => {
 		const fetchImpl = vi.fn(async () =>
 			fakeResponse(401, "Bearer sk-secret-token-value"),
