@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.11.2] - 2026-07-31
+
+### Fixed
+- **`warm` still failed every account with `HTTP 400`, and the cause was never the model.** The warm ping sent its JSON body without a `content-type` header, so `fetch` applied its default for a string body — `text/plain;charset=UTF-8` — and the backend rejected the request with `{"detail":"Unsupported content type"}` before it ever read the model. This was invisible on the live request path, which wraps OpenCode's own `RequestInit` and therefore inherits a content type; `warmAccountWindow` is the only caller that builds its headers from nothing and sends a body, so it was the only one affected. The header is now set explicitly, matching `codex-reset.ts`, the one other bodied POST built on `createCodexHeaders`. Verified against the live API: the identical request body returns `400 {"detail":"Unsupported content type"}` without the header and `200` with it, on an account fully entitled to `gpt-5.5` — confirming this was never account-, plan-, or entitlement-specific. Reported by @Grelo4ka. (#210)
+- **A warm `400` that was not an entitlement error was reported as a model problem.** The `400` branch classified every response as `unsupported-model`, so a transport-level failure entered the entitlement fallback path and surfaced as though the account lacked the model. It now gates on `getUnsupportedCodexModelInfo`, the same predicate `resolveUnsupportedCodexFallbackModel` already applies internally, so entitlement `400`s keep the 6.11.1 fallback behavior unchanged and everything else fails immediately carrying its real upstream message. (#210)
+
+### Internal
+- Warm request tests now pin the outgoing content type by materializing a real `Request` from the captured init. Asserting on the header object alone could not catch the defect, because the `text/plain` default is applied by `fetch` at send time rather than by the header builder — the suite passed against a mock while the shipped request was rejected. The new assertion fails against 6.11.1 with `expected 'text/plain;charset=UTF-8' to be 'application/json'`. The 6.11.1 note attributing #210 to the retired `gpt-5.4` entry point was corrected in-code; that change was still worth keeping on its own merits, but it was not what #210 was.
+
 ## [6.11.1] - 2026-07-30
 
 ### Fixed
