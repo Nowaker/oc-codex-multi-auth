@@ -24,7 +24,7 @@ import {
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "../auth/token-utils.js";
-import { getMissingRequiredOAuthScopes } from "../auth/scopes.js";
+import { getMissingRequiredOAuthScopes, normalizeScope } from "../auth/scopes.js";
 import { getHealthTracker, getTokenTracker } from "../rotation.js";
 import { remapRateLimitBackoffAfterRemoval } from "../request/rate-limit-backoff.js";
 import { logWarn } from "../logger.js";
@@ -139,8 +139,7 @@ function getEnforceableMissingOAuthScopesAcross(
 }
 
 function getAuthScope(auth: OAuthAuthDetails | undefined): string | undefined {
-	const scope = auth?.scope;
-	return typeof scope === "string" && scope.trim() ? scope : undefined;
+	return normalizeScope(auth?.scope);
 }
 
 export class AccountState {
@@ -189,7 +188,9 @@ export class AccountState {
 						return null;
 					}
 
-					const accountOAuthScope = account.oauthScope;
+					// Canonicalize at the load boundary so a legacy blank on disk is
+					// carried as absent rather than as an explicit empty grant.
+					const accountOAuthScope = normalizeScope(account.oauthScope);
 
 					const matchesFallback =
 						!!authFallback &&
