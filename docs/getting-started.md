@@ -104,7 +104,7 @@ There is **no** registered “Manual API Key” login path for this plugin. The 
 
 The browser-based OAuth flow uses the same local callback port as Codex CLI. The authorize redirect is `http://localhost:1455/auth/callback`, while the local callback server binds `http://127.0.0.1:1455/auth/callback` and `[::1]:1455` for dual-stack localhost redirects. Authorization and token exchange go to `auth.openai.com`.
 
-If you authenticated before the connector scopes were added, re-run `opencode auth login`. Current account records persist the granted OAuth scope and accounts missing `api.connectors.read` / `api.connectors.invoke` are marked for re-auth instead of being silently reused.
+Account records persist the granted OAuth scope. The required scopes are `openid`, `profile`, `email`, and `offline_access`; an account whose recorded scope is explicitly missing one of them is marked for re-auth instead of being silently reused. An account whose scope is simply unrecorded is left enabled — absent metadata is not treated as a failed grant — and an account previously marked for re-auth is restored automatically once a complete scope is known.
 
 ### Remote or Headless Login
 

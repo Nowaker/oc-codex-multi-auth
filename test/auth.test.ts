@@ -284,6 +284,32 @@ describe('Auth Module', () => {
 			}
 		});
 
+		// Issue #213: `??` let a blank scope through, and that blank value then
+		// overwrote known-good scope metadata via `result.scope ?? existing`.
+		it('falls back to the requested scope when the response scope is blank', async () => {
+			vi.spyOn(Date, 'now').mockReturnValue(1_000);
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = vi.fn(async () =>
+				new Response(JSON.stringify({
+					access_token: 'access-123',
+					refresh_token: 'refresh-123',
+					expires_in: 3600,
+					scope: '   ',
+				}), { status: 200 }),
+			) as never;
+
+			try {
+				const result = await exchangeAuthorizationCode('auth-code', 'verifier-123');
+				expect(result.type).toBe('success');
+				if (result.type === 'success') {
+					expect(result.scope).toBe(SCOPE);
+				}
+			} finally {
+				globalThis.fetch = originalFetch;
+				vi.restoreAllMocks();
+			}
+		});
+
 		it('returns failed for HTTP error response', async () => {
 			const originalFetch = globalThis.fetch;
 			globalThis.fetch = vi.fn(async () =>

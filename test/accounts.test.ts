@@ -20,6 +20,7 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
   return {
     ...actual,
     saveAccounts,
+    loadAccounts: vi.fn().mockResolvedValue(null),
     // Persistence saves through the transaction; route its persist callback
     // to the saveAccounts mock (current=null: no on-disk state to merge).
     withAccountStorageTransaction: vi.fn(
@@ -292,6 +293,300 @@ describe("AccountManager", () => {
 
 		expect(account?.enabled).toBe(true);
 		expect(account?.accountNote).toBeUndefined();
+	});
+
+	// Issue #213: the host credential legitimately carries no `scope` — the
+	// plugin's own host backfill and `refreshAccessToken` both omit it when the
+	// token response does. Absent metadata is "unknown", not "nothing granted",
+	// so it must not disable the account the way an explicit partial grant does.
+	it("keeps the fallback account enabled when OAuth scope metadata is missing", () => {
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+		};
+
+		const manager = new AccountManager(auth, null);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
+	it("keeps an unmatched fallback account enabled when OAuth scope metadata is missing", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "stored-token",
+					oauthScope: SCOPE,
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "unmatched-token",
+			expires: now + 60_000,
+		};
+
+		const manager = new AccountManager(auth, stored);
+		const accounts = manager.getAccountsSnapshot();
+
+		expect(accounts).toHaveLength(2);
+		expect(accounts[1]?.enabled).toBe(true);
+		expect(accounts[1]?.accountNote).toBeUndefined();
+	});
+
+	it("still disables a fallback account that explicitly lacks a required scope", () => {
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			scope: "openid profile",
+		};
+
+		const manager = new AccountManager(auth, null);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(false);
+		expect(account?.accountNote).toContain("email, offline_access");
+	});
+
+	it("self-heals an account disabled by the scope check once a full scope is known", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: SCOPE,
+					enabled: false,
+					accountNote:
+						"Re-auth required for missing OAuth scope(s): openid, profile, email, offline_access.",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const manager = new AccountManager(undefined, stored);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
+	// The pool record and the matching host credential describe one grant. A
+	// partial scope on either side alone must not strand the account.
+	it("keeps the account enabled when the stored scope is complete but the fallback is partial", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: SCOPE,
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: now + 60_000,
+			scope: "openid profile",
+		};
+
+		const manager = new AccountManager(auth, stored);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
+	it("keeps the account enabled when the fallback scope is complete but the stored one is partial", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: "openid profile",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: now + 60_000,
+			scope: SCOPE,
+		};
+
+		const manager = new AccountManager(auth, stored);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
+	it("disables the account when both scope sources are partial", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: "openid",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: now + 60_000,
+			scope: "openid profile",
+		};
+
+		const manager = new AccountManager(auth, stored);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(false);
+		// Reports the best evidence held — the smaller missing set.
+		expect(account?.accountNote).toBe(
+			"Re-auth required for missing OAuth scope(s): email, offline_access.",
+		);
+	});
+
+	it("preserves operator-authored note text when stripping a re-auth note", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: SCOPE,
+					enabled: false,
+					accountNote:
+						"work laptop Re-auth required for missing OAuth scope(s): openid, profile, email, offline_access.",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const manager = new AccountManager(undefined, stored);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBe("work laptop");
+	});
+
+	it("leaves an operator-disabled account without a re-auth note disabled", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: SCOPE,
+					enabled: false,
+					accountNote: "paused by hand",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const manager = new AccountManager(undefined, stored);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(false);
+		expect(account?.accountNote).toBe("paused by hand");
+	});
+
+	// The repair is applied in memory by initializeFromStorage; without a flush
+	// the TUI and CLI keep reading the stale disabled state and re-auth note.
+	it("persists the scope repair so storage stops reporting the account disabled", async () => {
+		const storage = await import("../lib/storage.js");
+		const loadAccounts = vi.mocked(storage.loadAccounts);
+		const saveAccounts = vi.mocked(storage.saveAccounts);
+		const now = Date.now();
+
+		loadAccounts.mockResolvedValueOnce({
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: SCOPE,
+					enabled: false,
+					accountNote:
+						"Re-auth required for missing OAuth scope(s): openid, profile, email, offline_access.",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		});
+		saveAccounts.mockClear();
+
+		await AccountManager.loadFromDisk();
+
+		expect(saveAccounts).toHaveBeenCalledTimes(1);
+		const persisted = saveAccounts.mock.calls[0]?.[0] as {
+			accounts: { enabled?: boolean; accountNote?: string }[];
+		};
+		expect(persisted.accounts[0]?.enabled).toBeUndefined();
+		expect(persisted.accounts[0]?.accountNote).toBeUndefined();
+	});
+
+	it("does not write on load when there is no scope repair to persist", async () => {
+		const storage = await import("../lib/storage.js");
+		const loadAccounts = vi.mocked(storage.loadAccounts);
+		const saveAccounts = vi.mocked(storage.saveAccounts);
+		const now = Date.now();
+
+		loadAccounts.mockResolvedValueOnce({
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: SCOPE,
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		});
+		saveAccounts.mockClear();
+
+		await AccountManager.loadFromDisk();
+
+		expect(saveAccounts).not.toHaveBeenCalled();
 	});
 
 	it("rotates when the active account is rate-limited", () => {

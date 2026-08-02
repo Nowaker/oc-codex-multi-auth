@@ -91,6 +91,76 @@ describe("login-runner persistAccountPool", () => {
 		expect(second?.accounts[0]?.refreshToken).toBe("refresh-new");
 	});
 
+	// Issue #213: a blank scope reaching storage is indistinguishable from
+	// "granted nothing" at load time, and would disable the account.
+	it("never persists a blank oauthScope for a fresh login", async () => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: jwtWithEmail("user@example.com"),
+					refresh: "refresh-blank-scope",
+					expires: Date.now() + 60_000,
+					scope: "   ",
+				},
+			],
+			false,
+		);
+
+		const loaded = await loadAccounts();
+		expect(loaded?.accounts).toHaveLength(1);
+		expect(loaded?.accounts[0]?.oauthScope).toBeUndefined();
+	});
+
+	it("does not let a blank scope overwrite a stored one on re-login", async () => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: jwtWithEmail("user@example.com"),
+					refresh: "refresh-scoped",
+					expires: Date.now() + 60_000,
+					scope: "openid profile email offline_access",
+				},
+			],
+			false,
+		);
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: jwtWithEmail("user@example.com"),
+					refresh: "refresh-scoped-2",
+					expires: Date.now() + 60_000,
+					scope: "",
+				},
+			],
+			false,
+		);
+
+		const loaded = await loadAccounts();
+		expect(loaded?.accounts).toHaveLength(1);
+		expect(loaded?.accounts[0]?.oauthScope).toBe("openid profile email offline_access");
+	});
+
+	it("normalizes a padded scope before persisting it", async () => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: jwtWithEmail("user@example.com"),
+					refresh: "refresh-padded",
+					expires: Date.now() + 60_000,
+					scope: "  openid   profile\temail offline_access  ",
+				},
+			],
+			false,
+		);
+
+		const loaded = await loadAccounts();
+		expect(loaded?.accounts[0]?.oauthScope).toBe("openid profile email offline_access");
+	});
+
 	it("keeps two genuinely distinct emails as separate accounts (control)", async () => {
 		await persistAccountPool(
 			[{ type: "success", access: jwtWithEmail("user@example.com"), refresh: "r-a", expires: Date.now() + 60_000 }],

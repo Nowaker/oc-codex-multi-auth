@@ -693,6 +693,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			access?: unknown;
 			refresh?: unknown;
 			expires?: unknown;
+			scope?: unknown;
 		};
 		type HostAuthStore = Record<string, HostAuthEntry>;
 
@@ -757,6 +758,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			access: candidate.accessToken,
 			refresh: candidate.refreshToken,
 			expires: candidate.expiresAt,
+			// Carry the pool's scope across so the restored host credential is not
+			// scope-less on the next load; a scope-less fallback used to be read as
+			// "no scopes granted" (issue #213).
+			...(candidate.oauthScope ? { scope: candidate.oauthScope } : {}),
 		};
 
 		try {

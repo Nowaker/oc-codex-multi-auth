@@ -121,7 +121,10 @@ export class AccountPersistence {
 			mine.refreshToken = theirs.refreshToken;
 			mine.accessToken = theirs.accessToken;
 			mine.expiresAt = theirs.expiresAt;
-			mine.oauthScope = theirs.oauthScope ?? mine.oauthScope;
+			// Truthy, not `??`: a legacy record can hold an empty-string scope, and
+			// `??` would let it overwrite a good in-memory value. Matches the live
+			// mirror below (issue #213).
+			mine.oauthScope = theirs.oauthScope || mine.oauthScope;
 			mine.tokenRotatedAt = theirs.tokenRotatedAt;
 
 			// Mirror into live state so this process stops refreshing with the
