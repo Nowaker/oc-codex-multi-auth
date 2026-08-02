@@ -589,6 +589,61 @@ describe("AccountManager", () => {
 		expect(saveAccounts).not.toHaveBeenCalled();
 	});
 
+	// The stale sentence contradicted the accurate one: a 6.11.2 record says all
+	// four scopes are missing, but once a real partial scope is known only two
+	// are. The exact-match guard did not recognize the differing sentence.
+	it("replaces a stale re-auth note instead of appending a second one", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: "openid profile",
+					enabled: false,
+					accountNote:
+						"Re-auth required for missing OAuth scope(s): openid, profile, email, offline_access.",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const manager = new AccountManager(undefined, stored);
+		const note = manager.getAccountsSnapshot()[0]?.accountNote;
+
+		expect(note).toBe(
+			"Re-auth required for missing OAuth scope(s): email, offline_access.",
+		);
+		expect(note?.match(/Re-auth required/g)).toHaveLength(1);
+	});
+
+	it("keeps operator text when replacing a stale re-auth note", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: "openid profile",
+					enabled: false,
+					accountNote:
+						"work laptop Re-auth required for missing OAuth scope(s): openid, profile, email, offline_access.",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const manager = new AccountManager(undefined, stored);
+
+		expect(manager.getAccountsSnapshot()[0]?.accountNote).toBe(
+			"work laptop Re-auth required for missing OAuth scope(s): email, offline_access.",
+		);
+	});
+
 	it("rotates when the active account is rate-limited", () => {
     const now = Date.now();
     const stored = {
