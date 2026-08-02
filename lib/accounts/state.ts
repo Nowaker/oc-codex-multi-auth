@@ -74,11 +74,20 @@ function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	) as Record<ModelFamily, number>;
 }
 
+/**
+ * Replaces any re-auth note already on the record with one describing the
+ * currently missing scopes, keeping operator-authored text intact.
+ *
+ * Replace, not append: the previous exact-match guard only recognized an
+ * identical sentence, so a record whose missing set had changed since it was
+ * written — the whole 6.11.2 population, once a real scope became known —
+ * ended up carrying both sentences, the stale one first and contradicting the
+ * accurate one.
+ */
 function appendReauthNote(accountNote: string | undefined, missingScopes: string[]): string {
 	const suffix = `Re-auth required for missing OAuth scope(s): ${missingScopes.join(", ")}.`;
-	if (!accountNote) return suffix;
-	if (accountNote.includes(suffix)) return accountNote;
-	return `${accountNote} ${suffix}`;
+	const preserved = stripReauthNote(accountNote);
+	return preserved ? `${preserved} ${suffix}` : suffix;
 }
 
 const MISSING_SCOPE_NOTE_MARKER = "Re-auth required for missing OAuth scope(s):";
