@@ -1609,7 +1609,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				});
 				try {
 					if (!accountManagerPromise) {
-						accountManagerPromise = AccountManager.loadFromDisk(authFallback);
+						// Evict the cached promise if the load rejects. Without this a
+						// transient read failure — a momentary Windows file lock, a
+						// partially-written save — parks a rejected promise here and
+						// every later request re-awaits it, so the plugin keeps failing
+						// long after the cause is gone and only an opencode restart
+						// clears it. The guard keeps a concurrent reload's newer promise
+						// from being dropped. The current call still rejects; only the
+						// next one gets a fresh attempt.
+						const pending = AccountManager.loadFromDisk(authFallback);
+						accountManagerPromise = pending;
+						void pending.catch(() => {
+							if (accountManagerPromise === pending) {
+								accountManagerPromise = null;
+							}
+						});
 					}
 					let accountManager = await accountManagerPromise;
 					cachedAccountManager = accountManager;

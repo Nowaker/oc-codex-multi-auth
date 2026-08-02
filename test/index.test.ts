@@ -715,6 +715,44 @@ describe("OpenAIOAuthPlugin", () => {
 	});
 
 	describe("auth loader", () => {
+		// The loader caches `accountManagerPromise` before awaiting it. A rejected
+		// load therefore parks a rejected promise in that cache, and nothing
+		// clears it on failure — so a transient read error (a momentary Windows
+		// file lock, a partially-written save) keeps failing every later request
+		// until opencode is restarted, long after the cause is gone.
+		it("recovers on the next call when a load fails transiently", async () => {
+			const accountsModule = await import("../lib/accounts.js");
+			const healthyManager = {
+				getAccountCount: () => 1,
+				getSelectionExplainability: () => null,
+				getCurrentOrNextForFamilyHybrid: () => null,
+				getAccountForStrategy: () => null,
+				getMinWaitTimeForFamily: () => 0,
+				hasRefreshToken: () => true,
+				saveToDisk: async () => {},
+			} as unknown as InstanceType<typeof accountsModule.AccountManager>;
+
+			const spy = vi
+				.spyOn(accountsModule.AccountManager, "loadFromDisk")
+				.mockRejectedValueOnce(new Error("EBUSY: storage temporarily locked"))
+				.mockResolvedValue(healthyManager);
+
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			await expect(plugin.auth.loader(getAuth, {})).rejects.toThrow();
+
+			// The transient cause is gone; the next load must be attempted again.
+			const result = await plugin.auth.loader(getAuth, {});
+			expect(result.fetch).toBeDefined();
+			expect(spy).toHaveBeenCalledTimes(2);
+		});
+
 		it("returns SDK config for non-oauth auth when stored accounts exist", async () => {
 			const getAuth = async () => ({ type: "apikey" as const, key: "test" });
 			const result = await plugin.auth.loader(getAuth, {});
