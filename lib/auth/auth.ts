@@ -115,7 +115,11 @@ export async function exchangeAuthorizationCode(
 		refresh: json.refresh_token ?? "",
 		expires: Date.now() + json.expires_in * 1000,
 		idToken: json.id_token,
-		scope: json.scope ?? SCOPE,
+		// A blank `scope` must fall back to what we actually requested, not be
+		// stored verbatim: `??` lets an empty string through, and that empty
+		// string then overwrites known-good scope metadata downstream
+		// (`result.scope ?? existing.oauthScope`). See issue #213.
+		scope: json.scope?.trim() ? json.scope : SCOPE,
 		multiAccount: true,
 	};
 }

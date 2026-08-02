@@ -294,6 +294,96 @@ describe("AccountManager", () => {
 		expect(account?.accountNote).toBeUndefined();
 	});
 
+	// Issue #213: the host credential legitimately carries no `scope` — the
+	// plugin's own host backfill and `refreshAccessToken` both omit it when the
+	// token response does. Absent metadata is "unknown", not "nothing granted",
+	// so it must not disable the account the way an explicit partial grant does.
+	it("keeps the fallback account enabled when OAuth scope metadata is missing", () => {
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+		};
+
+		const manager = new AccountManager(auth, null);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
+	it("keeps an unmatched fallback account enabled when OAuth scope metadata is missing", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "stored-token",
+					oauthScope: SCOPE,
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "unmatched-token",
+			expires: now + 60_000,
+		};
+
+		const manager = new AccountManager(auth, stored);
+		const accounts = manager.getAccountsSnapshot();
+
+		expect(accounts).toHaveLength(2);
+		expect(accounts[1]?.enabled).toBe(true);
+		expect(accounts[1]?.accountNote).toBeUndefined();
+	});
+
+	it("still disables a fallback account that explicitly lacks a required scope", () => {
+		const auth: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			scope: "openid profile",
+		};
+
+		const manager = new AccountManager(auth, null);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(false);
+		expect(account?.accountNote).toContain("email, offline_access");
+	});
+
+	it("self-heals an account disabled by the scope check once a full scope is known", () => {
+		const now = Date.now();
+		const stored = {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: SCOPE,
+					enabled: false,
+					accountNote:
+						"Re-auth required for missing OAuth scope(s): openid, profile, email, offline_access.",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		};
+
+		const manager = new AccountManager(undefined, stored);
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
 	it("rotates when the active account is rate-limited", () => {
     const now = Date.now();
     const stored = {
