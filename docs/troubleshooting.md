@@ -164,7 +164,7 @@ Failed to access Codex API
    opencode auth login
    ```
 
-   Re-auth is required for accounts created before `api.connectors.read` and `api.connectors.invoke` were requested; stale account records are marked inactive until they are refreshed through login.
+   Re-auth is required for accounts whose recorded OAuth scope is explicitly missing one of `openid`, `profile`, `email`, or `offline_access`; those records are marked inactive until they are refreshed through login. Accounts with no recorded scope stay active, and any account marked inactive by this check is restored automatically once a complete scope is known.
 
 2. **Check auth file exists:**
    ```bash

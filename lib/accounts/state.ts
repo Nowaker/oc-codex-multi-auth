@@ -116,6 +116,28 @@ function getEnforceableMissingOAuthScopes(scope: string | undefined): string[] {
 	return hasExplicitOAuthScope(scope) ? getMissingRequiredOAuthScopes(scope) : [];
 }
 
+/**
+ * Same check across several records of the *same* grant — typically the pool's
+ * stored scope and the host credential's scope. If any known source shows the
+ * required scopes, the account is fine; disabling on the weaker of two sources
+ * would strand an account the other already vouches for. When none satisfies,
+ * the smallest missing set wins so the note reports the best evidence held.
+ */
+function getEnforceableMissingOAuthScopesAcross(
+	scopes: (string | undefined)[],
+): string[] {
+	let fewestMissing: string[] | undefined;
+	for (const scope of scopes) {
+		if (!hasExplicitOAuthScope(scope)) continue;
+		const missing = getMissingRequiredOAuthScopes(scope);
+		if (missing.length === 0) return [];
+		if (!fewestMissing || missing.length < fewestMissing.length) {
+			fewestMissing = missing;
+		}
+	}
+	return fewestMissing ?? [];
+}
+
 function getAuthScope(auth: OAuthAuthDetails | undefined): string | undefined {
 	const scope = auth?.scope;
 	return typeof scope === "string" && scope.trim() ? scope : undefined;
@@ -135,6 +157,20 @@ export class AccountState {
 	 * the lost-update fix for shared-refresh-token accounts.
 	 */
 	incrementAuthFailuresChain: Map<string, Promise<number>> = new Map();
+	/**
+	 * Set when `initializeFromStorage` re-enabled an account that an earlier
+	 * build had wrongly disabled for missing scopes. The repair happens in
+	 * memory, so it must be flushed to disk or every surface that reads storage
+	 * directly keeps showing the stale disabled state and re-auth note.
+	 * `consumeScopeRepairs()` clears it, so the extra write happens once.
+	 */
+	private scopeRepairsPending = false;
+
+	consumeScopeRepairs(): boolean {
+		const pending = this.scopeRepairsPending;
+		this.scopeRepairsPending = false;
+		return pending;
+	}
 
 	initializeFromStorage(
 		authFallback: OAuthAuthDetails | undefined,
@@ -166,7 +202,13 @@ export class AccountState {
 						matchesFallback && authFallback ? authFallback.refresh : account.refreshToken;
 					const oauthScope =
 						matchesFallback && fallbackOAuthScope ? fallbackOAuthScope : accountOAuthScope;
-					const missingOAuthScopes = getEnforceableMissingOAuthScopes(oauthScope);
+					// The stored record and the matching host credential describe the
+					// same grant, so weigh both before disabling anything.
+					const missingOAuthScopes = getEnforceableMissingOAuthScopesAcross(
+						matchesFallback
+							? [accountOAuthScope, fallbackOAuthScope]
+							: [accountOAuthScope],
+					);
 					// An account this class disabled carries the re-auth note. Once the
 					// scope check stops firing, undo our own damage instead of leaving
 					// it disabled forever — 6.11.2 disabled accounts whose scope was
@@ -175,6 +217,9 @@ export class AccountState {
 					// operator's own choice.
 					const disabledByScopeCheck =
 						account.enabled === false && hasMissingScopeReauthNote(account.accountNote);
+					if (disabledByScopeCheck && missingOAuthScopes.length === 0) {
+						this.scopeRepairsPending = true;
+					}
 
 					return {
 						index,

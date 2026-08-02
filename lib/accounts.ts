@@ -30,6 +30,7 @@ import {
 } from "./accounts/state.js";
 import { formatWaitTime, type RateLimitReason } from "./accounts/rate-limits.js";
 import { nowMs } from "./utils.js";
+import { logWarn } from "./logger.js";
 import { resolveDisplayEmail } from "./account-display.js";
 
 export type { AccountSelectionExplainability, ManagedAccount } from "./accounts/state.js";
@@ -93,6 +94,23 @@ export class AccountManager {
 		const stored = await loadAccounts();
 		const manager = new AccountManager(authFallback, stored);
 		await manager.recovery.hydrateFromCodexCli();
+		// `initializeFromStorage` repairs accounts an earlier build wrongly
+		// disabled for missing scopes, but only in memory. Flush it once so the
+		// TUI, the CLI, and any other direct storage reader stop reporting the
+		// stale disabled state and re-auth note (issue #213). A failed write is
+		// not fatal: the in-memory repair still holds for this process, and the
+		// next load repeats it.
+		if (manager.state.consumeScopeRepairs()) {
+			try {
+				await manager.persistence.saveToDisk();
+			} catch (error) {
+				logWarn(
+					`Failed to persist OAuth scope repair: ${
+						(error as Error)?.message ?? String(error)
+					}`,
+				);
+			}
+		}
 		return manager;
 	}
 

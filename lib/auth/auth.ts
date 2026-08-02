@@ -13,7 +13,7 @@ export {
 	getMissingRequiredOAuthScopes,
 	hasRequiredOAuthScopes,
 } from "./scopes.js";
-import { SCOPE } from "./scopes.js";
+import { normalizeScope, SCOPE } from "./scopes.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -119,7 +119,7 @@ export async function exchangeAuthorizationCode(
 		// stored verbatim: `??` lets an empty string through, and that empty
 		// string then overwrites known-good scope metadata downstream
 		// (`result.scope ?? existing.oauthScope`). See issue #213.
-		scope: json.scope?.trim() ? json.scope : SCOPE,
+		scope: normalizeScope(json.scope) ?? SCOPE,
 		multiAccount: true,
 	};
 }

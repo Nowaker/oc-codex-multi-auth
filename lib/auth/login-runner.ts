@@ -6,6 +6,7 @@ import {
 	selectBestAccountCandidate,
 } from "../accounts.js";
 import { logInfo } from "../logger.js";
+import { normalizeScope } from "./scopes.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { withAccountStorageTransaction } from "../storage.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
@@ -625,6 +626,12 @@ export async function persistAccountPool(
 					: undefined;
 			const accountLabel = result.accountLabel;
 			const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
+			// A blank scope must never reach storage: it is indistinguishable from
+			// "granted nothing" at load time, and `?? existing.oauthScope` below
+			// would let it overwrite a good stored value instead of deferring to
+			// it. Absent stays absent — we do not invent a scope we were not told
+			// about (issue #213).
+			const normalizedScope = normalizeScope(result.scope);
 
 			const existingIndex = (() => {
 				if (organizationId) {
@@ -687,7 +694,7 @@ export async function persistAccountPool(
 					refreshToken: result.refresh,
 					accessToken: result.access,
 					expiresAt: result.expires,
-					oauthScope: result.scope,
+					oauthScope: normalizedScope,
 					addedAt: now,
 					lastUsed: now,
 				});
@@ -725,7 +732,7 @@ export async function persistAccountPool(
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
-				oauthScope: result.scope ?? existing.oauthScope,
+				oauthScope: normalizedScope ?? existing.oauthScope,
 				lastUsed: now,
 			};
 			identityIndexes = buildIdentityIndexes();
