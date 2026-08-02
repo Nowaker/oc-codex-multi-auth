@@ -40,10 +40,57 @@ describe("OAuth scope enforcement (issue #213, real storage)", () => {
 		await fs.rm(testDir, { recursive: true, force: true });
 	});
 
-	// The exact reported flow: log in, then have the plugin load with a host
-	// credential that carries no scope (which is what `refreshAccessToken` and
-	// the host backfill both produce).
-	it("leaves a freshly logged-in account enabled when the host credential has no scope", async () => {
+	// The reported symptom — "account is added but disabled". The account is
+	// *added* by the host-fallback branch, which only runs when the credential
+	// matches nothing in the pool (empty pool, or a pool written under a
+	// different storage path). A scope-less credential there was read as "no
+	// scopes granted" and pushed disabled.
+	it("adds a scope-less host credential as an enabled account when the pool is empty", async () => {
+		const hostCredential: OAuthAuthDetails = {
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			// No `scope` — what the host auth.json holds after a refresh, and what
+			// the plugin's own host backfill used to write.
+		};
+
+		const manager = await AccountManager.loadFromDisk(hostCredential);
+		const account = manager.getCurrentAccount();
+
+		expect(manager.getAccountCount()).toBe(1);
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
+	it("adds a scope-less host credential as enabled when it matches nothing in the pool", async () => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: "other-access",
+					refresh: "other-refresh",
+					expires: Date.now() + 60_000,
+					scope: SCOPE,
+				},
+			],
+			false,
+		);
+
+		const manager = await AccountManager.loadFromDisk({
+			type: "oauth",
+			access: "access-token",
+			refresh: "unmatched-refresh",
+			expires: Date.now() + 60_000,
+		});
+		const accounts = manager.getAccountsSnapshot();
+
+		expect(accounts).toHaveLength(2);
+		expect(accounts[1]?.enabled).toBe(true);
+		expect(accounts[1]?.accountNote).toBeUndefined();
+	});
+
+	it("keeps a matched account enabled when the pool has a scope but the host does not", async () => {
 		await persistAccountPool(
 			[
 				{
@@ -57,20 +104,62 @@ describe("OAuth scope enforcement (issue #213, real storage)", () => {
 			false,
 		);
 
-		const hostCredential: OAuthAuthDetails = {
+		const manager = await AccountManager.loadFromDisk({
 			type: "oauth",
 			access: "access-token",
 			refresh: "refresh-token",
 			expires: Date.now() + 60_000,
-			// No `scope` — exactly what the host auth.json holds after a refresh.
-		};
-
-		const manager = await AccountManager.loadFromDisk(hostCredential);
+		});
 		const account = manager.getCurrentAccount();
 
 		expect(manager.getAccountCount()).toBe(1);
 		expect(account?.enabled).toBe(true);
 		expect(account?.accountNote).toBeUndefined();
+	});
+
+	// A partial scope on the host credential must not override a complete pool
+	// scope for the same account.
+	it("keeps a matched account enabled when the host scope is partial but the pool is complete", async () => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: "access-token",
+					refresh: "refresh-token",
+					expires: Date.now() + 60_000,
+					scope: SCOPE,
+				},
+			],
+			false,
+		);
+
+		const manager = await AccountManager.loadFromDisk({
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			scope: "openid profile",
+		});
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
+	it("disables a host credential whose scope is explicitly incomplete", async () => {
+		const manager = await AccountManager.loadFromDisk({
+			type: "oauth",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			scope: "openid profile",
+		});
+		const account = manager.getAccountsSnapshot()[0];
+
+		expect(account?.enabled).toBe(false);
+		expect(account?.accountNote).toBe(
+			"Re-auth required for missing OAuth scope(s): email, offline_access.",
+		);
 	});
 
 	it("leaves the account enabled when neither the pool nor the host records a scope", async () => {
