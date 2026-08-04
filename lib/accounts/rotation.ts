@@ -337,6 +337,49 @@ export class AccountRotation {
 		account.lastRateLimitReason = reason;
 	}
 
+	/**
+	 * Block an account until a quota window the backend reported as fully spent
+	 * resets (issue #218).
+	 *
+	 * Differs from {@link markRateLimitedWithReason} in two ways that matter:
+	 *
+	 * - It takes an ABSOLUTE reset stamp, so a week-long weekly-quota block is
+	 *   never rebuilt from a capped or backed-off retry delay.
+	 * - It never shortens an existing block. A concurrent in-flight request that
+	 *   lands a plain 429 with a 30s retry-after must not pull a weekly block
+	 *   forward; the account genuinely cannot serve until the window rolls over.
+	 *
+	 * The block rides on the same persisted `rateLimitResetTimes` map as server
+	 * 429s, so it survives restarts and is shared with other processes through
+	 * the accounts file, and it expires on its own via `clearExpiredRateLimits`.
+	 *
+	 * @returns true when a new (or longer) block was written.
+	 */
+	markQuotaExhausted(
+		account: ManagedAccount,
+		resetAtMs: number,
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
+		if (!Number.isFinite(resetAtMs)) return false;
+		const resetAt = Math.floor(resetAtMs);
+		if (resetAt <= nowMs()) return false;
+
+		const keys: string[] = [getQuotaKey(family)];
+		if (model) keys.push(getQuotaKey(family, model));
+
+		let changed = false;
+		for (const key of keys) {
+			const existing = account.rateLimitResetTimes[key];
+			if (typeof existing === "number" && existing >= resetAt) continue;
+			account.rateLimitResetTimes[key] = resetAt;
+			changed = true;
+		}
+
+		if (changed) account.lastRateLimitReason = "quota";
+		return changed;
+	}
+
 	markAccountCoolingDown(
 		account: ManagedAccount,
 		cooldownMs: number,

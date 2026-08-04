@@ -327,6 +327,21 @@ export class AccountManager {
 		this.rotation.markRateLimitedWithReason(account, retryAfterMs, family, reason, model);
 	}
 
+	/**
+	 * Block an account until a fully-spent quota window resets. See
+	 * {@link AccountRotation.markQuotaExhausted}.
+	 *
+	 * @returns true when a new (or longer) block was written.
+	 */
+	markQuotaExhausted(
+		account: ManagedAccount,
+		resetAtMs: number,
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
+		return this.rotation.markQuotaExhausted(account, resetAtMs, family, model);
+	}
+
 	markAccountCoolingDown(
 		account: ManagedAccount,
 		cooldownMs: number,
