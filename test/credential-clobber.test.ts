@@ -186,6 +186,50 @@ describe("AccountPersistence rate-limit merge (multi-process clobber guard)", ()
 		).toBeUndefined();
 	});
 
+	// Documents a known limitation rather than desired behavior. A record with
+	// neither organizationId nor accountId is identified by its refresh token
+	// (lib/storage/identity.ts), so once another process rotates that token
+	// there is nothing left to match the two records on and the merge cannot
+	// run. It degrades to the pre-merge behavior — the block is dropped, never
+	// mis-assigned to a different account — which is why a positional fallback
+	// would be worse than this. Fixing it needs a rotation-invariant account id
+	// in storage, which also fixes the more serious credential miss asserted
+	// below. Flip both expectations when that lands.
+	it("cannot merge a token-only record whose token rotated (known limitation)", async () => {
+		const state = makeState([
+			makeStoredAccount({
+				accountId: undefined,
+				organizationId: undefined,
+				refreshToken: "rt-old",
+				tokenRotatedAt: 1_000,
+			}),
+		]);
+		const persistence = new AccountPersistence(state);
+
+		diskStateRef.current = {
+			version: 3,
+			accounts: [
+				makeStoredAccount({
+					accountId: undefined,
+					organizationId: undefined,
+					refreshToken: "rt-new",
+					tokenRotatedAt: 2_000,
+					rateLimitResetTimes: { codex: WEEKLY_RESET },
+				}),
+			],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		const persisted = persistedStorage();
+		// Dropped, not mis-assigned: no record matched, so nothing was merged.
+		expect(persisted?.accounts[0]?.rateLimitResetTimes).toBeUndefined();
+		// Pre-existing and more serious: the same identity miss makes
+		// adoptNewerDiskCredentials overwrite the rotated single-use token.
+		expect(persisted?.accounts[0]?.refreshToken).toBe("rt-old");
+	});
+
 	it("leaves live rotation state untouched", async () => {
 		const state = makeState([makeStoredAccount()]);
 		const persistence = new AccountPersistence(state);
