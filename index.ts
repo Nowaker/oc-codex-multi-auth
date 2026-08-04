@@ -112,6 +112,7 @@ import { handleContextOverflow } from "./lib/context-overflow.js";
 import {
 	AccountManager,
 	type AccountSelectionExplainability,
+	type ManagedAccount,
         extractAccountEmail,
         extractAccountId,
         formatAccountLabel,
@@ -233,6 +234,7 @@ import {
 	parseCodexUsagePayload,
 	type CodexUsageSummary,
 } from "./lib/codex-usage.js";
+import { getQuotaExhaustedResetAtMs } from "./lib/quota-windows.js";
 import {
 	clearTuiQuotaSnapshot,
 	parseTuiQuotaSnapshotFromHeaders,
@@ -667,6 +669,40 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			} catch (error) {
 				logDebug(
 					`[${PLUGIN_NAME}] Failed to record TUI quota headers: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		};
+
+		/**
+		 * Take an account out of rotation whenever the backend reports one of its
+		 * quota windows as fully spent (issue #218).
+		 *
+		 * Every Codex response — success or 429 — carries `x-codex-*-used-percent`
+		 * and the matching reset time, so the moment an account hits 0% left we
+		 * can record it instead of rediscovering it with a failed request on every
+		 * subsequent prompt. The block lands on the persisted `rateLimitResetTimes`
+		 * map, so it is remembered across restarts and shared with other processes,
+		 * and it clears itself once the window rolls over.
+		 */
+		const applyQuotaExhaustion = (
+			manager: AccountManager,
+			headers: Headers,
+			account: ManagedAccount,
+			family: ModelFamily,
+			model: string | null | undefined,
+		): void => {
+			try {
+				const resetAtMs = getQuotaExhaustedResetAtMs(headers);
+				if (resetAtMs === undefined) return;
+				if (!manager.markQuotaExhausted(account, resetAtMs, family, model)) return;
+				account.lastSwitchReason = "rate-limit";
+				manager.saveToDiskDebounced();
+				logWarn(
+					`Account ${account.index + 1} (${account.email ?? "unknown"}) has no ${family} quota left; skipping it for ${formatWaitTime(resetAtMs - Date.now())}.`,
+				);
+			} catch (error) {
+				logDebug(
+					`[${PLUGIN_NAME}] Failed to apply quota exhaustion: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 		};
@@ -2380,6 +2416,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								headers: Object.fromEntries(response.headers.entries()),
 							});
 							void recordPromptQuotaHeaders(response, account, accountCount);
+							applyQuotaExhaustion(
+								accountManager,
+								response.headers,
+								account,
+								modelFamily,
+								model,
+							);
 
 								if (!response.ok) {
 									const contextOverflowResult = await handleContextOverflow(response, model);

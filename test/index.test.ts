@@ -273,6 +273,13 @@ const mockStorage = {
 	activeIndexByFamily: {} as Record<string, number>,
 };
 
+/** Records every quota-exhaustion block the request path applies (issue #218). */
+const mockQuotaExhaustionCalls: Array<{
+	resetAtMs: number;
+	family: string;
+	model?: string | null;
+}> = [];
+
 const cloneAccount = (account: (typeof mockStorage.accounts)[number]) => structuredClone(account);
 
 const cloneMockStorage = () => ({
@@ -459,6 +466,15 @@ vi.mock("../lib/accounts.js", () => {
 		markAccountsWithRefreshTokenCoolingDown() { return 1; }
 		markRateLimited() {}
 		markRateLimitedWithReason() {}
+		markQuotaExhausted(
+			_account: unknown,
+			resetAtMs: number,
+			family: string,
+			model?: string | null,
+		) {
+			mockQuotaExhaustionCalls.push({ resetAtMs, family, model });
+			return true;
+		}
 		consumeToken() { return true; }
 		refundToken() {}
 		markSwitched() {}
@@ -3656,6 +3672,77 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			}
 			await rm(stateDir, { recursive: true, force: true });
 		}
+	});
+
+	// Issue #218: an account whose weekly window is spent was picked again on
+	// every prompt because nothing consumed the used-percent headers, and the
+	// 429 path collapsed the weekly and 5h resets with Math.min.
+	describe("issue #218: weekly quota exhaustion", () => {
+		const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+		const respondWith = (headers: Record<string, string>, status = 200) => {
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status, headers }),
+			);
+		};
+
+		const sendPrompt = async () => {
+			const { sdk } = await setupPlugin();
+			return sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+		};
+
+		beforeEach(() => {
+			mockQuotaExhaustionCalls.length = 0;
+		});
+
+		it("blocks the account until the weekly reset when it reports 0% left", async () => {
+			const weeklyResetAtSeconds = nowSeconds() + 7 * 24 * 60 * 60;
+			respondWith({
+				"x-codex-primary-used-percent": "40",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-at": String(nowSeconds() + 5 * 60 * 60),
+				"x-codex-secondary-used-percent": "100",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-at": String(weeklyResetAtSeconds),
+			});
+
+			expect((await sendPrompt()).status).toBe(200);
+
+			// The weekly reset wins over the sooner 5h reset: an account whose
+			// weekly quota is gone stays unusable after the 5h window rolls over.
+			expect(mockQuotaExhaustionCalls).toEqual([
+				expect.objectContaining({ resetAtMs: weeklyResetAtSeconds * 1000 }),
+			]);
+		});
+
+		it("leaves an account with quota left in rotation", async () => {
+			respondWith({
+				"x-codex-primary-used-percent": "40",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-secondary-used-percent": "99",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-at": String(nowSeconds() + 7 * 24 * 60 * 60),
+			});
+
+			expect((await sendPrompt()).status).toBe(200);
+			expect(mockQuotaExhaustionCalls).toEqual([]);
+		});
+
+		it("ignores a window the plan has switched off", async () => {
+			respondWith({
+				"x-codex-primary-used-percent": "100",
+				"x-codex-primary-window-minutes": "0",
+				"x-codex-primary-reset-at": String(nowSeconds() + 5 * 60 * 60),
+				"x-codex-secondary-used-percent": "12",
+				"x-codex-secondary-window-minutes": "10080",
+			});
+
+			expect((await sendPrompt()).status).toBe(200);
+			expect(mockQuotaExhaustionCalls).toEqual([]);
+		});
 	});
 
 	it("persists the selected account before writing TUI quota snapshots", async () => {

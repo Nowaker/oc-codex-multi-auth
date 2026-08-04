@@ -316,6 +316,48 @@ export class AccountRotation {
 		this.markRateLimitedWithReason(account, retryAfterMs, family, "unknown", model);
 	}
 
+	/**
+	 * The quota keys a (family, model) block covers: the family-wide key, plus
+	 * the model-scoped one when a model is named.
+	 */
+	private getBlockedQuotaKeys(
+		family: ModelFamily,
+		model?: string | null,
+	): string[] {
+		const keys: string[] = [getQuotaKey(family)];
+		if (model) keys.push(getQuotaKey(family, model));
+		return keys;
+	}
+
+	/**
+	 * Write a rate-limit reset for `key`, keeping whichever block runs longer.
+	 *
+	 * Every writer goes through here so a later, shorter block can never shorten
+	 * an existing one: a concurrent in-flight request that lands a plain 429 with
+	 * a 30s retry-after must not pull a week-long weekly-quota block forward
+	 * (issue #218). A stale past value can never win, because any reset written
+	 * here is at or after `nowMs()`, and expired entries are dropped by
+	 * `clearExpiredRateLimits` on the next selection pass anyway.
+	 *
+	 * @returns true when the stored reset moved later.
+	 */
+	private extendRateLimitReset(
+		account: ManagedAccount,
+		key: string,
+		resetAt: number,
+	): boolean {
+		const existing = account.rateLimitResetTimes[key];
+		if (
+			typeof existing === "number" &&
+			Number.isFinite(existing) &&
+			existing >= resetAt
+		) {
+			return false;
+		}
+		account.rateLimitResetTimes[key] = resetAt;
+		return true;
+	}
+
 	markRateLimitedWithReason(
 		account: ManagedAccount,
 		retryAfterMs: number,
@@ -324,17 +366,62 @@ export class AccountRotation {
 		model?: string | null,
 	): void {
 		const retryMs = Math.max(0, Math.floor(retryAfterMs));
-		const resetAt = nowMs() + retryMs;
+		const keys = this.getBlockedQuotaKeys(family, model);
 
-		const baseKey = getQuotaKey(family);
-		account.rateLimitResetTimes[baseKey] = resetAt;
-
-		if (model) {
-			const modelKey = getQuotaKey(family, model);
-			account.rateLimitResetTimes[modelKey] = resetAt;
+		if (retryMs === 0) {
+			// A zero-length rate limit is not a block, it is the caller saying the
+			// window has elapsed. Clearing keeps the long-standing behavior: the
+			// old code wrote `nowMs()`, which clearExpiredRateLimits dropped on the
+			// next pass. It has to be explicit now, because the monotonic write
+			// below would otherwise preserve the very block the caller just
+			// declared expired. Nothing in the request path passes 0 — every
+			// server-derived delay is at least 1ms.
+			for (const key of keys) delete account.rateLimitResetTimes[key];
+		} else {
+			const resetAt = nowMs() + retryMs;
+			for (const key of keys) {
+				this.extendRateLimitReset(account, key, resetAt);
+			}
 		}
 
+		// Set unconditionally even when the existing block already ran longer:
+		// this records the reason for the most recent 429, not for the block.
 		account.lastRateLimitReason = reason;
+	}
+
+	/**
+	 * Block an account until a quota window the backend reported as fully spent
+	 * resets (issue #218).
+	 *
+	 * Differs from {@link markRateLimitedWithReason} in taking an ABSOLUTE reset
+	 * stamp, so a week-long weekly-quota block is never rebuilt from a capped or
+	 * backed-off retry delay. Like every writer it goes through
+	 * {@link extendRateLimitReset}, so it neither shortens an existing block nor
+	 * can be shortened by a later one.
+	 *
+	 * The block rides on the same persisted `rateLimitResetTimes` map as server
+	 * 429s, so it survives restarts and is shared with other processes through
+	 * the accounts file, and it expires on its own via `clearExpiredRateLimits`.
+	 *
+	 * @returns true when a new (or longer) block was written.
+	 */
+	markQuotaExhausted(
+		account: ManagedAccount,
+		resetAtMs: number,
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
+		if (!Number.isFinite(resetAtMs)) return false;
+		const resetAt = Math.floor(resetAtMs);
+		if (resetAt <= nowMs()) return false;
+
+		let changed = false;
+		for (const key of this.getBlockedQuotaKeys(family, model)) {
+			if (this.extendRateLimitReset(account, key, resetAt)) changed = true;
+		}
+
+		if (changed) account.lastRateLimitReason = "quota";
+		return changed;
 	}
 
 	markAccountCoolingDown(
