@@ -5,6 +5,11 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
+  # Manual trigger. Lets a maintainer run the full gate on any ref from the
+  # Actions tab without pushing a throwaway commit — useful for confirming the
+  # pipeline itself works, and for re-running against a branch after an
+  # infrastructure problem rather than a code change.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
