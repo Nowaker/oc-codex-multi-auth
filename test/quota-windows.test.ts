@@ -192,6 +192,67 @@ describe("handleErrorResponse weekly quota reset (issue #218)", () => {
 		expect(rateLimit?.retryAfterMs).toBeGreaterThan(FIVE_HOURS_MS - 60_000);
 	});
 
+	it("uses a relative reset header on an ordinary throttle", async () => {
+		const response = new Response(
+			JSON.stringify({ error: { code: "rate_limit_exceeded" } }),
+			{
+				status: 429,
+				headers: new Headers({
+					"x-codex-primary-used-percent": "80",
+					"x-codex-primary-window-minutes": "300",
+					"x-codex-primary-reset-after-seconds": "900",
+				}),
+			},
+		);
+
+		const { rateLimit } = await handleErrorResponse(response);
+
+		// Not the 60s default: the backend told us when the window rolls over.
+		expect(rateLimit?.retryAfterMs).toBeGreaterThan(890_000);
+		expect(rateLimit?.retryAfterMs).toBeLessThanOrEqual(900_000);
+	});
+
+	it("uses an ISO reset header on an ordinary throttle", async () => {
+		const response = new Response(
+			JSON.stringify({ error: { code: "rate_limit_exceeded" } }),
+			{
+				status: 429,
+				headers: new Headers({
+					"x-codex-primary-used-percent": "80",
+					"x-codex-primary-reset-at": new Date(
+						Date.now() + 15 * 60 * 1000,
+					).toISOString(),
+				}),
+			},
+		);
+
+		const { rateLimit } = await handleErrorResponse(response);
+
+		expect(rateLimit?.retryAfterMs).toBeGreaterThan(890_000);
+		expect(rateLimit?.retryAfterMs).toBeLessThanOrEqual(900_000);
+	});
+
+	it("ignores a plan-disabled window when picking an ordinary throttle reset", async () => {
+		const response = new Response(
+			JSON.stringify({ error: { code: "rate_limit_exceeded" } }),
+			{
+				status: 429,
+				headers: new Headers({
+					"x-codex-primary-used-percent": "0",
+					"x-codex-primary-window-minutes": "0",
+					"x-codex-primary-reset-after-seconds": "60",
+					"x-codex-secondary-used-percent": "80",
+					"x-codex-secondary-window-minutes": "10080",
+					"x-codex-secondary-reset-after-seconds": "900",
+				}),
+			},
+		);
+
+		const { rateLimit } = await handleErrorResponse(response);
+
+		expect(rateLimit?.retryAfterMs).toBeGreaterThan(890_000);
+	});
+
 	it("keeps the short retry-after when the 429 is not a quota exhaustion", async () => {
 		const response = new Response(
 			JSON.stringify({ error: { code: "rate_limit_exceeded", retry_after_ms: 1750 } }),
@@ -248,6 +309,49 @@ describe("AccountManager.markQuotaExhausted (issue #218)", () => {
 		expect(manager.markQuotaExhausted(account, weeklyReset, "codex")).toBe(true);
 		expect(manager.markQuotaExhausted(account, Date.now() + 60_000, "codex")).toBe(false);
 		expect(account.rateLimitResetTimes.codex).toBe(weeklyReset);
+	});
+
+	it("is not shortened by a later ordinary rate limit", () => {
+		const manager = buildManager();
+		const account = manager.getCurrentOrNext()!;
+		const weeklyReset = Date.now() + SEVEN_DAYS_MS;
+
+		manager.markQuotaExhausted(account, weeklyReset, "codex", "gpt-5-codex");
+		// A concurrent in-flight request lands a plain 429 with a 30s
+		// retry-after; it must not pull the weekly block forward.
+		manager.markRateLimitedWithReason(
+			account,
+			30_000,
+			"codex",
+			"tokens",
+			"gpt-5-codex",
+		);
+
+		expect(account.rateLimitResetTimes.codex).toBe(weeklyReset);
+		expect(account.rateLimitResetTimes["codex:gpt-5-codex"]).toBe(weeklyReset);
+		expect(manager.getCurrentOrNext()?.refreshToken).toBe("token-2");
+	});
+
+	it("still lets a zero-length rate limit clear a block", () => {
+		const manager = buildManager();
+		const account = manager.getCurrentOrNext()!;
+
+		manager.markRateLimited(account, 60_000, "codex");
+		expect(account.rateLimitResetTimes.codex).toBeDefined();
+
+		manager.markRateLimited(account, 0, "codex");
+		expect(account.rateLimitResetTimes.codex).toBeUndefined();
+	});
+
+	it("still lets an ordinary rate limit extend a shorter block", () => {
+		const manager = buildManager();
+		const account = manager.getCurrentOrNext()!;
+
+		manager.markRateLimitedWithReason(account, 30_000, "codex", "tokens");
+		const shortReset = account.rateLimitResetTimes.codex!;
+		manager.markRateLimitedWithReason(account, 10 * 60_000, "codex", "quota");
+
+		expect(account.rateLimitResetTimes.codex).toBeGreaterThan(shortReset);
 	});
 
 	it("ignores a reset that is already in the past", () => {

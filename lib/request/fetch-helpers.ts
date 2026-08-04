@@ -37,7 +37,11 @@ import {
 	DEACTIVATED_WORKSPACE_ERROR_CODE,
 	isInvalidatedAuthTokenMessage,
 } from "../error-sentinels.js";
-import { getQuotaExhaustedResetAtMs } from "../quota-windows.js";
+import {
+	getQuotaExhaustedResetAtMs,
+	isQuotaWindowDisabled,
+	parseCodexQuotaWindows,
+} from "../quota-windows.js";
 import { isRecord } from "../utils.js";
 import {
         CODEX_BASE_URL,
@@ -1289,13 +1293,23 @@ function parseRetryAfterMs(
 
         // No window claimed exhaustion, so this is an ordinary throttle rather
         // than a spent quota: the soonest reset is the right one to wait for.
-        const resetAtHeaders = [
-                "x-codex-primary-reset-at",
-                "x-codex-secondary-reset-at",
-                "x-ratelimit-reset",
-        ];
         const now = Date.now();
         const resetCandidates: number[] = [];
+
+        // Read the Codex windows through the shared parser rather than the
+        // reset-at header alone, so a 429 carrying only `-reset-after-seconds`
+        // or an ISO `-reset-at` produces a candidate instead of falling back to
+        // the 60s default. Windows the plan has switched off are skipped: their
+        // reset says nothing about when this request can go through.
+        for (const window of parseCodexQuotaWindows(response.headers, now)) {
+                if (isQuotaWindowDisabled(window)) continue;
+                const resetAtMs = window.resetAtMs;
+                if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs)) continue;
+                const delta = resetAtMs - now;
+                if (delta > 0) resetCandidates.push(delta);
+        }
+
+        const resetAtHeaders = ["x-ratelimit-reset"];
         for (const header of resetAtHeaders) {
                 const value = response.headers.get(header);
                 if (!value) continue;
