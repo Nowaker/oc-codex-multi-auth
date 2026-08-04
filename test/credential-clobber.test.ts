@@ -91,6 +91,120 @@ function persistedStorage(): AccountStorageV3 | undefined {
 	return saveAccountsMock.mock.calls[0]?.[0] as AccountStorageV3 | undefined;
 }
 
+// Issue #218: a weekly quota block is worth days, so unlike a 5h window it
+// cannot be left to last-writer-wins. A second process holding a stale snapshot
+// would save over it and put the exhausted account straight back in rotation.
+describe("AccountPersistence rate-limit merge (multi-process clobber guard)", () => {
+	const WEEKLY_RESET = Date.now() + 7 * 24 * 60 * 60 * 1000;
+
+	it("keeps a longer on-disk quota block instead of clobbering it", async () => {
+		const state = makeState([makeStoredAccount()]);
+		const persistence = new AccountPersistence(state);
+
+		// Another process recorded the weekly block after this one loaded.
+		diskStateRef.current = {
+			version: 3,
+			accounts: [
+				makeStoredAccount({ rateLimitResetTimes: { codex: WEEKLY_RESET } }),
+			],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		expect(persistedStorage()?.accounts[0]?.rateLimitResetTimes?.codex).toBe(
+			WEEKLY_RESET,
+		);
+	});
+
+	it("keeps its own block when it is the longer one", async () => {
+		const state = makeState([
+			makeStoredAccount({ rateLimitResetTimes: { codex: WEEKLY_RESET } }),
+		]);
+		const persistence = new AccountPersistence(state);
+
+		diskStateRef.current = {
+			version: 3,
+			accounts: [
+				makeStoredAccount({
+					rateLimitResetTimes: { codex: Date.now() + 30_000 },
+				}),
+			],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		expect(persistedStorage()?.accounts[0]?.rateLimitResetTimes?.codex).toBe(
+			WEEKLY_RESET,
+		);
+	});
+
+	it("merges per quota key rather than wholesale", async () => {
+		const state = makeState([
+			makeStoredAccount({ rateLimitResetTimes: { codex: WEEKLY_RESET } }),
+		]);
+		const persistence = new AccountPersistence(state);
+
+		const modelReset = Date.now() + 60_000;
+		diskStateRef.current = {
+			version: 3,
+			accounts: [
+				makeStoredAccount({
+					rateLimitResetTimes: { "codex:gpt-5-codex": modelReset },
+				}),
+			],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		expect(persistedStorage()?.accounts[0]?.rateLimitResetTimes).toEqual({
+			codex: WEEKLY_RESET,
+			"codex:gpt-5-codex": modelReset,
+		});
+	});
+
+	it("does not resurrect an expired on-disk block", async () => {
+		const state = makeState([makeStoredAccount()]);
+		const persistence = new AccountPersistence(state);
+
+		diskStateRef.current = {
+			version: 3,
+			accounts: [
+				makeStoredAccount({
+					rateLimitResetTimes: { codex: Date.now() - 60_000 },
+				}),
+			],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		expect(
+			persistedStorage()?.accounts[0]?.rateLimitResetTimes?.codex,
+		).toBeUndefined();
+	});
+
+	it("leaves live rotation state untouched", async () => {
+		const state = makeState([makeStoredAccount()]);
+		const persistence = new AccountPersistence(state);
+
+		diskStateRef.current = {
+			version: 3,
+			accounts: [
+				makeStoredAccount({ rateLimitResetTimes: { codex: WEEKLY_RESET } }),
+			],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		// The persisted payload must not share a reference with live state.
+		expect(state.accounts[0]?.rateLimitResetTimes).toEqual({});
+	});
+});
+
 describe("AccountPersistence credential merge (multi-process clobber guard)", () => {
 	it("adopts a newer rotated refresh token from disk instead of clobbering it", async () => {
 		const state = makeState([
