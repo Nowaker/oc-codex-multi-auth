@@ -57,19 +57,26 @@ export class AccountRotation {
 		accountIds: readonly string[] | undefined,
 		family: ModelFamily,
 		model?: string | null,
+		strictPreferredPool = false,
+		excludedIndices?: ReadonlySet<number>,
 	): ReadonlySet<number> | null {
 		if (!accountIds?.length) return null;
 		const preferredIds = new Set(accountIds);
 		const indices = this.state.accounts
 			.filter(
 				(account) =>
-					account &&
-					account.accountId !== undefined &&
-					preferredIds.has(account.accountId) &&
-					this.isSelectable(account, family, model),
+				account &&
+				account.accountId !== undefined &&
+				preferredIds.has(account.accountId) &&
+				!excludedIndices?.has(account.index) &&
+				this.isSelectable(account, family, model),
 			)
 			.map((account) => account.index);
-		return indices.length > 0 ? new Set(indices) : null;
+		return indices.length > 0
+			? new Set(indices)
+			: strictPreferredPool
+				? new Set<number>()
+				: null;
 	}
 
 	private isInSelectionPool(
@@ -83,6 +90,8 @@ export class AccountRotation {
 		family: ModelFamily,
 		model?: string | null,
 		preferredAccountIds?: readonly string[],
+		strictPreferredPool = false,
+		excludedIndices?: ReadonlySet<number>,
 	): ManagedAccount | null {
 		const count = this.state.accounts.length;
 		if (count === 0) return null;
@@ -90,6 +99,8 @@ export class AccountRotation {
 			preferredAccountIds,
 			family,
 			model,
+			strictPreferredPool,
+			excludedIndices,
 		);
 
 		const cursor = this.state.cursorByFamily[family];
@@ -98,6 +109,7 @@ export class AccountRotation {
 			const idx = (cursor + i) % count;
 			const account = this.state.accounts[idx];
 			if (!account) continue;
+			if (excludedIndices?.has(account.index)) continue;
 			if (!this.isInSelectionPool(account, preferredIndices)) continue;
 			if (!this.isSelectable(account, family, model)) continue;
 
@@ -135,6 +147,8 @@ export class AccountRotation {
 		model?: string | null,
 		options?: HybridSelectionOptions,
 		preferredAccountIds?: readonly string[],
+		strictPreferredPool = false,
+		excludedIndices?: ReadonlySet<number>,
 	): ManagedAccount | null {
 		const count = this.state.accounts.length;
 		if (count === 0) return null;
@@ -142,13 +156,17 @@ export class AccountRotation {
 			preferredAccountIds,
 			family,
 			model,
+			strictPreferredPool,
+			excludedIndices,
 		);
 
 		const currentIndex = this.state.currentAccountIndexByFamily[family];
 		if (currentIndex >= 0 && currentIndex < count) {
 			const currentAccount = this.state.accounts[currentIndex];
 			if (currentAccount) {
-				if (currentAccount.enabled === false) {
+				if (excludedIndices?.has(currentAccount.index)) {
+					// Fall through to hybrid selection.
+				} else if (currentAccount.enabled === false) {
 					// Fall through to hybrid selection.
 				} else if (
 					this.isInSelectionPool(currentAccount, preferredIndices) &&
@@ -168,6 +186,7 @@ export class AccountRotation {
 			.map((account): AccountWithMetrics | null => {
 				if (!account) return null;
 				if (account.enabled === false) return null;
+				if (excludedIndices?.has(account.index)) return null;
 				if (!this.isInSelectionPool(account, preferredIndices)) return null;
 				return {
 					index: account.index,
@@ -216,6 +235,8 @@ export class AccountRotation {
 		family: ModelFamily,
 		model?: string | null,
 		preferredAccountIds?: readonly string[],
+		strictPreferredPool = false,
+		excludedIndices?: ReadonlySet<number>,
 	): ManagedAccount | null {
 		const count = this.state.accounts.length;
 		if (count === 0) return null;
@@ -223,6 +244,8 @@ export class AccountRotation {
 			preferredAccountIds,
 			family,
 			model,
+			strictPreferredPool,
+			excludedIndices,
 		);
 
 		// Prefer the account we are already pinned to while it still has quota.
@@ -231,6 +254,7 @@ export class AccountRotation {
 			const currentAccount = this.state.accounts[currentIndex];
 			if (
 				currentAccount &&
+				!excludedIndices?.has(currentAccount.index) &&
 				this.isInSelectionPool(currentAccount, preferredIndices) &&
 				this.isSelectable(currentAccount, family, model)
 			) {
@@ -244,6 +268,7 @@ export class AccountRotation {
 		for (let idx = 0; idx < count; idx++) {
 			const account = this.state.accounts[idx];
 			if (!account) continue;
+			if (excludedIndices?.has(account.index)) continue;
 			if (!this.isInSelectionPool(account, preferredIndices)) continue;
 			if (!this.isSelectable(account, family, model)) continue;
 
@@ -452,10 +477,18 @@ export class AccountRotation {
 		return matches.length;
 	}
 
-	getMinWaitTimeForFamily(family: ModelFamily, model?: string | null): number {
+	getMinWaitTimeForFamily(
+		family: ModelFamily,
+		model?: string | null,
+		accountIds?: readonly string[],
+	): number {
 		const now = nowMs();
+		const accountIdSet = accountIds?.length ? new Set(accountIds) : null;
 		const enabledAccounts = this.state.accounts.filter(
-			(account) => account.enabled !== false,
+			(account) =>
+				account.enabled !== false &&
+				(accountIdSet === null ||
+					(account.accountId !== undefined && accountIdSet.has(account.accountId))),
 		);
 		const available = enabledAccounts.filter((account) =>
 			this.isSelectable(account, family, model),
