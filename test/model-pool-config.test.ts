@@ -152,9 +152,15 @@ describe("model account pool config mutation", () => {
 	});
 
 	it("previews a change without creating or modifying the config file", async () => {
-		const result = await updateModelAccountPool("model", "set", ["one"], {
-			dryRun: true,
-		});
+		const releaseForeignLock = await lock(configPath, { realpath: false });
+		let result: Awaited<ReturnType<typeof updateModelAccountPool>>;
+		try {
+			result = await updateModelAccountPool("model", "set", ["one"], {
+				dryRun: true,
+			});
+		} finally {
+			await releaseForeignLock();
+		}
 
 		expect(result).toMatchObject({
 			accountIds: ["one"],
@@ -169,8 +175,13 @@ describe("model account pool config mutation", () => {
 			modelAccountPools: { model: ["one"] },
 		})}\n\n`;
 		await fs.writeFile(configPath, original);
-
-		const result = await updateModelAccountPool("model", "set", ["one"]);
+		const releaseForeignLock = await lock(configPath, { realpath: false });
+		let result: Awaited<ReturnType<typeof updateModelAccountPool>>;
+		try {
+			result = await updateModelAccountPool("model", "set", ["one"]);
+		} finally {
+			await releaseForeignLock();
+		}
 
 		expect(result.changed).toBe(false);
 		expect(await fs.readFile(configPath, "utf-8")).toBe(original);

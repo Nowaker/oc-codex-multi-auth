@@ -12,6 +12,9 @@ import {
 import { logWarn } from "./logger.js";
 import { stripEffortSuffix } from "./request/helpers/effort-suffix.js";
 import { renameWithWindowsRetry } from "./storage/atomic-write.js";
+import { ConfigLockContentionError } from "./errors.js";
+
+export { ConfigLockContentionError } from "./errors.js";
 import {
 	PluginConfigSchema,
 	getValidationErrors,
@@ -176,19 +179,37 @@ export function updateModelAccountPool(
 	options: { dryRun?: boolean; poolMode?: ModelAccountPoolMode } = {},
 ): Promise<ModelAccountPoolMutationResult> {
 	const pending = modelAccountPoolMutationQueue.then(async () => {
+		const preview = await performModelAccountPoolMutation(
+			model,
+			mutation,
+			accountIds,
+			{ ...options, dryRun: true },
+		);
+		if (options.dryRun === true || !preview.changed) {
+			return { ...preview, dryRun: options.dryRun === true };
+		}
+
 		await fs.mkdir(dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
-		const release = await lock(CONFIG_PATH, {
-			realpath: false,
-			stale: 10_000,
-			update: 2_000,
-			retries: {
-				retries: 20,
-				factor: 1.2,
-				minTimeout: 25,
-				maxTimeout: 200,
-				randomize: true,
-			},
-		});
+		let release: () => Promise<void>;
+		try {
+			release = await lock(CONFIG_PATH, {
+				realpath: false,
+				stale: 10_000,
+				update: 2_000,
+				retries: {
+					retries: 22,
+					factor: 1.2,
+					minTimeout: 25,
+					maxTimeout: 225,
+					randomize: true,
+				},
+			});
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+				throw new ConfigLockContentionError(CONFIG_PATH, error);
+			}
+			throw error;
+		}
 		try {
 			return await performModelAccountPoolMutation(
 				model,
