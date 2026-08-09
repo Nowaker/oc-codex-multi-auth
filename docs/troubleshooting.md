@@ -149,7 +149,7 @@ Update your `~/.config/opencode/opencode.json`:
 - A pool mutation reports `config_locked` with `retryable: true` in JSON output.
 - Text output says the plugin configuration is locked by another process and no change was made.
 
-**Cause:** Another OpenCode process is updating `~/.opencode/openai-codex-auth-config.json`. Pool dry-runs and true no-op mutations do not acquire this lock; changes wait for a bounded retry window before returning this signal.
+**Cause:** Another OpenCode process is updating `~/.opencode/openai-codex-auth-config.json`. Pool dry-runs do not acquire this lock. Every non-dry mutation, including a possible no-op, waits for the bounded retry window and is revalidated under the lock so its result cannot rely on a stale preview.
 
 **Solution:** No partial change was applied. Retry the same `codex-pool` action shortly. If contention persists, finish or stop other processes that are actively changing plugin configuration, then retry.
 
@@ -158,7 +158,7 @@ Update your `~/.config/opencode/opencode.json`:
 <details>
 <summary><b><code>Multi-worktree collision detected on account storage</code> warning</b></summary>
 
-This advisory warning means another live process or host is using the same account-storage file. It includes the foreign and local PID, host, and working directory so you can identify the sessions. Reads and writes continue because the worktree lock is intentionally advisory; repeated warnings are throttled to once per minute.
+This advisory warning means another live process or host is using the same account-storage file. It includes the foreign and local PID, host, and working directory so you can identify the sessions. Reads and writes continue because the worktree lock is intentionally advisory; repeated warnings are throttled to once per minute for each storage path and foreign lock generation.
 
 If account rotation or rate-limit state appears stale, close the duplicate session or ensure each worktree resolves to the intended project storage, then restart OpenCode and inspect the account list. Do not delete a lock belonging to a live process.
 
