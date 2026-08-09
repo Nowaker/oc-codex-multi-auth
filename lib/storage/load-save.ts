@@ -48,6 +48,12 @@ import {
 import os from "node:os";
 
 const log = createLogger("storage");
+const COLLISION_WARNING_THROTTLE_MS = 60_000;
+let lastCollisionWarningAt: number | undefined;
+
+export function __resetCollisionWarningThrottleForTests(): void {
+  lastCollisionWarningAt = undefined;
+}
 
 /**
  * Probes the worktree lock for the currently active storage path and surfaces
@@ -79,17 +85,24 @@ async function checkWorktreeLockForCurrentStorage(
   try {
     const result = await acquireOrDetectLock(path);
     if (!result.acquired && result.foreign) {
-      log.warn("Multi-worktree collision detected on account storage", {
-        operation,
-        storagePath: path,
-        foreignPid: result.foreign.pid,
-        foreignHost: result.foreign.hostname,
-        foreignCwd: result.foreign.cwd,
-        foreignLastActive: result.foreign.lastActive,
-        ourPid: process.pid,
-        ourHost: os.hostname(),
-        ourCwd: process.cwd(),
-      });
+      const now = Date.now();
+      if (
+        lastCollisionWarningAt === undefined ||
+        now - lastCollisionWarningAt >= COLLISION_WARNING_THROTTLE_MS
+      ) {
+        lastCollisionWarningAt = now;
+        log.warn("Multi-worktree collision detected on account storage", {
+          operation,
+          storagePath: path,
+          foreignPid: result.foreign.pid,
+          foreignHost: result.foreign.hostname,
+          foreignCwd: result.foreign.cwd,
+          foreignLastActive: result.foreign.lastActive,
+          ourPid: process.pid,
+          ourHost: os.hostname(),
+          ourCwd: process.cwd(),
+        });
+      }
     }
   } catch (error) {
     log.debug("Worktree lock probe failed", {
