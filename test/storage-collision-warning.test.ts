@@ -65,4 +65,63 @@ describe("account storage collision warning throttle", () => {
 
 		expect(warnMock).toHaveBeenCalledTimes(2);
 	});
+
+	it("warns separately for distinct storage paths", async () => {
+		await loadAccounts();
+		setStoragePathDirect(
+			"/tmp/oc-codex-collision-warning-other/accounts.json",
+		);
+
+		await loadAccounts();
+
+		expect(warnMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("warns separately for a new foreign lock generation", async () => {
+		await loadAccounts();
+		acquireOrDetectLockMock.mockResolvedValue({
+			acquired: false,
+			foreign: {
+				pid: 1234,
+				hostname: "other-host",
+				cwd: "/tmp/other-worktree",
+				startedAt: new Date(1).toISOString(),
+				lastActive: new Date(1).toISOString(),
+			},
+		});
+
+		await loadAccounts();
+
+		expect(warnMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("bounds remembered collision identities", async () => {
+		for (let pid = 1; pid <= 129; pid += 1) {
+			acquireOrDetectLockMock.mockResolvedValueOnce({
+				acquired: false,
+				foreign: {
+					pid,
+					hostname: "other-host",
+					cwd: "/tmp/other-worktree",
+					startedAt: new Date(0).toISOString(),
+					lastActive: new Date(0).toISOString(),
+				},
+			});
+			await loadAccounts();
+		}
+		acquireOrDetectLockMock.mockResolvedValueOnce({
+			acquired: false,
+			foreign: {
+				pid: 1,
+				hostname: "other-host",
+				cwd: "/tmp/other-worktree",
+				startedAt: new Date(0).toISOString(),
+				lastActive: new Date(0).toISOString(),
+			},
+		});
+
+		await loadAccounts();
+
+		expect(warnMock).toHaveBeenCalledTimes(130);
+	});
 });
