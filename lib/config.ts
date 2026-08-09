@@ -179,14 +179,13 @@ export function updateModelAccountPool(
 	options: { dryRun?: boolean; poolMode?: ModelAccountPoolMode } = {},
 ): Promise<ModelAccountPoolMutationResult> {
 	const pending = modelAccountPoolMutationQueue.then(async () => {
-		const preview = await performModelAccountPoolMutation(
-			model,
-			mutation,
-			accountIds,
-			{ ...options, dryRun: true },
-		);
-		if (options.dryRun === true || !preview.changed) {
-			return { ...preview, dryRun: options.dryRun === true };
+		if (options.dryRun === true) {
+			return performModelAccountPoolMutation(
+				model,
+				mutation,
+				accountIds,
+				options,
+			);
 		}
 
 		await fs.mkdir(dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
@@ -205,7 +204,7 @@ export function updateModelAccountPool(
 				},
 			});
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+			if (hasErrorCode(error, "ELOCKED")) {
 				throw new ConfigLockContentionError(CONFIG_PATH, error);
 			}
 			throw error;
@@ -226,6 +225,15 @@ export function updateModelAccountPool(
 		() => undefined,
 	);
 	return pending;
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		error.code === code
+	);
 }
 
 async function performModelAccountPoolMutation(

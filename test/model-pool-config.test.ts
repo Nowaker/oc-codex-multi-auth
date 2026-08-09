@@ -170,18 +170,12 @@ describe("model account pool config mutation", () => {
 		await expect(fs.stat(configPath)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
-	it("does not rewrite an unchanged pool", async () => {
+	it("does not rewrite a pool that is unchanged under the lock", async () => {
 		const original = `${JSON.stringify({
 			modelAccountPools: { model: ["one"] },
 		})}\n\n`;
 		await fs.writeFile(configPath, original);
-		const releaseForeignLock = await lock(configPath, { realpath: false });
-		let result: Awaited<ReturnType<typeof updateModelAccountPool>>;
-		try {
-			result = await updateModelAccountPool("model", "set", ["one"]);
-		} finally {
-			await releaseForeignLock();
-		}
+		const result = await updateModelAccountPool("model", "set", ["one"]);
 
 		expect(result.changed).toBe(false);
 		expect(await fs.readFile(configPath, "utf-8")).toBe(original);
