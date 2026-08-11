@@ -29,6 +29,18 @@ import {
 } from "../lib/storage/load-save.js";
 import { setStoragePathDirect } from "../lib/storage/state.js";
 
+const COLLISION_MESSAGE = "Multi-worktree collision detected on account storage";
+
+/**
+ * loadAccounts() warns from several unrelated sites (schema validation, global
+ * fallback load failures). Counting every warn would fail this suite the moment
+ * any of them fires, so only the collision warning is counted.
+ */
+function collisionWarnCount(): number {
+	return warnMock.mock.calls.filter((call) => call[0] === COLLISION_MESSAGE)
+		.length;
+}
+
 describe("account storage collision warning throttle", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
@@ -58,12 +70,12 @@ describe("account storage collision warning throttle", () => {
 		await loadAccounts();
 		await loadAccounts();
 
-		expect(warnMock).toHaveBeenCalledTimes(1);
+		expect(collisionWarnCount()).toBe(1);
 
 		vi.advanceTimersByTime(60_000);
 		await loadAccounts();
 
-		expect(warnMock).toHaveBeenCalledTimes(2);
+		expect(collisionWarnCount()).toBe(2);
 	});
 
 	it("warns separately for distinct storage paths", async () => {
@@ -74,7 +86,7 @@ describe("account storage collision warning throttle", () => {
 
 		await loadAccounts();
 
-		expect(warnMock).toHaveBeenCalledTimes(2);
+		expect(collisionWarnCount()).toBe(2);
 	});
 
 	it("warns separately for a new foreign lock generation", async () => {
@@ -92,7 +104,7 @@ describe("account storage collision warning throttle", () => {
 
 		await loadAccounts();
 
-		expect(warnMock).toHaveBeenCalledTimes(2);
+		expect(collisionWarnCount()).toBe(2);
 	});
 
 	it("bounds remembered collision identities", async () => {
@@ -122,6 +134,6 @@ describe("account storage collision warning throttle", () => {
 
 		await loadAccounts();
 
-		expect(warnMock).toHaveBeenCalledTimes(130);
+		expect(collisionWarnCount()).toBe(130);
 	});
 });

@@ -15,7 +15,7 @@ export const WINDOWS_RENAME_RETRY_ATTEMPTS = 5;
 export const WINDOWS_RENAME_RETRY_BASE_DELAY_MS = 10;
 export const PRE_IMPORT_BACKUP_WRITE_TIMEOUT_MS = 3_000;
 
-function isWindowsLockError(error: unknown): error is NodeJS.ErrnoException {
+export function isWindowsLockError(error: unknown): error is NodeJS.ErrnoException {
   const code = (error as NodeJS.ErrnoException)?.code;
   return code === "EPERM" || code === "EBUSY";
 }

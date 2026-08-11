@@ -1,4 +1,12 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -25,9 +33,26 @@ describe("model account pool config lock contention", () => {
 		"openai-codex-auth-config.json",
 	);
 
+	const realPlatform = process.platform;
+
+	/**
+	 * The Windows branch of the contention classifier has to be exercised from
+	 * Linux CI too, so the platform is stubbed rather than the test skipped.
+	 */
+	function stubPlatform(platform: NodeJS.Platform): void {
+		Object.defineProperty(process, "platform", {
+			value: platform,
+			configurable: true,
+		});
+	}
+
 	beforeEach(async () => {
 		lockMock.mockReset();
 		await fs.rm(testHome, { recursive: true, force: true });
+	});
+
+	afterEach(() => {
+		stubPlatform(realPlatform);
 	});
 
 	afterAll(async () => {
@@ -43,7 +68,7 @@ describe("model account pool config lock contention", () => {
 		await expect(pending).rejects.toMatchObject({
 			name: "ConfigLockContentionError",
 			code: "CODEX_CONFIG_LOCK_CONTENTION",
-			path: `${testHome}/.opencode/openai-codex-auth-config.json`,
+			path: configPath,
 			cause,
 		});
 		await expect(pending).rejects.toBeInstanceOf(ConfigLockContentionError);
@@ -83,6 +108,87 @@ describe("model account pool config lock contention", () => {
 		expect(result.changed).toBe(true);
 		expect(result.previousAccountIds).toEqual([]);
 		expect(persisted.modelAccountPools.model).toEqual(["one"]);
+	});
+
+	it("keeps a successful mutation when releasing the lock fails", async () => {
+		// proper-lockfile rejects release() with ERELEASED when the lock was
+		// compromised mid-mutation, and removeLock propagates any non-ENOENT
+		// rmdir error. Before the fix that rejection escaped from the finally
+		// block and replaced the return value, so a change that had already
+		// reached disk was reported as a fatal lock error.
+		const releaseError = Object.assign(new Error("lock is already released"), {
+			code: "ERELEASED",
+		});
+		lockMock.mockResolvedValueOnce(async () => {
+			throw releaseError;
+		});
+
+		const result = await updateModelAccountPool("model", "set", ["one"]);
+		const persisted = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+			modelAccountPools: Record<string, string[]>;
+		};
+
+		expect(result.changed).toBe(true);
+		expect(persisted.modelAccountPools.model).toEqual(["one"]);
+	});
+
+	it("installs an onCompromised handler that cannot kill the process", async () => {
+		// The proper-lockfile default rethrows from inside an fs callback, and
+		// nothing in this process installs an uncaughtException handler.
+		lockMock.mockResolvedValueOnce(async () => {});
+
+		await updateModelAccountPool("model", "set", ["one"]);
+
+		const options = lockMock.mock.calls[0]?.[1] as {
+			onCompromised?: (error: Error) => void;
+		};
+		expect(typeof options?.onCompromised).toBe("function");
+		expect(() =>
+			options.onCompromised?.(
+				Object.assign(new Error("lock compromised"), {
+					code: "ECOMPROMISED",
+				}),
+			),
+		).not.toThrow();
+	});
+
+	it("classifies Windows lock-directory failures as contention", async () => {
+		// On win32 a lock directory held open by another process (or by an
+		// antivirus scanner or the indexer) surfaces as EPERM/EBUSY, never
+		// EEXIST, so operation.mainError() is not ELOCKED and the degrade path
+		// used to be skipped entirely.
+		stubPlatform("win32");
+		const cause = Object.assign(new Error("operation not permitted"), {
+			code: "EPERM",
+		});
+		lockMock.mockRejectedValue(cause);
+
+		await expect(
+			updateModelAccountPool("model", "set", ["one"]),
+		).rejects.toBeInstanceOf(ConfigLockContentionError);
+	});
+
+	it("keeps EPERM fatal off Windows", async () => {
+		stubPlatform("linux");
+		const cause = Object.assign(new Error("operation not permitted"), {
+			code: "EPERM",
+		});
+		lockMock.mockRejectedValue(cause);
+
+		await expect(updateModelAccountPool("model", "set", ["one"])).rejects.toBe(
+			cause,
+		);
+	});
+
+	it("previews without acquiring the configuration lock", async () => {
+		// The one behaviour this branch actually changes for non-error callers:
+		// a dry run no longer contends for the config lock at all.
+		const result = await updateModelAccountPool("model", "set", ["one"], {
+			dryRun: true,
+		});
+
+		expect(lockMock).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ dryRun: true, changed: true });
 	});
 
 	it("preserves malformed lock acquisition rejections", async () => {

@@ -11,7 +11,10 @@ import {
 } from "./request/retry-budget.js";
 import { logWarn } from "./logger.js";
 import { stripEffortSuffix } from "./request/helpers/effort-suffix.js";
-import { renameWithWindowsRetry } from "./storage/atomic-write.js";
+import {
+	isWindowsLockError,
+	renameWithWindowsRetry,
+} from "./storage/atomic-write.js";
 import { ConfigLockContentionError } from "./errors.js";
 
 export { ConfigLockContentionError } from "./errors.js";
@@ -195,6 +198,19 @@ export function updateModelAccountPool(
 				realpath: false,
 				stale: 10_000,
 				update: 2_000,
+				// proper-lockfile's default `onCompromised` rethrows from inside an
+				// fs callback. Nothing in this process installs an
+				// `uncaughtException` handler, so a lock that goes stale mid-mutation
+				// (event loop blocked past `stale`, or another process reclaiming the
+				// entry) would take the whole plugin down instead of failing this one
+				// call. The mutation is already in flight and cannot be rolled back,
+				// so the only useful response is to record it; the release below
+				// tolerates the ERELEASED that follows.
+				onCompromised: (error: Error) => {
+					logWarn(
+						`Plugin configuration lock at ${CONFIG_PATH} was compromised mid-mutation: ${error.message}`,
+					);
+				},
 				retries: {
 					retries: 22,
 					factor: 1.2,
@@ -204,7 +220,7 @@ export function updateModelAccountPool(
 				},
 			});
 		} catch (error) {
-			if (hasErrorCode(error, "ELOCKED")) {
+			if (isLockContentionError(error)) {
 				throw new ConfigLockContentionError(CONFIG_PATH, error);
 			}
 			throw error;
@@ -217,7 +233,12 @@ export function updateModelAccountPool(
 				options,
 			);
 		} finally {
-			await release();
+			// A release failure must never replace the mutation's outcome. By this
+			// point the config has already been written, so surfacing ERELEASED (or
+			// a Windows EPERM/EBUSY on the lock directory, which `removeLock`
+			// propagates straight from `rmdir`) would report a fatal lock error for
+			// a change that actually landed - the exact symptom this fix removes.
+			await releaseLockQuietly(release);
 		}
 	});
 	modelAccountPoolMutationQueue = pending.then(
@@ -234,6 +255,40 @@ function hasErrorCode(error: unknown, code: string): boolean {
 		"code" in error &&
 		error.code === code
 	);
+}
+
+/**
+ * True when a lock acquisition failure means "another process holds it", as
+ * opposed to a genuine environment fault the caller must see.
+ *
+ * proper-lockfile forwards raw fs errors from the lock directory's
+ * `mkdir`/`stat`/`rmdir` straight into its retry loop, so the error that
+ * finally escapes (`operation.mainError()`) is not always ELOCKED. On Windows a
+ * lock directory held open by another process - or by an antivirus scanner or
+ * the search indexer - surfaces as EPERM/EBUSY rather than EEXIST, the same
+ * class `renameWithWindowsRetry` already tolerates one layer down. Those codes
+ * count as contention only on win32; on POSIX an EPERM really is a permission
+ * problem and has to stay fatal.
+ */
+function isLockContentionError(error: unknown): boolean {
+	if (hasErrorCode(error, "ELOCKED")) return true;
+	return process.platform === "win32" && isWindowsLockError(error);
+}
+
+/** Release a config lock, downgrading any failure to a warning. */
+async function releaseLockQuietly(release: () => Promise<void>): Promise<void> {
+	try {
+		await release();
+	} catch (error) {
+		// Losing the lock directory is recoverable on its own: `stale` reclaims a
+		// leftover entry within 10s, and the mutation it guarded is already
+		// durable on disk.
+		logWarn(
+			`Failed to release plugin configuration lock at ${CONFIG_PATH}: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
 }
 
 async function performModelAccountPoolMutation(

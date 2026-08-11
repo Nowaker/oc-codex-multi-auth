@@ -12,7 +12,10 @@ vi.mock("node:os", async () => {
 	return { ...actual, homedir: () => testHome };
 });
 
-import { updateModelAccountPool } from "../lib/config.js";
+import {
+	ConfigLockContentionError,
+	updateModelAccountPool,
+} from "../lib/config.js";
 
 const configDir = join(testHome, ".opencode");
 const configPath = join(configDir, "openai-codex-auth-config.json");
@@ -150,6 +153,34 @@ describe("model account pool config mutation", () => {
 			modelAccountPools: { model: ["one", "external", "two"] },
 		});
 	});
+
+	it(
+		"degrades to a contention error when a foreign lock outlasts the retry budget",
+		async () => {
+			// Deliberately unmocked. Every other contention test stubs
+			// proper-lockfile, so nothing else verifies the assumption the whole
+			// degrade path rests on: that an exhausted retry budget really does
+			// surface as code "ELOCKED".
+			await fs.writeFile(
+				configPath,
+				JSON.stringify({ modelAccountPools: { model: ["one"] } }),
+			);
+			const releaseForeignLock = await lock(configPath, { realpath: false });
+			try {
+				await expect(
+					updateModelAccountPool("model", "add", ["two"]),
+				).rejects.toBeInstanceOf(ConfigLockContentionError);
+			} finally {
+				await releaseForeignLock();
+			}
+
+			// The contended call must be a no-op, not a partial write.
+			expect(await readConfig()).toMatchObject({
+				modelAccountPools: { model: ["one"] },
+			});
+		},
+		20_000,
+	);
 
 	it("previews a change without creating or modifying the config file", async () => {
 		const releaseForeignLock = await lock(configPath, { realpath: false });
