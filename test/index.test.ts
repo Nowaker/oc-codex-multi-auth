@@ -5247,7 +5247,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts).toHaveLength(1);
 	});
 
-	it("persists distinct organization candidates from a single login while keeping best candidate primary", async () => {
+	it("persists one token-scoped account per login instead of one per organization", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
@@ -5276,32 +5276,22 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
 
-		expect(mockStorage.accounts).toHaveLength(3);
-		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
-			"org-default",
-			"token-personal",
-			"id-secondary",
-		]);
-		expect(mockStorage.accounts.map((account) => account.accountIdSource)).toEqual([
-			"org",
-			"token",
-			"id_token",
-		]);
-		expect(mockStorage.accounts.map((account) => account.accountLabel)).toEqual([
-			"Workspace Alpha [id:fault]",
-			"Token Personal [id:sonal]",
-			"Workspace Beta [id:ndary]",
-		]);
+		// Every candidate shares this login's single OAuth token, so persisting
+		// one entry per organization produced N rows that all drew from the same
+		// quota pool (#226). Only the token-scoped id routes.
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.accountId).toBe("token-personal");
+		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
+		// The selected workspace's name survives, re-suffixed with the id that
+		// actually identifies the entry.
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("Workspace Alpha [id:rsonal]");
+		// organizationId is display/dedupe metadata only - it is not sent as a
+		// header unless CODEX_AUTH_SEND_ORGANIZATION_HEADER=1.
+		expect(mockStorage.accounts[0]?.organizationId).toBe("org-default");
 		expect(mockStorage.activeIndex).toBe(0);
-
-		const persistedOrgIds = mockStorage.accounts
-			.map((account) => account.organizationId)
-			.filter((organizationId): organizationId is string => typeof organizationId === "string");
-		// Personal identities are left intact while team org duplicates are collapsed.
-		expect(persistedOrgIds).toEqual(["org-default", "org-personal", "org-secondary"]);
 	});
 
-	it("keeps non-primary candidates persisted even when best candidate differs", async () => {
+	it("binds the login to the token account even when the best candidate is an organization", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
@@ -5330,17 +5320,15 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
 
 		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
-			"org-preferred",
 			"token-first",
 		]);
-		expect(mockStorage.accounts[1]?.accountIdSource).toBe("token");
-		expect(mockStorage.accounts.map((account) => account.organizationId)).toEqual([
-			"org-preferred",
-			"org-token",
-		]);
+		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
+		// The preferred workspace still names the entry and supplies its org id.
+		expect(mockStorage.accounts[0]?.organizationId).toBe("org-preferred");
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("Org Preferred [id:-first]");
 	});
 
-	it("preserves duplicate organization candidates when accountId differs", async () => {
+	it("collapses duplicate organization candidates onto the single token account", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
@@ -5379,23 +5367,22 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
 
-		const organizationEntries = mockStorage.accounts.filter(
-			(account) => account.organizationId === "organization-shared",
-		);
-		expect(organizationEntries).toHaveLength(2);
-		const organizationAccountIds = organizationEntries.map((account) => account.accountId).sort();
-		expect(organizationAccountIds).toEqual(["org-variant-a", "org-variant-b"]);
-		expect(mockStorage.accounts).toHaveLength(3);
-		expect(mockStorage.accounts.some((account) => account.accountId === "token-personal")).toBe(true);
+		// Two org rows under one organization are two views of the same
+		// subscription, not two quotas.
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.accountId).toBe("token-personal");
+		expect(mockStorage.accounts[0]?.organizationId).toBe("organization-shared");
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("Org Shared A [id:rsonal]");
 	});
 
-	it("preserves org/no-org shared-refresh entries with different accountId values from a single login", async () => {
+	it("persists a single token-scoped entry when a login yields org and token candidates", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
-		// Simulate a single OAuth login that produces an org candidate + a token candidate.
-		// Both share the same refresh token (same human account).
-		// Since accountId values differ, both should be preserved.
+// Simulate a single OAuth login that produces an org candidate + a token
+		// candidate. They share one refresh token because they are one login, so
+		// they can only ever reach one quota pool - persisting both produced the
+		// duplicate rows with identical quota reported in #226.
 		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
 			type: "success",
 			access: "access-holly",
@@ -5431,13 +5418,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
 
-		// accountId values differ ("org-QA1bZCn6zb57FT6TXLZWMPO3" vs "e4692e53-2f30-42a0-b8df-3a685d3c2a4a")
-		// so both entries should be preserved despite sharing the same refreshToken.
-		expect(mockStorage.accounts).toHaveLength(2);
-		const accountIds = mockStorage.accounts.map((account) => account.accountId);
-		expect(accountIds).toContain("org-QA1bZCn6zb57FT6TXLZWMPO3");
-		expect(accountIds).toContain("e4692e53-2f30-42a0-b8df-3a685d3c2a4a");
-		expect(mockStorage.accounts.every((account) => account.refreshToken === "refresh-holly-shared")).toBe(true);
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.accountId).toBe(
+			"e4692e53-2f30-42a0-b8df-3a685d3c2a4a",
+		);
+		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
+		expect(mockStorage.accounts[0]?.organizationId).toBe(
+			"org-QA1bZCn6zb57FT6TXLZWMPO3",
+		);
+		expect(mockStorage.accounts[0]?.accountLabel).toBe(
+			"Personal (role:owner) [id:3c2a4a]",
+		);
+		expect(mockStorage.accounts[0]?.refreshToken).toBe("refresh-holly-shared");
 	});
 
 	it("updates a unique org-scoped entry when later login lacks organization metadata", async () => {

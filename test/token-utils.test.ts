@@ -942,13 +942,31 @@ describe("Token Utils Module", () => {
 	});
 
 	describe("resolveRequestAccountId", () => {
-		it("preserves org/manual selection when token differs", () => {
+		it("routes org-sourced entries through the token account id", () => {
+			// An organization id is not a chatgpt-account-id. The backend ignores
+			// it and silently bills the token's default subscription, which is how
+			// two workspace subscriptions collapsed onto one quota pool (#226).
 			expect(resolveRequestAccountId("org_business", "org", "token_personal")).toBe(
-				"org_business",
+				"token_personal",
 			);
+		});
+
+		it("keeps a manual override even when the token differs", () => {
 			expect(resolveRequestAccountId("manual_selected", "manual", "token_personal")).toBe(
 				"manual_selected",
 			);
+		});
+
+		it("keeps the stored org id when no token account is available", () => {
+			expect(resolveRequestAccountId("org_business", "org", undefined)).toBe(
+				"org_business",
+			);
+		});
+
+		it("still reports org selections as stable for persistence", () => {
+			// Only the request header is redirected; the stored selection must not
+			// start following token refreshes.
+			expect(shouldUpdateAccountIdFromToken("org", "org_business")).toBe(false);
 		});
 
 		it("follows token for token/id_token sources", () => {

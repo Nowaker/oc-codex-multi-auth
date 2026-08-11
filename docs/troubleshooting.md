@@ -283,6 +283,47 @@ Failed to access Codex API
 </details>
 
 <details>
+<summary><b>Two workspace subscriptions report the same plan and quota</b></summary>
+
+**Symptoms:**
+
+- One ChatGPT login (one email / Apple ID) holding **two workspace
+  subscriptions** - for example Team and Plus.
+- `codex-limits` reports the same plan and the same percentage for every entry.
+- `codex-switch` to the other account keeps draining the same pool.
+- Logging in again under the other workspace appears to overwrite every entry.
+
+**Cause:** The OAuth flow requests `id_token_add_organizations=true`, so the
+id_token lists every organization the login belongs to. Releases before this
+fix persisted one account entry per organization, but all of those entries
+shared the login's single OAuth token. The Codex backend meters quota by the
+`chatgpt-account-id` header and ignores organization ids, so an entry whose id
+was an organization id silently fell back to the token's default subscription -
+N entries, one pool.
+
+Each workspace subscription is a distinct ChatGPT account with its own
+`chatgpt_account_id` claim, so separate tokens are what produce separate quotas.
+
+**Solutions:**
+
+1. Upgrade to a release containing this fix. One `opencode auth login` now
+   persists exactly one account, bound to the token's ChatGPT account id and
+   labelled with the workspace you selected.
+2. Log in once per workspace: run `opencode auth login`, pick the first
+   workspace, then run it again and pick the second. Each login appends a
+   separate account carrying its own token, so `codex-limits` reports the two
+   subscriptions independently.
+3. **Existing entries are not rewritten.** Accounts persisted by an older
+   release keep their stored organization id. Requests for them are now
+   redirected to the token's ChatGPT account id so they reach a real pool
+   instead of being silently mis-billed, but duplicate rows left over from the
+   old one-entry-per-organization behaviour remain until you remove them. For a
+   clean pool, re-run `opencode auth login`, choose the fresh (not `add`) login
+   mode, then add the second workspace.
+
+</details>
+
+<details>
 <summary><b>"All N account(s) failed (server errors or auth issues)"</b></summary>
 
 **Symptoms:**
