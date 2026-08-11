@@ -22,9 +22,14 @@ vi.mock("node:os", async () => {
 });
 
 import {
-	ConfigLockContentionError,
+	__resetLockContentionStateForTests,
 	updateModelAccountPool,
 } from "../lib/config.js";
+import {
+	CodexError,
+	ConfigError,
+	ConfigLockContentionError,
+} from "../lib/errors.js";
 
 describe("model account pool config lock contention", () => {
 	const configPath = join(
@@ -48,6 +53,7 @@ describe("model account pool config lock contention", () => {
 
 	beforeEach(async () => {
 		lockMock.mockReset();
+		__resetLockContentionStateForTests();
 		await fs.rm(testHome, { recursive: true, force: true });
 	});
 
@@ -189,6 +195,58 @@ describe("model account pool config lock contention", () => {
 
 		expect(lockMock).not.toHaveBeenCalled();
 		expect(result).toMatchObject({ dryRun: true, changed: true });
+	});
+
+	// ---------- finding 5: N contended callers must not cost N budgets ----------
+	it("drops to a probe budget once contention is established", async () => {
+		const cause = Object.assign(new Error("already held"), { code: "ELOCKED" });
+		lockMock.mockRejectedValue(cause);
+
+		await expect(
+			updateModelAccountPool("model", "set", ["one"]),
+		).rejects.toBeInstanceOf(ConfigLockContentionError);
+		await expect(
+			updateModelAccountPool("model", "set", ["two"]),
+		).rejects.toBeInstanceOf(ConfigLockContentionError);
+
+		const first = lockMock.mock.calls[0]?.[1] as { retries: { retries: number } };
+		const second = lockMock.mock.calls[1]?.[1] as { retries: { retries: number } };
+
+		expect(first.retries.retries).toBe(20);
+		// Every mutation is serialized behind the in-process queue, so without
+		// this the second caller would wait out another full budget against a
+		// holder the first caller already proved is external.
+		expect(second.retries.retries).toBeLessThan(first.retries.retries);
+	});
+
+	it("restores the full retry budget after a successful acquisition", async () => {
+		const cause = Object.assign(new Error("already held"), { code: "ELOCKED" });
+		lockMock.mockRejectedValueOnce(cause);
+		await expect(
+			updateModelAccountPool("model", "set", ["one"]),
+		).rejects.toBeInstanceOf(ConfigLockContentionError);
+
+		lockMock.mockResolvedValueOnce(async () => {});
+		await updateModelAccountPool("model", "set", ["two"]);
+
+		lockMock.mockRejectedValueOnce(cause);
+		await expect(
+			updateModelAccountPool("model", "set", ["three"]),
+		).rejects.toBeInstanceOf(ConfigLockContentionError);
+
+		const third = lockMock.mock.calls[2]?.[1] as { retries: { retries: number } };
+		expect(third.retries.retries).toBe(20);
+	});
+
+	// ---------- finding 11: transient, not "your configuration is wrong" ----------
+	it("is a transient error rather than a configuration error", () => {
+		const error = new ConfigLockContentionError("/tmp/config.json");
+
+		expect(error).toBeInstanceOf(CodexError);
+		expect(error.retryable).toBe(true);
+		// ConfigError means the user must go fix something; a handler catching it
+		// to stop retrying would give exactly the wrong advice here.
+		expect(error).not.toBeInstanceOf(ConfigError);
 	});
 
 	it("preserves malformed lock acquisition rejections", async () => {

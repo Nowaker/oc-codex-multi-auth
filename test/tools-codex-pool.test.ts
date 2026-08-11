@@ -20,11 +20,8 @@ vi.mock("../lib/config.js", async (importOriginal) => {
 	};
 });
 
-import {
-	ConfigLockContentionError,
-	loadPluginConfig,
-	updateModelAccountPool,
-} from "../lib/config.js";
+import { loadPluginConfig, updateModelAccountPool } from "../lib/config.js";
+import { ConfigLockContentionError } from "../lib/errors.js";
 import { loadAccounts } from "../lib/storage.js";
 
 const storage: AccountStorageV3 = {
@@ -297,9 +294,55 @@ describe("codex-pool tool", () => {
 			model: "gpt-5.6-sol",
 			changed: false,
 			applied: false,
-			error: "config_locked",
+			dryRun: false,
+			restartRequired: false,
+			// Nothing was mutated, so the payload reports the pool still on disk.
+			previousConfiguredCount: 2,
+			previousPoolMode: "strict",
+			// Same token as the class name and the ErrorCode used in logs, so a
+			// caller that greps for what it saw in tool JSON finds something.
+			error: "CODEX_CONFIG_LOCK_CONTENTION",
 			retryable: true,
 		});
+		expect(parsed.pool).toMatchObject({ poolMode: "strict" });
+	});
+
+	// ---------- finding 4: the degrade path must not break strict consumers ----------
+	it("keeps the contention payload shape identical to a successful mutation", async () => {
+		vi.mocked(updateModelAccountPool).mockResolvedValue({
+			model: "gpt-5.6-sol",
+			accountIds: ["account-one"],
+			changed: true,
+			dryRun: false,
+			previousAccountIds: ["account-one", "missing-account"],
+			previousPoolMode: "strict",
+			poolMode: "strict",
+		});
+		const okPayload = JSON.parse(
+			(await createCodexPoolTool(buildCtx()).execute(
+				{ action: "set", model: "gpt-5.6-sol", accounts: [1], format: "json" },
+				{} as never,
+			)) as string,
+		) as Record<string, unknown>;
+
+		vi.mocked(updateModelAccountPool).mockRejectedValue(
+			new ConfigLockContentionError("/tmp/config.json"),
+		);
+		const lockedPayload = JSON.parse(
+			(await createCodexPoolTool(buildCtx()).execute(
+				{ action: "set", model: "gpt-5.6-sol", accounts: [1], format: "json" },
+				{} as never,
+			)) as string,
+		) as Record<string, unknown>;
+
+		// A consumer reading parsed.pool.accounts must not start throwing just
+		// because the tool degraded.
+		expect(Object.keys(lockedPayload)).toEqual(
+			expect.arrayContaining(Object.keys(okPayload)),
+		);
+		expect(Array.isArray((lockedPayload.pool as { accounts?: unknown }).accounts)).toBe(
+			true,
+		);
 	});
 
 	it("rethrows non-contention persistence failures", async () => {

@@ -56,27 +56,44 @@ export function __resetCollisionWarningThrottleForTests(): void {
   collisionWarningTimes.clear();
 }
 
-function shouldWarnForCollision(
+/**
+ * Identity a collision warning is throttled against.
+ *
+ * Deliberately storage path + host only. Including the foreign `pid` and
+ * `startedAt` meant a foreign holder that restarts - or several short-lived
+ * sessions rotating - produced a brand new key on every probe, so the throttle
+ * never fired and the log spam it exists to stop continued unabated. Those dead
+ * identities also evicted live ones from the bounded map, which could stop a
+ * genuinely recurring collision from ever being deduped.
+ */
+function collisionWarningKey(
   storagePath: string,
-  foreign: { hostname: string; pid: number; startedAt: string },
-): boolean {
-  const now = Date.now();
-  for (const [key, warnedAt] of collisionWarningTimes) {
-    if (
-      now < warnedAt ||
-      now - warnedAt >= COLLISION_WARNING_THROTTLE_MS
-    ) {
-      collisionWarningTimes.delete(key);
+  foreign: { hostname: string },
+): string {
+  return JSON.stringify([storagePath, foreign.hostname]);
+}
+
+/** Pure query: has this identity already warned inside the current window? */
+function hasWarnedForCollision(key: string, now: number): boolean {
+  const warnedAt = collisionWarningTimes.get(key);
+  if (warnedAt === undefined) return false;
+  if (now < warnedAt) return false;
+  return now - warnedAt < COLLISION_WARNING_THROTTLE_MS;
+}
+
+/**
+ * Record a warning the caller has already emitted.
+ *
+ * Split from the check, and called after the emit, so a `log.warn` that throws
+ * cannot leave the throttle believing it warned - which would silently suppress
+ * the next 60s of collisions.
+ */
+function recordCollisionWarning(key: string, now: number): void {
+  for (const [existingKey, warnedAt] of collisionWarningTimes) {
+    if (now < warnedAt || now - warnedAt >= COLLISION_WARNING_THROTTLE_MS) {
+      collisionWarningTimes.delete(existingKey);
     }
   }
-
-  const key = JSON.stringify([
-    storagePath,
-    foreign.hostname,
-    foreign.pid,
-    foreign.startedAt,
-  ]);
-  if (collisionWarningTimes.has(key)) return false;
 
   collisionWarningTimes.set(key, now);
   while (
@@ -86,7 +103,6 @@ function shouldWarnForCollision(
     if (oldestKey === undefined) break;
     collisionWarningTimes.delete(oldestKey);
   }
-  return true;
 }
 
 /**
@@ -119,7 +135,9 @@ async function checkWorktreeLockForCurrentStorage(
   try {
     const result = await acquireOrDetectLock(path);
     if (!result.acquired && result.foreign) {
-      if (shouldWarnForCollision(path, result.foreign)) {
+      const now = Date.now();
+      const warningKey = collisionWarningKey(path, result.foreign);
+      if (!hasWarnedForCollision(warningKey, now)) {
         log.warn("Multi-worktree collision detected on account storage", {
           operation,
           storagePath: path,
@@ -131,6 +149,7 @@ async function checkWorktreeLockForCurrentStorage(
           ourHost: os.hostname(),
           ourCwd: process.cwd(),
         });
+        recordCollisionWarning(warningKey, now);
       }
     }
   } catch (error) {
