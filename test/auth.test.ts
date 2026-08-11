@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
 	createState,
 	parseAuthorizationInput,
@@ -223,6 +224,37 @@ describe('Auth Module', () => {
 			expect(flow1.state).not.toBe(flow2.state);
 			expect(flow1.pkce.verifier).not.toBe(flow2.pkce.verifier);
 			expect(flow1.url).not.toBe(flow2.url);
+		});
+
+		// The PKCE pair was produced by @openauthjs/openauth until that package
+		// was dropped. Every assertion above passes for a challenge that is not
+		// actually derived from the verifier - the server would reject the token
+		// exchange and nothing here would notice. Pin the derivation itself,
+		// recomputed through a different crypto API than the implementation uses.
+		it('derives the challenge as base64url(SHA-256(verifier))', async () => {
+			const { pkce } = await createAuthorizationFlow();
+
+			const expected = createHash('sha256')
+				.update(pkce.verifier, 'ascii')
+				.digest('base64url');
+
+			expect(pkce.challenge).toBe(expected);
+		});
+
+		it('emits an RFC 7636-conformant verifier and challenge', async () => {
+			const { pkce } = await createAuthorizationFlow();
+
+			// Unpadded base64url only - no "+", "/" or "=".
+			expect(pkce.verifier).toMatch(/^[A-Za-z0-9_-]+$/);
+			expect(pkce.challenge).toMatch(/^[A-Za-z0-9_-]+$/);
+
+			// 64 random bytes -> 86 chars, inside the 43-128 the RFC allows.
+			expect(pkce.verifier).toHaveLength(86);
+			expect(pkce.verifier.length).toBeGreaterThanOrEqual(43);
+			expect(pkce.verifier.length).toBeLessThanOrEqual(128);
+
+			// A SHA-256 digest is 32 bytes -> 43 unpadded base64url chars.
+			expect(pkce.challenge).toHaveLength(43);
 		});
 	});
 

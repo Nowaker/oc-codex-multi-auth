@@ -1,5 +1,4 @@
-import { generatePKCE } from "@openauthjs/openauth/pkce";
-import { randomBytes } from "node:crypto";
+import { randomBytes, webcrypto } from "node:crypto";
 import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
 import {
@@ -207,12 +206,40 @@ export interface AuthorizationFlowOptions {
 }
 
 /**
+ * Generate an RFC 7636 S256 PKCE pair.
+ *
+ * Previously `generatePKCE` from `@openauthjs/openauth/pkce`. That package was
+ * pulled in for this one function and dragged `hono` into the production tree
+ * as a peer dependency - which is the only reason `hono` was a direct
+ * dependency and an override here - carrying advisories that could not be
+ * cleared without it.
+ *
+ * Semantics are preserved exactly:
+ *   - 64 random bytes, base64url-encoded, giving an 86-character verifier
+ *     (RFC 7636 allows 43-128).
+ *   - challenge = base64url(SHA-256(ASCII(verifier))).
+ *   - The upstream helper also returned `method: "S256"`; nothing read it.
+ *     {@link PKCEPair} is `{ challenge, verifier }` and the request hardcodes
+ *     `code_challenge_method=S256` below.
+ *
+ * Both encoders emit unpadded base64url, so the wire format is unchanged.
+ */
+async function generatePKCE(): Promise<PKCEPair> {
+	const verifier = randomBytes(64).toString("base64url");
+	const digest = await webcrypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(verifier),
+	);
+	return { verifier, challenge: Buffer.from(digest).toString("base64url") };
+}
+
+/**
  * Create OAuth authorization flow
  * @param options - Optional configuration for the flow
  * @returns Authorization flow details
  */
 export async function createAuthorizationFlow(options?: AuthorizationFlowOptions): Promise<AuthorizationFlow> {
-	const pkce = (await generatePKCE()) as PKCEPair;
+	const pkce = await generatePKCE();
 	const state = createState();
 
 	const url = new URL(AUTHORIZE_URL);
