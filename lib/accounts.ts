@@ -39,6 +39,7 @@ export {
 	extractAccountId,
 	extractAccountEmail,
 	getAccountIdCandidates,
+	relabelCandidateForAccountId,
 	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
 	resolveRequestAccountId,
