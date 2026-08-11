@@ -12,10 +12,8 @@ vi.mock("node:os", async () => {
 	return { ...actual, homedir: () => testHome };
 });
 
-import {
-	ConfigLockContentionError,
-	updateModelAccountPool,
-} from "../lib/config.js";
+import { updateModelAccountPool } from "../lib/config.js";
+import { ConfigLockContentionError } from "../lib/errors.js";
 
 const configDir = join(testHome, ".opencode");
 const configPath = join(configDir, "openai-codex-auth-config.json");

@@ -2,7 +2,6 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import {
-	ConfigLockContentionError,
 	getModelAccountPoolMode,
 	loadPluginConfig,
 	type ModelAccountPoolMode,
@@ -10,6 +9,7 @@ import {
 	updateModelAccountPool,
 	type ModelAccountPoolMutation,
 } from "../config.js";
+import { ConfigLockContentionError, ErrorCode } from "../errors.js";
 import { logWarn } from "../logger.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
 import { loadAccounts, type AccountStorageV3 } from "../storage.js";
@@ -266,12 +266,43 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 					model,
 				});
 				if (format === "json") {
+					// Mirror the success payload's shape. Dropping `pool`,
+					// `previousPoolMode` and friends makes every consumer that reads
+					// `pool.accounts` throw a TypeError - a harder failure than the raw
+					// lock error this degrade path replaced. Nothing was mutated, so the
+					// pool currently on disk is the accurate answer.
+					const config = loadPluginConfig();
+					const currentAccountIds = Array.from(
+						new Set(
+							Object.entries(config.modelAccountPools ?? {})
+								.filter(
+									([configuredModel]) =>
+										configuredModel.trim().toLowerCase() === model,
+								)
+								.flatMap(([, ids]) => ids ?? []),
+						),
+					);
+					const currentPoolMode = getModelAccountPoolMode(config, model);
 					return renderJsonOutput({
 						action,
 						model,
 						changed: false,
 						applied: false,
-						error: "config_locked",
+						dryRun: args.dryRun === true,
+						restartRequired: false,
+						previousConfiguredCount: currentAccountIds.length,
+						previousPoolMode: currentPoolMode,
+						pool: buildPoolSnapshot(
+							model,
+							currentAccountIds,
+							storage,
+							ctx,
+							includeSensitive,
+							currentPoolMode,
+						),
+						// Same identifier the class and the logs use, so a caller that
+						// greps for what it saw in tool JSON actually finds something.
+						error: ErrorCode.CONFIG_LOCK_CONTENTION,
 						retryable: true,
 						message,
 					});

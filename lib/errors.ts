@@ -320,9 +320,20 @@ export class ConfigError extends CodexError {
 	}
 }
 
-export class ConfigLockContentionError extends ConfigError {
+/**
+ * Another process currently holds the plugin configuration lock.
+ *
+ * Deliberately NOT a {@link ConfigError}: that class means "the user's
+ * configuration is wrong" (missing TTY, malformed CLI input, bad format flags),
+ * and any handler catching it to print "fix your configuration" and stop
+ * retrying would give exactly the wrong advice for a condition that resolves on
+ * its own. It sits with the transient family instead and carries `retryable`
+ * the same way {@link CodexNetworkError} does.
+ */
+export class ConfigLockContentionError extends CodexError {
 	override readonly name = "ConfigLockContentionError";
 	readonly path: string;
+	readonly retryable = true;
 
 	constructor(path: string, cause?: unknown) {
 		super(`Plugin configuration at ${path} is locked by another process.`, {

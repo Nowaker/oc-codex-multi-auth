@@ -16,8 +16,6 @@ import {
 	renameWithWindowsRetry,
 } from "./storage/atomic-write.js";
 import { ConfigLockContentionError } from "./errors.js";
-
-export { ConfigLockContentionError } from "./errors.js";
 import {
 	PluginConfigSchema,
 	getValidationErrors,
@@ -170,6 +168,71 @@ export function loadPluginConfig(): PluginConfig {
 	}
 }
 
+type LockRetryBudget = {
+	retries: number;
+	factor: number;
+	minTimeout: number;
+	maxTimeout: number;
+	randomize: boolean;
+};
+
+/**
+ * Full budget: roughly three seconds of retries, enough to ride out another
+ * process finishing a mutation of its own.
+ */
+const LOCK_RETRY_BUDGET_FULL: LockRetryBudget = {
+	retries: 20,
+	factor: 1.2,
+	minTimeout: 25,
+	maxTimeout: 200,
+	randomize: true,
+};
+
+/**
+ * Short budget used once contention has just been observed: long enough to win
+ * a lock its holder is releasing right now, far short of the full budget.
+ */
+const LOCK_RETRY_BUDGET_PROBE: LockRetryBudget = {
+	retries: 3,
+	factor: 1.2,
+	minTimeout: 25,
+	maxTimeout: 50,
+	randomize: true,
+};
+
+/** How long one contention observation keeps later mutations on the probe budget. */
+const LOCK_CONTENTION_FAST_FAIL_WINDOW_MS = 1_000;
+
+/**
+ * When another process was last seen holding the config lock past our budget.
+ *
+ * `modelAccountPoolMutationQueue` serializes every in-process mutation, so
+ * without this each queued caller independently waited out the full budget
+ * against the same foreign holder: ten parallel `codex-pool` calls blocked for
+ * ten times the budget and then all failed anyway, which is the "completely
+ * stalls the sub tasks" half of #224. Once one call has established that the
+ * lock is externally held, the rest probe briefly and degrade immediately, so
+ * the stall is bounded rather than multiplied by the queue depth.
+ */
+let lastLockContentionAt: number | null = null;
+
+function nextLockRetryBudget(): LockRetryBudget {
+	if (lastLockContentionAt === null) return LOCK_RETRY_BUDGET_FULL;
+	if (
+		Date.now() - lastLockContentionAt >=
+		LOCK_CONTENTION_FAST_FAIL_WINDOW_MS
+	) {
+		lastLockContentionAt = null;
+		return LOCK_RETRY_BUDGET_FULL;
+	}
+	return LOCK_RETRY_BUDGET_PROBE;
+}
+
+/** Test hook: forget any observed contention so budgets start from full. */
+export function __resetLockContentionStateForTests(): void {
+	lastLockContentionAt = null;
+}
+
 /**
  * Update one model pool while preserving every unrelated raw config key.
  * Account indexes are deliberately resolved by the caller; only stable IDs
@@ -211,16 +274,12 @@ export function updateModelAccountPool(
 						`Plugin configuration lock at ${CONFIG_PATH} was compromised mid-mutation: ${error.message}`,
 					);
 				},
-				retries: {
-					retries: 22,
-					factor: 1.2,
-					minTimeout: 25,
-					maxTimeout: 225,
-					randomize: true,
-				},
+				retries: nextLockRetryBudget(),
 			});
+			lastLockContentionAt = null;
 		} catch (error) {
 			if (isLockContentionError(error)) {
+				lastLockContentionAt = Date.now();
 				throw new ConfigLockContentionError(CONFIG_PATH, error);
 			}
 			throw error;
