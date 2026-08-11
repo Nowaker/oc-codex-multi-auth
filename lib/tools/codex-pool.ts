@@ -2,12 +2,15 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import {
+	ConfigLockContentionError,
 	getModelAccountPoolMode,
 	loadPluginConfig,
 	type ModelAccountPoolMode,
+	type ModelAccountPoolMutationResult,
 	updateModelAccountPool,
 	type ModelAccountPoolMutation,
 } from "../config.js";
+import { logWarn } from "../logger.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
 import { loadAccounts, type AccountStorageV3 } from "../storage.js";
 import type { ToolContext } from "./index.js";
@@ -247,10 +250,34 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 				action === "clear" || action === "set-mode"
 					? []
 					: resolveAccountIds(storage, args.accounts);
-			const result = await updateModelAccountPool(model, action, accountIds, {
-				dryRun: args.dryRun,
-				poolMode,
-			});
+			let result: ModelAccountPoolMutationResult;
+			try {
+				result = await updateModelAccountPool(model, action, accountIds, {
+					dryRun: args.dryRun,
+					poolMode,
+				});
+			} catch (error) {
+				if (!(error instanceof ConfigLockContentionError)) throw error;
+
+				const message =
+					"The plugin configuration is locked by another process. No change was made — retry shortly.";
+				logWarn("codex-pool could not acquire the plugin configuration lock", {
+					action,
+					model,
+				});
+				if (format === "json") {
+					return renderJsonOutput({
+						action,
+						model,
+						changed: false,
+						applied: false,
+						error: "config_locked",
+						retryable: true,
+						message,
+					});
+				}
+				return `Could not update the account pool for ${model}: ${message}`;
+			}
 			const pool = buildPoolSnapshot(
 				result.model,
 				result.accountIds,

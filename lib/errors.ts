@@ -38,6 +38,7 @@ export const ErrorCode = {
 	PROMPT_ERROR: "CODEX_PROMPT_ERROR",
 	REQUEST_ERROR: "CODEX_REQUEST_ERROR",
 	CONFIG_ERROR: "CODEX_CONFIG_ERROR",
+	CONFIG_LOCK_CONTENTION: "CODEX_CONFIG_LOCK_CONTENTION",
 } as const;
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -309,12 +310,26 @@ export class RequestError extends CodexError {
  * input, bad format flags, missing required options).
  */
 export class ConfigError extends CodexError {
-	override readonly name = "ConfigError";
+	override readonly name: string = "ConfigError";
 
 	constructor(message: string, options?: CodexErrorOptions) {
 		super(message, {
 			...options,
 			code: options?.code ?? ErrorCode.CONFIG_ERROR,
 		});
+	}
+}
+
+export class ConfigLockContentionError extends ConfigError {
+	override readonly name = "ConfigLockContentionError";
+	readonly path: string;
+
+	constructor(path: string, cause?: unknown) {
+		super(`Plugin configuration at ${path} is locked by another process.`, {
+			code: ErrorCode.CONFIG_LOCK_CONTENTION,
+			cause,
+			context: { path },
+		});
+		this.path = path;
 	}
 }

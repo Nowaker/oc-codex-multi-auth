@@ -8,15 +8,23 @@ vi.mock("../lib/storage.js", () => ({
 	loadAccounts: vi.fn(),
 }));
 
-vi.mock("../lib/config.js", () => ({
-	getModelAccountPoolMode: vi.fn((config, model) =>
-		config.modelAccountPoolModes?.[model] ?? "preferred",
-	),
-	loadPluginConfig: vi.fn(),
-	updateModelAccountPool: vi.fn(),
-}));
+vi.mock("../lib/config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/config.js")>();
+	return {
+		...actual,
+		getModelAccountPoolMode: vi.fn((config, model) =>
+			config.modelAccountPoolModes?.[model] ?? "preferred",
+		),
+		loadPluginConfig: vi.fn(),
+		updateModelAccountPool: vi.fn(),
+	};
+});
 
-import { loadPluginConfig, updateModelAccountPool } from "../lib/config.js";
+import {
+	ConfigLockContentionError,
+	loadPluginConfig,
+	updateModelAccountPool,
+} from "../lib/config.js";
 import { loadAccounts } from "../lib/storage.js";
 
 const storage: AccountStorageV3 = {
@@ -54,7 +62,10 @@ function buildCtx(): ToolContext {
 				? { accountId: options.account?.accountId ?? null }
 				: {}),
 		}),
-	} as unknown as ToolContext;
+	} satisfies Pick<
+		ToolContext,
+		"resolveMaskEmail" | "formatCommandAccountLabel" | "buildJsonAccountIdentity"
+	> as unknown as ToolContext;
 }
 
 describe("codex-pool tool", () => {
@@ -249,5 +260,56 @@ describe("codex-pool tool", () => {
 				{} as never,
 			),
 		).rejects.toThrow("has no stable account ID");
+	});
+
+	it("returns retry guidance when configuration lock acquisition is exhausted", async () => {
+		vi.mocked(updateModelAccountPool).mockRejectedValue(
+			new ConfigLockContentionError("/tmp/config.json"),
+		);
+
+		const output = await createCodexPoolTool(buildCtx()).execute(
+			{ action: "set", model: "gpt-5.6-sol", accounts: [1] },
+			{} as never,
+		);
+
+		expect(output).toContain("locked by another process");
+		expect(output).toContain("No change was made");
+	});
+
+	it("returns structured retryable lock contention in JSON", async () => {
+		vi.mocked(updateModelAccountPool).mockRejectedValue(
+			new ConfigLockContentionError("/tmp/config.json"),
+		);
+
+		const output = await createCodexPoolTool(buildCtx()).execute(
+			{
+				action: "set",
+				model: "gpt-5.6-sol",
+				accounts: [1],
+				format: "json",
+			},
+			{} as never,
+		);
+		const parsed = JSON.parse(output as string) as Record<string, unknown>;
+
+		expect(parsed).toMatchObject({
+			action: "set",
+			model: "gpt-5.6-sol",
+			changed: false,
+			applied: false,
+			error: "config_locked",
+			retryable: true,
+		});
+	});
+
+	it("rethrows non-contention persistence failures", async () => {
+		vi.mocked(updateModelAccountPool).mockRejectedValue(new Error("disk failed"));
+
+		await expect(
+			createCodexPoolTool(buildCtx()).execute(
+				{ action: "set", model: "gpt-5.6-sol", accounts: [1] },
+				{} as never,
+			),
+		).rejects.toThrow("disk failed");
 	});
 });

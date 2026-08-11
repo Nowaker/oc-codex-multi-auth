@@ -48,6 +48,46 @@ import {
 import os from "node:os";
 
 const log = createLogger("storage");
+const COLLISION_WARNING_THROTTLE_MS = 60_000;
+const COLLISION_WARNING_THROTTLE_MAX_ENTRIES = 128;
+const collisionWarningTimes = new Map<string, number>();
+
+export function __resetCollisionWarningThrottleForTests(): void {
+  collisionWarningTimes.clear();
+}
+
+function shouldWarnForCollision(
+  storagePath: string,
+  foreign: { hostname: string; pid: number; startedAt: string },
+): boolean {
+  const now = Date.now();
+  for (const [key, warnedAt] of collisionWarningTimes) {
+    if (
+      now < warnedAt ||
+      now - warnedAt >= COLLISION_WARNING_THROTTLE_MS
+    ) {
+      collisionWarningTimes.delete(key);
+    }
+  }
+
+  const key = JSON.stringify([
+    storagePath,
+    foreign.hostname,
+    foreign.pid,
+    foreign.startedAt,
+  ]);
+  if (collisionWarningTimes.has(key)) return false;
+
+  collisionWarningTimes.set(key, now);
+  while (
+    collisionWarningTimes.size > COLLISION_WARNING_THROTTLE_MAX_ENTRIES
+  ) {
+    const oldestKey = collisionWarningTimes.keys().next().value;
+    if (oldestKey === undefined) break;
+    collisionWarningTimes.delete(oldestKey);
+  }
+  return true;
+}
 
 /**
  * Probes the worktree lock for the currently active storage path and surfaces
@@ -79,17 +119,19 @@ async function checkWorktreeLockForCurrentStorage(
   try {
     const result = await acquireOrDetectLock(path);
     if (!result.acquired && result.foreign) {
-      log.warn("Multi-worktree collision detected on account storage", {
-        operation,
-        storagePath: path,
-        foreignPid: result.foreign.pid,
-        foreignHost: result.foreign.hostname,
-        foreignCwd: result.foreign.cwd,
-        foreignLastActive: result.foreign.lastActive,
-        ourPid: process.pid,
-        ourHost: os.hostname(),
-        ourCwd: process.cwd(),
-      });
+      if (shouldWarnForCollision(path, result.foreign)) {
+        log.warn("Multi-worktree collision detected on account storage", {
+          operation,
+          storagePath: path,
+          foreignPid: result.foreign.pid,
+          foreignHost: result.foreign.hostname,
+          foreignCwd: result.foreign.cwd,
+          foreignLastActive: result.foreign.lastActive,
+          ourPid: process.pid,
+          ourHost: os.hostname(),
+          ourCwd: process.cwd(),
+        });
+      }
     }
   } catch (error) {
     log.debug("Worktree lock probe failed", {
