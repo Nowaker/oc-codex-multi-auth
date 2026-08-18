@@ -66,7 +66,7 @@ OpenCode provider system
   v
 oc-codex-multi-auth index.ts
   |- rewrite OpenAI SDK URL to chatgpt.com/backend-api/codex/responses by default
-  |- preserve OPENAI_BASE_URL when an explicitly trusted compatible gateway is configured
+  |- preserve OPENAI_BASE_URL when CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1 explicitly trusts a compatible gateway
   |- shape body for native or legacy transform mode
   |- for GPT-5.6: apply responses-lite reshape (per attempt)
   |- force stream:true, store:false, reasoning.encrypted_content
@@ -76,6 +76,8 @@ oc-codex-multi-auth index.ts
   v
 ChatGPT-backed Codex endpoint or configured OpenAI-compatible gateway
 ```
+
+The gateway override is fail-closed: remote gateways require HTTPS, loopback is the only accepted HTTP target, embedded credentials/query strings/fragments are rejected, and redirects are not followed. The gateway receives the same short-lived ChatGPT OAuth access token and account header as the default Codex endpoint, so setting `OPENAI_BASE_URL` alone does not activate the override.
 
 **Native mode** keeps the host payload shape whenever possible. **Legacy mode** applies compatibility rewrites for older OpenCode/AI SDK behavior, including filtering unsupported `item_reference` payloads and stripping IDs that cannot be used with `store: false`.
 
