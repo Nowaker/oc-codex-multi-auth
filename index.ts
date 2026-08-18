@@ -1619,6 +1619,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			async loader(getAuth: () => Promise<Auth>, provider: unknown) {
 				const auth = await getAuth();
 				const pluginConfig = loadPluginConfig();
+				const openAIBaseURL = process.env.OPENAI_BASE_URL?.replace(/\/+$/, "") || undefined;
 				applyUiRuntimeFromConfig(pluginConfig);
 				const perProjectAccounts = getPerProjectAccounts(pluginConfig);
 				setStoragePath(perProjectAccounts ? process.cwd() : null);
@@ -1805,7 +1806,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				// Return SDK configuration
 				return {
 					apiKey: DUMMY_API_KEY,
-					baseURL: CODEX_BASE_URL,
+					baseURL: openAIBaseURL ?? CODEX_BASE_URL,
 					/**
 					 * Custom fetch implementation for Codex API
 					 *
@@ -1832,7 +1833,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
                                                 // Step 1: Extract and rewrite URL for Codex backend
                                                 const originalUrl = extractRequestUrl(input);
-                                                const url = rewriteUrlForCodex(originalUrl);
+								const url = openAIBaseURL ? originalUrl : rewriteUrlForCodex(originalUrl);
 
 							// Step 3: Transform request body with model-specific Codex instructions
 							// Instructions are fetched per model family (codex-max, codex, gpt-5.4, etc.)

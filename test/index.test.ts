@@ -4,6 +4,10 @@ import { join } from "node:path";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+const { rewriteUrlForCodexMock } = vi.hoisted(() => ({
+	rewriteUrlForCodexMock: vi.fn((url: string) => url),
+}));
+
 vi.mock("@opencode-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -233,7 +237,7 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 
 	vi.mock("../lib/request/fetch-helpers.js", () => ({
 		extractRequestUrl: (input: unknown) => (typeof input === "string" ? input : String(input)),
-		rewriteUrlForCodex: (url: string) => url,
+		rewriteUrlForCodex: rewriteUrlForCodexMock,
 		transformRequestForCodex: vi.fn(async (init: unknown) => ({
 		updatedInit: init,
 		body: { model: "gpt-5.1" },
@@ -625,6 +629,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
 	});
 
 	describe("plugin structure", () => {
@@ -858,6 +863,39 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.apiKey).toBeDefined();
 			expect(result.baseURL).toBeDefined();
 			expect(result.fetch).toBeDefined();
+		});
+
+		it("uses OPENAI_BASE_URL for multiAccount OAuth requests", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "https://gateway.example/v1");
+			mockStorage.accounts = [
+				{
+					accountId: "account-1",
+					refreshToken: "refresh-token",
+					accessToken: "access-token",
+					expiresAt: Date.now() + 60_000,
+				},
+			];
+			const fetchSpy = vi
+				.spyOn(globalThis, "fetch")
+				.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(result.baseURL).toBe("https://gateway.example/v1");
+			if (!result.fetch) throw new Error("Expected SDK fetch implementation");
+			await result.fetch("https://gateway.example/v1/responses", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+			});
+			expect(rewriteUrlForCodexMock).not.toHaveBeenCalled();
+			expect(fetchSpy).toHaveBeenCalledWith("https://gateway.example/v1/responses", expect.any(Object));
 		});
 	});
 
