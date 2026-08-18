@@ -1,13 +1,11 @@
 /**
  * Shared token refresh persistence for the account-management tools.
  *
- * OpenAI refresh tokens are single-use and rotate on exchange. Any tool that
- * calls `queuedRefresh()` must persist the rotated credential immediately;
- * otherwise the on-disk refresh token is already consumed and the next load
- * reports `refresh_token_reused` for every account.
+ * OpenAI refresh tokens are single-use and rotate on exchange. Production
+ * refreshes flow through `coordinatePersistedRefresh()`, which owns the
+ * authoritative reload, exchange, and durable commit under one lease.
  */
 
-import { queuedRefresh } from "../refresh-queue.js";
 import { extractAccountUserId } from "../auth/token-utils.js";
 import {
 	withAccountStorageTransaction,
@@ -18,6 +16,7 @@ import {
 	toAccountIdentityKeys,
 } from "../storage/identity.js";
 import type { TokenResult } from "../types.js";
+import { coordinatePersistedRefresh } from "../storage/coordinated-refresh.js";
 
 export interface RefreshAccountIdentity {
 	organizationId?: string;
@@ -169,9 +168,9 @@ export async function refreshAndPersistAccount(
 		return { status: "skipped", index, identity };
 	}
 
-	let refreshResult: TokenResult;
+	let refreshResult: Awaited<ReturnType<typeof coordinatePersistedRefresh>>;
 	try {
-		refreshResult = await queuedRefresh(identity.refreshToken);
+		refreshResult = await coordinatePersistedRefresh(identity);
 	} catch (error) {
 		return {
 			status: "failed",
@@ -191,16 +190,19 @@ export async function refreshAndPersistAccount(
 		};
 	}
 
-	const persisted = await persistRefreshResult(index, identity, refreshResult);
-	if (!persisted.persisted) {
-		return {
-			status: "failed",
+	return {
+		status: "refreshed",
+		index,
+		result: {
 			index,
 			identity,
-			error: persisted.persistError ?? "Failed to persist rotated credential",
-		};
-	}
-	return { status: "refreshed", index, result: persisted };
+			refreshToken: refreshResult.refresh,
+			accessToken: refreshResult.access,
+			expiresAt: refreshResult.expires,
+			rotatedAt: refreshResult.rotatedAt,
+			persisted: true,
+		},
+	};
 }
 
 export function buildRefreshInputs(

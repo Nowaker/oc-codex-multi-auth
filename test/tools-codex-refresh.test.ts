@@ -25,6 +25,7 @@ vi.mock("../lib/accounts.js", () => ({
 }));
 
 import { loadAccounts, withAccountStorageTransaction } from "../lib/storage.js";
+import { queuedRefresh } from "../lib/refresh-queue.js";
 
 /**
  * Faithful stand-in for the `formatCommandAccountLabel` closure defined in
@@ -160,7 +161,7 @@ describe("codex-refresh tool concurrency (lost-update regression)", () => {
 					lastUsed: 1,
 					rateLimitResetTimes: { "gpt-5": 1_700_000_000_000 },
 					coolingDownUntil: 1_700_000_100_000,
-					cooldownReason: "rate-limit",
+					cooldownReason: "network-error",
 				},
 			],
 		};
@@ -192,7 +193,7 @@ describe("codex-refresh tool concurrency (lost-update regression)", () => {
 			"gpt-5": 1_700_000_000_000,
 		});
 		expect(persistedAccount.coolingDownUntil).toBe(1_700_000_100_000);
-		expect(persistedAccount.cooldownReason).toBe("rate-limit");
+		expect(persistedAccount.cooldownReason).toBe("network-error");
 
 		// The refresh rotated the token (mocked queuedRefresh returns
 		// "new-refresh" for the "old-refresh" input), so the persisted
@@ -203,7 +204,7 @@ describe("codex-refresh tool concurrency (lost-update regression)", () => {
 		expect(persistedAccount.tokenRotatedAt).toBeGreaterThan(0);
 	});
 
-	it("skips applying a refresh outcome when the on-disk refreshToken changed mid-flight (another process rotated it)", async () => {
+	it("refreshes from the authoritative token when another process rotated it", async () => {
 		const initialStorage: AccountStorageV3 = {
 			version: 3,
 			activeIndex: 0,
@@ -251,16 +252,11 @@ describe("codex-refresh tool concurrency (lost-update regression)", () => {
 		const tool = createCodexRefreshTool(buildCtx(false));
 		const output = (await tool.execute({}, {} as never)) as string;
 
-		// The stale outcome (keyed on "old-refresh") must NOT overwrite the
-		// externally-rotated token -- we cannot know which chain is live. The
-		// transaction rejects without persisting, and the tool reports a failure.
-		expect(persisted).toBeUndefined();
-		expect(concurrentStorage.accounts[0]?.refreshToken).toBe(
-			"externally-rotated-refresh",
-		);
-		expect(concurrentStorage.accounts[0]?.tokenRotatedAt).toBe(999);
-		expect(output).toContain("Refresh token changed concurrently");
-		expect(output).toContain("0 refreshed, 1 failed");
+		expect(queuedRefresh).toHaveBeenCalledWith("externally-rotated-refresh");
+		expect(persisted?.accounts[0]?.refreshToken).toBe("new-refresh");
+		expect(persisted?.accounts[0]?.accessToken).toBe("new-access");
+		expect(persisted?.accounts[0]?.tokenRotatedAt).toBeGreaterThan(999);
+		expect(output).toContain("1 refreshed, 0 failed");
 	});
 
 	it("does not overwrite a concurrent re-login when a sibling already holds the rotated token", async () => {
@@ -273,10 +269,14 @@ describe("codex-refresh tool concurrency (lost-update regression)", () => {
 					refreshToken: "fresh-login-token",
 					accessToken: "fresh-login-access",
 					expiresAt: 1_800_000_000_000,
+					addedAt: 1,
+					lastUsed: 1,
 				},
 				{
 					accountId: "sibling",
 					refreshToken: "new-refresh",
+					addedAt: 2,
+					lastUsed: 2,
 				},
 			],
 		};

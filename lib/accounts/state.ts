@@ -639,7 +639,10 @@ export class AccountState {
 			// Stamp the rotation so a concurrent process persisting a stale
 			// snapshot can recognize this token as the newer one and adopt it
 			// instead of clobbering it (single-use refresh tokens).
-			account.tokenRotatedAt = nowMs();
+			account.tokenRotatedAt = Math.max(
+				nowMs(),
+				(account.tokenRotatedAt ?? 0) + 1,
+			);
 			this.authFailuresByRefreshToken.delete(previousRefreshToken);
 			// A single OAuth login produces sibling accounts (distinct orgs) that
 			// SHARE one refresh token. OpenAI rotates the refresh token on refresh,
@@ -695,7 +698,10 @@ export class AccountState {
 				// The expired access token on the sibling forces a fresh refresh
 				// (with the now-valid token) the next time it is selected.
 				sibling.expires = 0;
-				sibling.tokenRotatedAt = nowMs();
+				sibling.tokenRotatedAt = Math.max(
+					nowMs(),
+					(sibling.tokenRotatedAt ?? 0) + 1,
+				);
 			}
 		}
 		this.authFailuresByRefreshToken.delete(previousRefreshToken);
