@@ -98,6 +98,36 @@ describe("storage", () => {
       ]);
     });
 
+    it("does not collapse distinct Business members that share a legacy refresh token", () => {
+      const normalized = normalizeAccountStorage({
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accountUserId: "member-owner",
+            refreshToken: "shared-refresh",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accountUserId: "member-invited",
+            refreshToken: "shared-refresh",
+            addedAt: 2,
+            lastUsed: 2,
+          },
+        ],
+      });
+
+      expect(normalized?.accounts.map((account) => account.accountUserId)).toEqual([
+        "member-owner",
+        "member-invited",
+      ]);
+    });
+
     it("preserves the active Business member while normalizing storage", () => {
       const normalized = normalizeAccountStorage({
         version: 3,
@@ -1845,6 +1875,47 @@ describe("storage", () => {
       expect(new Set(loaded.accounts.map((account) => account.accountId))).toEqual(
         new Set(["workspace-a", "workspace-b"]),
       );
+    });
+
+    it("backfills member identity before flagged-account deduplication", async () => {
+      const accessToken = (memberId: string) => {
+        const payload = {
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "business-account",
+            chatgpt_account_user_id: memberId,
+          },
+        };
+        return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+      };
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [
+          {
+            refreshToken: "owner-refresh",
+            accessToken: accessToken("member-owner"),
+            organizationId: "org-business",
+            accountId: "business-account",
+            flaggedAt: 100,
+            addedAt: 100,
+            lastUsed: 100,
+          },
+          {
+            refreshToken: "invited-refresh",
+            accessToken: accessToken("member-invited"),
+            organizationId: "org-business",
+            accountId: "business-account",
+            flaggedAt: 200,
+            addedAt: 200,
+            lastUsed: 200,
+          },
+        ],
+      });
+
+      const loaded = await loadFlaggedAccounts();
+      expect(loaded.accounts.map((account) => account.accountUserId)).toEqual([
+        "member-owner",
+        "member-invited",
+      ]);
     });
 
     it("serializes flagged account read-modify-write updates", async () => {

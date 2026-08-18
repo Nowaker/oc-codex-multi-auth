@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-import { extractAccountId, extractAccountUserId } from "./accounts.js";
+import { extractAccountId } from "./accounts.js";
+import { extractAccountUserId } from "./auth/token-utils.js";
 import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
 import { CODEX_BASE_URL, PLUGIN_NAME } from "./constants.js";
 import {
@@ -428,6 +429,7 @@ function applyRefreshedCredentials(
 async function persistRefreshedCredentials(params: {
 	previousRefreshToken: string;
 	accountId?: string;
+	accountUserId?: string;
 	organizationId?: string;
 	email?: string;
 	refreshResult: {
@@ -448,11 +450,19 @@ async function persistRefreshedCredentials(params: {
 
 		const uniqueMatch = <Value>(matches: Value[]): Value | undefined =>
 			matches.length === 1 ? matches[0] : undefined;
+		const normalizedAccountUserId = params.accountUserId?.trim();
+		const storedAccountUserId = (storedAccount: AccountMetadataV3): string | undefined =>
+			storedAccount.accountUserId?.trim() ||
+			extractAccountUserId(storedAccount.accessToken);
 
 		let updated = false;
 		if (params.previousRefreshToken) {
 			for (const storedAccount of latestStorage.accounts) {
-				if (storedAccount.refreshToken === params.previousRefreshToken) {
+				const memberId = storedAccountUserId(storedAccount);
+				if (
+					storedAccount.refreshToken === params.previousRefreshToken &&
+					(!normalizedAccountUserId || !memberId || memberId === normalizedAccountUserId)
+				) {
 					applyRefreshedCredentials(storedAccount, params.refreshResult);
 					updated = true;
 				}
@@ -462,8 +472,18 @@ async function persistRefreshedCredentials(params: {
 		if (!updated) {
 			const normalizedOrganizationId = params.organizationId?.trim() ?? "";
 			const normalizedEmail = params.email?.trim().toLowerCase();
-			const orgScopedMatches = params.accountId
+			const memberMatches = normalizedAccountUserId
 				? latestStorage.accounts.filter(
+						(storedAccount) =>
+							storedAccountUserId(storedAccount) === normalizedAccountUserId &&
+							(!params.accountId || storedAccount.accountId === params.accountId),
+					)
+				: [];
+			const legacyAccounts = latestStorage.accounts.filter(
+				(storedAccount) => !storedAccountUserId(storedAccount),
+			);
+			const orgScopedMatches = params.accountId
+				? legacyAccounts.filter(
 						(storedAccount) =>
 							storedAccount.accountId === params.accountId &&
 							(storedAccount.organizationId?.trim() ?? "") ===
@@ -471,19 +491,20 @@ async function persistRefreshedCredentials(params: {
 					)
 				: [];
 			const accountIdMatches = params.accountId
-				? latestStorage.accounts.filter(
+				? legacyAccounts.filter(
 						(storedAccount) => storedAccount.accountId === params.accountId,
 					)
 				: [];
 			const emailMatches =
 				normalizedEmail && !params.accountId
-					? latestStorage.accounts.filter(
+					? legacyAccounts.filter(
 							(storedAccount) =>
 								storedAccount.email?.trim().toLowerCase() === normalizedEmail,
 						)
 					: [];
 
 			const fallbackTarget =
+				uniqueMatch(memberMatches) ??
 				uniqueMatch(orgScopedMatches) ??
 				uniqueMatch(accountIdMatches) ??
 				uniqueMatch(emailMatches);
@@ -533,6 +554,10 @@ export async function ensureCodexUsageAccessToken(params: {
 	if (refreshResult.type !== "success") {
 		throw new Error(refreshResult.message ?? refreshResult.reason);
 	}
+	const refreshedAccountUserId =
+		extractAccountUserId(refreshResult.access) ??
+		params.account.accountUserId?.trim() ??
+		extractAccountUserId(params.account.accessToken);
 
 	let refreshedCount = 0;
 	for (const storedAccount of params.storage.accounts) {
@@ -548,6 +573,7 @@ export async function ensureCodexUsageAccessToken(params: {
 	const persisted = await persistRefreshedCredentials({
 		previousRefreshToken,
 		accountId: params.account.accountId,
+		accountUserId: refreshedAccountUserId,
 		organizationId: params.account.organizationId,
 		email: params.account.email,
 		refreshResult,

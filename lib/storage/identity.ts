@@ -233,6 +233,11 @@ function sameEmailIdentity(left: string | undefined, right: string | undefined):
 
 function isLegacyRefreshTokenDuplicate<T extends AccountLike>(left: T, right: T): boolean {
   const refreshToken = normalizeWorkspaceIdentityPart(left.refreshToken);
+  const leftAccountUserId = normalizeWorkspaceIdentityPart(left.accountUserId);
+  const rightAccountUserId = normalizeWorkspaceIdentityPart(right.accountUserId);
+  if (leftAccountUserId && rightAccountUserId && leftAccountUserId !== rightAccountUserId) {
+    return false;
+  }
   const leftOrganizationId = normalizeWorkspaceIdentityPart(left.organizationId);
   const rightOrganizationId = normalizeWorkspaceIdentityPart(right.organizationId);
   if (leftOrganizationId && rightOrganizationId && leftOrganizationId !== rightOrganizationId) {

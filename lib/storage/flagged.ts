@@ -16,6 +16,7 @@ import {
   LEGACY_FLAGGED_ACCOUNTS_FILE_NAME,
 } from "../constants.js";
 import { createLogger } from "../logger.js";
+import { extractAccountUserId } from "../auth/token-utils.js";
 import { renameWithWindowsRetry } from "./atomic-write.js";
 import { getWorkspaceIdentityKey, isRecord } from "./identity.js";
 import { getStoragePath, getCurrentProjectStorageKey, withStorageLock } from "./state.js";
@@ -121,7 +122,10 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
         typeof rawAccount.organizationId === "string" ? rawAccount.organizationId : undefined,
       accountId: typeof rawAccount.accountId === "string" ? rawAccount.accountId : undefined,
       accountUserId:
-        typeof rawAccount.accountUserId === "string" ? rawAccount.accountUserId : undefined,
+        (typeof rawAccount.accountUserId === "string" && rawAccount.accountUserId.trim()) ||
+        extractAccountUserId(
+          typeof rawAccount.accessToken === "string" ? rawAccount.accessToken : undefined,
+        ),
       accountIdSource,
       accountLabel: typeof rawAccount.accountLabel === "string" ? rawAccount.accountLabel : undefined,
       accountTags,

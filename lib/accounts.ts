@@ -37,7 +37,6 @@ export type { AccountSelectionExplainability, ManagedAccount } from "./accounts/
 
 export {
 	extractAccountId,
-	extractAccountUserId,
 	extractAccountEmail,
 	getAccountIdCandidates,
 	relabelCandidateForAccountId,
