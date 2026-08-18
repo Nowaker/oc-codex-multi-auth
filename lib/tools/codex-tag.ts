@@ -4,9 +4,10 @@
  */
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
-import { loadAccounts, saveAccounts } from "../storage.js";
+import { loadAccounts, withAccountStorageTransaction } from "../storage.js";
 import { AccountManager } from "../accounts.js";
 import { logWarn } from "../logger.js";
+import { getWorkspaceIdentityKey } from "../storage/identity.js";
 import {
 	formatUiHeader,
 	formatUiItem,
@@ -91,17 +92,29 @@ export function createCodexTagTool(ctx: ToolContext): ToolDefinition {
 			const account = storage.accounts[targetIndex];
 			if (!account) return `Account ${resolvedIndex} not found.`;
 			const normalizedTags = normalizeAccountTags(tags ?? "");
-			const previousTags = Array.isArray(account.accountTags)
-				? [...account.accountTags]
-				: [];
-			if (normalizedTags.length === 0) {
-				delete account.accountTags;
-			} else {
-				account.accountTags = normalizedTags;
-			}
+			const identityKey = getWorkspaceIdentityKey(account);
+			let previousTags: string[] = [];
+			let persistedAccount = account;
 
 			try {
-				await saveAccounts(storage);
+				await withAccountStorageTransaction(async (current, persist) => {
+					const currentAccount = current?.accounts.find(
+						(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
+					);
+					if (!current || !currentAccount) {
+						throw new Error("Account changed before tags could be updated");
+					}
+					previousTags = Array.isArray(currentAccount.accountTags)
+						? [...currentAccount.accountTags]
+						: [];
+					if (normalizedTags.length === 0) {
+						delete currentAccount.accountTags;
+					} else {
+						currentAccount.accountTags = normalizedTags;
+					}
+					await persist(current);
+					persistedAccount = currentAccount;
+				});
 			} catch (error) {
 				logWarn("Failed to save account tag update", { error: String(error) });
 				return "Tag update failed to persist. Changes may be lost on restart.";
@@ -113,7 +126,7 @@ export function createCodexTagTool(ctx: ToolContext): ToolDefinition {
 				accountManagerPromiseRef.current = Promise.resolve(reloadedManager);
 			}
 
-			const accountLabel = formatCommandAccountLabel(account, targetIndex, { maskEmail });
+			const accountLabel = formatCommandAccountLabel(persistedAccount, targetIndex, { maskEmail });
 			const previousText =
 				previousTags.length > 0 ? previousTags.join(", ") : "none";
 			const nextText =

@@ -4,9 +4,10 @@
  */
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
-import { loadAccounts, saveAccounts } from "../storage.js";
+import { loadAccounts, withAccountStorageTransaction } from "../storage.js";
 import { AccountManager } from "../accounts.js";
 import { logWarn } from "../logger.js";
+import { getWorkspaceIdentityKey } from "../storage/identity.js";
 import type { ToolContext } from "./index.js";
 
 export function createCodexNoteTool(ctx: ToolContext): ToolDefinition {
@@ -65,20 +66,31 @@ export function createCodexNoteTool(ctx: ToolContext): ToolDefinition {
 
 			const account = storage.accounts[targetIndex];
 			if (!account) return `Account ${resolvedIndex} not found.`;
+			const identityKey = getWorkspaceIdentityKey(account);
 
 			const normalizedNote = (note ?? "").trim();
 			if (normalizedNote.length > 240) {
 				return "Note is too long (max 240 characters).";
 			}
 
-			if (normalizedNote.length === 0) {
-				delete account.accountNote;
-			} else {
-				account.accountNote = normalizedNote;
-			}
+			let persistedAccount = account;
 
 			try {
-				await saveAccounts(storage);
+				await withAccountStorageTransaction(async (current, persist) => {
+					const currentAccount = current?.accounts.find(
+						(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
+					);
+					if (!current || !currentAccount) {
+						throw new Error("Account changed before its note could be updated");
+					}
+					if (normalizedNote.length === 0) {
+						delete currentAccount.accountNote;
+					} else {
+						currentAccount.accountNote = normalizedNote;
+					}
+					await persist(current);
+					persistedAccount = currentAccount;
+				});
 			} catch (error) {
 				logWarn("Failed to save account note update", {
 					error: String(error),
@@ -92,7 +104,7 @@ export function createCodexNoteTool(ctx: ToolContext): ToolDefinition {
 				accountManagerPromiseRef.current = Promise.resolve(reloadedManager);
 			}
 
-			const accountLabel = formatCommandAccountLabel(account, targetIndex, { maskEmail });
+			const accountLabel = formatCommandAccountLabel(persistedAccount, targetIndex, { maskEmail });
 			if (normalizedNote.length === 0) {
 				return `Cleared note for ${accountLabel}`;
 			}
