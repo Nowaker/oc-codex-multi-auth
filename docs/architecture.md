@@ -77,7 +77,7 @@ oc-codex-multi-auth index.ts
 ChatGPT-backed Codex endpoint or configured OpenAI-compatible gateway
 ```
 
-The gateway override is fail-closed: remote gateways require HTTPS, loopback is the only accepted HTTP target, embedded credentials/query strings/fragments are rejected, and redirects are not followed. The gateway receives the same short-lived ChatGPT OAuth access token and account header as the default Codex endpoint, so setting `OPENAI_BASE_URL` alone does not activate the override.
+The gateway override is fail-closed: remote gateways require HTTPS, literal loopback IPs are the only accepted HTTP targets, embedded credentials/query strings/fragments are rejected, and redirects are not followed. Hostnames such as `localhost` are not trusted for cleartext OAuth transport because name resolution can be redirected. The gateway receives the same short-lived ChatGPT OAuth access token and account header as the default Codex endpoint, so setting `OPENAI_BASE_URL` alone does not activate the override.
 
 **Native mode** keeps the host payload shape whenever possible. **Legacy mode** applies compatibility rewrites for older OpenCode/AI SDK behavior, including filtering unsupported `item_reference` payloads and stripping IDs that cannot be used with `store: false`.
 
