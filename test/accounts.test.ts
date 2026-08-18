@@ -2841,3 +2841,46 @@ describe("incrementAuthFailures serialization (audit ledger 47)", () => {
     expect(manager.getAuthFailures(accB)).toBe(25);
   });
 });
+
+describe("AccountManager legacy fallback hydration (#230)", () => {
+  it("hydrates a memberless legacy record instead of adding a duplicate slot", () => {
+    const now = Date.now();
+    const payload = {
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "business-account",
+        chatgpt_account_user_id: "member-owner",
+      },
+    };
+    const access = `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+    // A pre-member-id record: no email, no accountUserId, and a refresh token
+    // that has since rotated, so accountId is the only thing left to match on.
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          accountId: "business-account",
+          refreshToken: "rotated-away",
+          addedAt: now,
+          lastUsed: now,
+        },
+      ],
+    };
+    const auth: OAuthAuthDetails = {
+      type: "oauth",
+      access,
+      refresh: "current-refresh",
+      expires: now + 60_000,
+    };
+
+    const manager = new AccountManager(auth, stored);
+    const accounts = manager.getAccountsSnapshot();
+
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({
+      accountId: "business-account",
+      accountUserId: "member-owner",
+      refreshToken: "current-refresh",
+    });
+  });
+});

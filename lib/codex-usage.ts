@@ -597,8 +597,12 @@ function normalizeUsageIdentityPart(value: string | undefined): string {
  * Derive a stable usage-quota dedupe key for an account.
  *
  * Business members can share one `accountId` while each bearer token has a
- * distinct `accountUserId` and quota. Prefer that seat identity; older records
- * without it retain workspace-level deduplication, then refresh-token fallback.
+ * distinct `accountUserId` and quota, so the seat id disambiguates members
+ * WITHIN a workspace. It is APPENDED to the workspace identity rather than
+ * replacing it: one OAuth grant can back several workspace variants that all
+ * carry the same member id, and those still consume separate quotas. Older
+ * records without a member id keep workspace-level dedup, then the refresh
+ * token as a last resort.
  *
  * Keys are emitted as `JSON.stringify` arrays (tagged `"seat"`, `"workspace"`,
  * or `"refresh"`) so values containing delimiter characters cannot collide.
@@ -616,7 +620,7 @@ export function getUsageAccountDedupeKey(
 	);
 	const organizationId = normalizeUsageIdentityPart(account.organizationId);
 	if (accountUserId) {
-		return JSON.stringify(["seat", accountId, accountUserId]);
+		return JSON.stringify(["seat", accountId, organizationId, accountUserId]);
 	}
 	if (accountId || organizationId) {
 		return JSON.stringify(["workspace", accountId, organizationId]);

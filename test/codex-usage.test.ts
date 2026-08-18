@@ -146,7 +146,7 @@ describe("codex usage helpers", () => {
 		expect(deduplicateUsageAccountIndices(storage)).toEqual([0, 1]);
 	});
 
-	it("collapses duplicate rows for the same Business member credential", () => {
+	it("keeps separate rows for one member across distinct workspaces", () => {
 		const storage: AccountStorageV3 = {
 			version: 3,
 			activeIndex: 0,
@@ -170,7 +170,61 @@ describe("codex usage helpers", () => {
 			],
 		};
 
+		expect(deduplicateUsageAccountIndices(storage)).toEqual([0, 1]);
+	});
+
+	it("collapses duplicate rows for the same Business member credential", () => {
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "shared-refresh",
+					accountId: "business-account",
+					accountUserId: "member-owner",
+					organizationId: "org-one",
+					addedAt: 0,
+					lastUsed: 0,
+				},
+				{
+					refreshToken: "other-refresh",
+					accountId: "business-account",
+					accountUserId: "member-owner",
+					organizationId: "org-one",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+
 		expect(deduplicateUsageAccountIndices(storage)).toEqual([1]);
+	});
+
+	it("keeps separate rows for distinct members of one Business workspace", () => {
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "owner-refresh",
+					accountId: "business-account",
+					accountUserId: "member-owner",
+					organizationId: "org-one",
+					addedAt: 0,
+					lastUsed: 0,
+				},
+				{
+					refreshToken: "invitee-refresh",
+					accountId: "business-account",
+					accountUserId: "member-invitee",
+					organizationId: "org-one",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+
+		expect(deduplicateUsageAccountIndices(storage)).toEqual([0, 1]);
 	});
 
 	it("deduplicates workspace identities without delimiter collisions", () => {

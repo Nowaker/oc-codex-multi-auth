@@ -171,14 +171,16 @@ export function findDisabledTokenSourceDuplicates(
 export interface BusinessMemberCredentialScanAccount {
 	accountId?: string;
 	accountUserId?: string;
+	organizationId?: string;
 	accessToken?: string;
 	email?: string;
 }
 
 /**
- * Find records whose labels name different users but whose OAuth tokens resolve
- * to the same member of the same Business workspace. Such records cannot
- * consume separate quotas and must be re-authenticated independently.
+ * Find records whose OAuth tokens resolve to the same member of the same
+ * Business workspace. Such records cannot consume separate quotas and must be
+ * re-authenticated independently. Records that differ only by organizationId
+ * are legitimate workspace variants of a single grant and are not reported.
  */
 export function findConflictingBusinessMemberCredentials(
 	accounts: BusinessMemberCredentialScanAccount[],
@@ -199,12 +201,18 @@ export function findConflictingBusinessMemberCredentials(
 
 	return [...groups.values()].filter((indices) => {
 		if (indices.length < 2) return false;
-		const emails = new Set(
-			indices
-				.map((index) => accounts[index]?.email?.trim().toLowerCase())
-				.filter((email): email is string => !!email),
+		// Issue #230's primary symptom is that EVERY affected record ends up with
+		// the LAST login's email, so requiring differing emails would stay silent on
+		// exactly the corruption this scan exists to surface. Instead, excuse only
+		// the one legitimate shape: distinct workspace variants of a single grant,
+		// which are separated by organizationId.
+		const organizationIds = indices.map(
+			(index) => accounts[index]?.organizationId?.trim() ?? "",
 		);
-		return emails.size > 1;
+		const isDistinctWorkspaceVariants =
+			organizationIds.every((id) => !!id) &&
+			new Set(organizationIds).size === organizationIds.length;
+		return !isDistinctWorkspaceVariants;
 	});
 }
 

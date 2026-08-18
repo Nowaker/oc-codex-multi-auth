@@ -345,3 +345,54 @@ describe("strategy dispatcher (#183)", () => {
 		expect(selected?.index).toBe(0);
 	});
 });
+
+describe("Business seat pool keys derived from bearer tokens", () => {
+	const seatToken = (memberId: string) => {
+		const payload = {
+			"https://api.openai.com/auth": {
+				chatgpt_account_id: "business-account",
+				chatgpt_account_user_id: memberId,
+			},
+		};
+		return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+	};
+
+	it("derives the member id from a stored accessToken", () => {
+		expect(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				accessToken: seatToken("member-invited"),
+			}),
+		).toBe(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				accountUserId: "member-invited",
+			}),
+		);
+	});
+
+	it("derives the member id from a live account's access token", () => {
+		expect(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				access: seatToken("member-owner"),
+			}),
+		).toBe(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				accountUserId: "member-owner",
+			}),
+		);
+	});
+
+	it("never falls back to the workspace-wide key when a token carries a member id", () => {
+		// The workspace-wide key matches EVERY seat, so falling back to it would
+		// silently widen a pool the operator scoped to one member.
+		expect(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				accessToken: seatToken("member-owner"),
+			}),
+		).not.toBe("business-account");
+	});
+});

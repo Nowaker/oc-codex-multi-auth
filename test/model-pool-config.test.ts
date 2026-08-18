@@ -252,4 +252,20 @@ describe("model account pool config mutation", () => {
 		).rejects.toThrow("Existing modelAccountPools configuration is invalid");
 		expect(await fs.readFile(configPath, "utf-8")).toBe(original);
 	});
+
+	it("reports the account ids that were on disk, not the expanded ones", async () => {
+		await updateModelAccountPool("gpt-5.6-sol", "set", ["legacy-workspace"]);
+
+		const result = await updateModelAccountPool(
+			"gpt-5.6-sol",
+			"add",
+			["seat-invited"],
+			{ normalizeExistingAccountIds: () => ["seat-owner"] },
+		);
+
+		// The expansion exists only to compute the next set. Surfacing it would
+		// make callers report a "previous" count the config file never contained.
+		expect(result.previousAccountIds).toEqual(["legacy-workspace"]);
+		expect(result.accountIds).toEqual(["seat-owner", "seat-invited"]);
+	});
 });

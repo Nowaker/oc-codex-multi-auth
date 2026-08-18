@@ -16,8 +16,10 @@ import { loadAccounts, type AccountStorageV3 } from "../storage.js";
 import {
 	expandLegacyModelPoolKeys,
 	getModelPoolAccountKey,
+	isSeatPoolKey,
 	matchesModelPoolAccountKey,
 } from "../accounts/pool-identity.js";
+import { getCurrentProjectRoot, getCurrentStoragePath } from "../storage/state.js";
 import type { ToolContext } from "./index.js";
 
 type CodexPoolAction = "status" | ModelAccountPoolMutation;
@@ -94,6 +96,32 @@ function resolveAccountIds(
 		ids.push(accountId);
 	}
 	return ids;
+}
+
+/**
+ * Migrate legacy workspace-wide pool entries to member-scoped seat keys.
+ *
+ * `modelAccountPools` lives in the GLOBAL plugin config, but account storage is
+ * per-project by default (`perProjectAccounts`). Expanding a legacy key against
+ * a project-scoped account list would rewrite the global pool using only the
+ * seats visible from THIS project and silently drop the routing every other
+ * project depends on, so the migration is skipped whenever project-scoped
+ * storage is active.
+ */
+function normalizeExistingPoolAccountIds(
+	ids: readonly string[],
+	storage: AccountStorageV3 | null | undefined,
+): readonly string[] {
+	const projectScoped = Boolean(getCurrentStoragePath() && getCurrentProjectRoot());
+	if (projectScoped) {
+		if (ids.some((id) => !isSeatPoolKey(id))) {
+			logWarn(
+				"Project-scoped account storage is active; leaving legacy workspace-wide model pool entries unmigrated so pools used by other projects are not rewritten.",
+			);
+		}
+		return ids;
+	}
+	return expandLegacyModelPoolKeys(ids, storage?.accounts ?? []);
 }
 
 function buildPoolSnapshot(
@@ -271,7 +299,7 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 					...(action === "add" || action === "remove"
 						? {
 								normalizeExistingAccountIds: (ids: readonly string[]) =>
-									expandLegacyModelPoolKeys(ids, storage?.accounts ?? []),
+									normalizeExistingPoolAccountIds(ids, storage),
 							}
 						: {}),
 				});

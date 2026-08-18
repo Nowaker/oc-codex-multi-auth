@@ -153,7 +153,12 @@ function resolveFallbackMatches(params: {
 		return { indices: new Set([exactEmail]), ambiguous: false };
 	}
 
-	const accountIdMatches = params.accountId && !params.accountUserId
+	// `candidates` already excludes every record that carries a DIFFERENT member
+	// id, so matching on accountId here cannot bind two Business seats together.
+	// Refusing to match at all would strand a legacy record that predates member
+	// ids: the fallback would miss it and push a duplicate slot for the same
+	// credential instead of hydrating the record in place.
+	const accountIdMatches = params.accountId
 		? candidates.filter((index) => params.accounts[index]?.accountId === params.accountId)
 		: [];
 	const exactAccount = selectUniqueIndex(accountIdMatches);
@@ -658,7 +663,15 @@ export class AccountState {
 			account.accountId = tokenAccountId;
 			account.accountIdSource = "token";
 		}
-		if (tokenAccountUserId) {
+		// Mirror the accountId guard above. A manually- or org-pinned record must
+		// not be re-identified by a token minted for a different workspace/seat,
+		// which would silently move its pool key, usage dedupe key and workspace
+		// identity key. A record with no member id yet is still backfilled.
+		if (
+			tokenAccountUserId &&
+			(!account.accountUserId ||
+				shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId))
+		) {
 			account.accountUserId = tokenAccountUserId;
 		}
 		account.email = sanitizeEmail(extractAccountEmail(auth.access)) ?? account.email;

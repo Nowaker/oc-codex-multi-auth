@@ -484,7 +484,11 @@ async function performModelAccountPoolMutation(
 
 	return {
 		model: normalizedModel,
-		previousAccountIds,
+		// Report what the config file actually held. `previousAccountIds` may have
+		// been expanded from legacy workspace keys purely to compute the next set;
+		// surfacing the expansion would make callers report a "previous" count the
+		// file never contained.
+		previousAccountIds: storedPreviousAccountIds,
 		accountIds: nextAccountIds,
 		previousPoolMode,
 		poolMode: nextPoolMode,

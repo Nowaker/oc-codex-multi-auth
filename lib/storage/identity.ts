@@ -76,10 +76,7 @@ export function toAccountIdentityKeys(
     const accountId = typeof account.accountId === "string" ? account.accountId.trim() : "";
     const organizationId =
       typeof account.organizationId === "string" ? account.organizationId.trim() : "";
-    keys.push(
-      `seat:${organizationId}|${accountId}|${accountUserId}`,
-      `accountUserId:${accountUserId}`,
-    );
+    keys.push(`seat:${organizationId}|${accountId}|${accountUserId}`);
   }
   const organizationId = typeof account.organizationId === "string" ? account.organizationId.trim() : "";
   if (organizationId) {
@@ -89,6 +86,14 @@ export function toAccountIdentityKeys(
   const accountId = typeof account.accountId === "string" ? account.accountId.trim() : "";
   if (accountId) {
     keys.push(`accountId:${accountId}`);
+  }
+
+  // Ranked BELOW organizationId/accountId on purpose. One OAuth grant can back
+  // several workspace variants that all carry the same member id, so a bare
+  // member key must never outrank a workspace key when resolving the target of
+  // a single-use refresh-token write.
+  if (accountUserId) {
+    keys.push(`accountUserId:${accountUserId}`);
   }
 
   const refreshToken = typeof account.refreshToken === "string" ? account.refreshToken.trim() : "";
@@ -306,8 +311,46 @@ function deduplicateLegacyRefreshTokenDuplicates<T extends AccountLike>(accounts
   return working.filter((account, index) => !!account && !indicesToRemove.has(index));
 }
 
+/**
+ * Backfill the member id onto records that predate it, but only when the
+ * workspace has exactly ONE seat to attribute them to.
+ *
+ * `toAccountIdentityKey` returns a `seat:` key for member-bearing records, so a
+ * legacy twin whose access token no longer decodes would keep the older
+ * `organizationId:`/`accountId:` key and stop deduplicating against its own
+ * newer record, surviving as a rotation slot with a dead refresh token. Merging
+ * is only safe when attribution is unambiguous: with two or more seats in the
+ * workspace there is no way to tell which one the memberless record belongs to,
+ * so it is left alone.
+ */
+function backfillUniqueSeatIdentity<T extends AccountLike>(accounts: T[]): T[] {
+  const seatsByWorkspace = new Map<string, Set<string>>();
+  for (const account of accounts) {
+    const accountUserId = account?.accountUserId?.trim();
+    if (!account || !accountUserId) continue;
+    const workspaceKey = JSON.stringify([
+      account.organizationId?.trim() ?? "",
+      account.accountId?.trim() ?? "",
+    ]);
+    const seats = seatsByWorkspace.get(workspaceKey);
+    if (seats) seats.add(accountUserId);
+    else seatsByWorkspace.set(workspaceKey, new Set([accountUserId]));
+  }
+
+  return accounts.map((account) => {
+    if (!account || account.accountUserId?.trim()) return account;
+    const organizationId = account.organizationId?.trim() ?? "";
+    const accountId = account.accountId?.trim() ?? "";
+    if (!organizationId && !accountId) return account;
+    const seats = seatsByWorkspace.get(JSON.stringify([organizationId, accountId]));
+    if (!seats || seats.size !== 1) return account;
+    const [accountUserId] = [...seats];
+    return accountUserId ? ({ ...account, accountUserId } as T) : account;
+  });
+}
+
 function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
-  const working = [...accounts];
+  const working = backfillUniqueSeatIdentity(accounts);
   const keyToIndex = new Map<string, number>();
   const indicesToRemove = new Set<number>();
 

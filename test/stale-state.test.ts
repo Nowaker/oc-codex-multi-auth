@@ -261,3 +261,63 @@ describe("findDisabledAccountsWithFreshCredential (issue #171)", () => {
 		expect(findDisabledAccountsWithFreshCredential(accounts, NOW)).toEqual([0, 2]);
 	});
 });
+
+describe("findConflictingBusinessMemberCredentials (#230 symptom)", () => {
+	it("flags records that were all overwritten with the last login's email", () => {
+		// Issue #230 reports that every affected record ends up carrying the SAME
+		// email, so requiring differing emails would stay silent on exactly the
+		// corruption this scan exists to surface.
+		const accounts = [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				email: "b@example.com",
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				email: "b@example.com",
+			},
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([[0, 1]]);
+	});
+
+	it("ignores distinct workspace variants of a single OAuth grant", () => {
+		const accounts = [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				organizationId: "org-one",
+				email: "owner@example.com",
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				organizationId: "org-two",
+				email: "owner@example.com",
+			},
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([]);
+	});
+
+	it("still flags duplicates that share one organizationId", () => {
+		const accounts = [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				organizationId: "org-one",
+				email: "owner@example.com",
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				organizationId: "org-one",
+				email: "owner@example.com",
+			},
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([[0, 1]]);
+	});
+});

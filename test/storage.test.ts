@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { toAccountIdentityKeys } from "../lib/storage/identity.js";
 import { promises as fs, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -2764,5 +2765,82 @@ describe("storage", () => {
       const onDisk = await fs.readFile(testStoragePath, "utf-8");
       expect(onDisk).toBe(originalContent);
     });
+  });
+});
+
+describe("Business seat identity keys", () => {
+  it("ranks the bare member key below the workspace keys", () => {
+    const keys = toAccountIdentityKeys({
+      organizationId: "org-one",
+      accountId: "business-account",
+      accountUserId: "member-owner",
+      refreshToken: "refresh-token",
+    });
+
+    // The first matching key decides where a single-use refresh token is
+    // written. One grant can back several workspace variants that all carry the
+    // same member id, so a bare member key must never outrank a workspace key.
+    expect(keys[0]).toBe("seat:org-one|business-account|member-owner");
+    expect(keys.indexOf("accountUserId:member-owner")).toBeGreaterThan(
+      keys.indexOf("organizationId:org-one"),
+    );
+    expect(keys.indexOf("accountUserId:member-owner")).toBeGreaterThan(
+      keys.indexOf("accountId:business-account"),
+    );
+  });
+
+  it("merges a memberless legacy twin into the only seat of its workspace", () => {
+    const deduped = deduplicateAccounts([
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        refreshToken: "stale-refresh",
+        addedAt: 1,
+        lastUsed: 1,
+      },
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        accountUserId: "member-owner",
+        refreshToken: "current-refresh",
+        addedAt: 2,
+        lastUsed: 2,
+      },
+    ]);
+
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0]?.refreshToken).toBe("current-refresh");
+  });
+
+  it("leaves a memberless record alone when the workspace has two seats", () => {
+    // With more than one seat there is no way to tell which member the legacy
+    // record belongs to, so merging it would corrupt one of them.
+    const deduped = deduplicateAccounts([
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        refreshToken: "legacy-refresh",
+        addedAt: 1,
+        lastUsed: 1,
+      },
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        accountUserId: "member-owner",
+        refreshToken: "owner-refresh",
+        addedAt: 2,
+        lastUsed: 2,
+      },
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        accountUserId: "member-invited",
+        refreshToken: "invited-refresh",
+        addedAt: 3,
+        lastUsed: 3,
+      },
+    ]);
+
+    expect(deduped).toHaveLength(3);
   });
 });
