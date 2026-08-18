@@ -8,6 +8,7 @@ import { loadAccounts } from "../storage.js";
 import {
 	findDisabledAccountsWithFreshCredential,
 	findDisabledTokenSourceDuplicates,
+	findConflictingBusinessMemberCredentials,
 	findStaleRecoverableAccounts,
 } from "../accounts/stale-state.js";
 import { formatUiHeader, formatUiItem, paintUiText } from "../ui/format.js";
@@ -152,8 +153,14 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 			// tokens, but this tool persists rotations before reporting health.
 			const staleRecoverable = findStaleRecoverableAccounts(storage.accounts);
 			const duplicateSlots = findDisabledTokenSourceDuplicates(storage.accounts);
+			const memberCredentialConflicts = findConflictingBusinessMemberCredentials(
+				storage.accounts,
+			);
 			const staleSlots = staleRecoverable.map((index) => index + 1);
 			const dupSlots = duplicateSlots.map((index) => index + 1);
+			const memberConflictSlots = memberCredentialConflicts.map((indices) =>
+				indices.map((index) => index + 1),
+			);
 			if (staleSlots.length > 0) {
 				results.push(
 					`Stale state: ${staleSlots.length} account(s) blocked by a stale cooldown/rate-limit (slots: ${staleSlots.join(", ")}). Run \`codex-doctor --fix\`.`,
@@ -162,6 +169,11 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 			if (dupSlots.length > 0) {
 				results.push(
 					`Duplicates: ${dupSlots.length} disabled duplicate entry(ies) shadow a real account (slots: ${dupSlots.join(", ")}). Remove with \`codex-remove\`.`,
+				);
+			}
+			if (memberConflictSlots.length > 0) {
+				results.push(
+					`Business member conflict: ${memberConflictSlots.length} group(s) use one member credential under different emails (slots: ${memberConflictSlots.map((slots) => slots.join("/")).join(", ")}). Remove and re-login those slots separately.`,
 				);
 			}
 			const absorbedSlots = findDisabledAccountsWithFreshCredential(
@@ -180,6 +192,7 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 					skippedCount,
 					staleRecoverableSlots: staleSlots,
 					disabledDuplicateSlots: dupSlots,
+					businessMemberConflictSlots: memberConflictSlots,
 					disabledWithFreshCredentialSlots: absorbedSlots,
 					accounts: jsonAccounts,
 				});

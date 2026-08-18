@@ -257,6 +257,29 @@ Failed to access Codex API
 </details>
 
 <details>
+<summary><b>Two members of one Business workspace consume the same quota</b></summary>
+
+**Symptoms:**
+
+- Two different emails belong to the same ChatGPT Business workspace.
+- Both entries have the same `chatgpt-account-id` and switching entries keeps
+  consuming the quota of whichever member logged in last.
+- `codex-health` reports a Business member credential conflict.
+
+**Cause:** A Business workspace id identifies the subscription, not an
+individual seat. Older builds could match the host OAuth fallback by that
+shared id and replace every matching entry with the last member's token.
+
+**Solution:** Upgrade to a build with member-aware account identity, then remove
+the affected entries and run `opencode auth login` once for each member. Make
+sure the browser is signed in as the intended member for each login. The plugin
+stores the token's `chatgpt_account_user_id`, so each entry keeps its own bearer
+token and `/wham/usage` reads the corresponding seat quota. Already-overwritten
+credentials cannot be reconstructed and require re-login.
+
+</details>
+
+<details>
 <summary><b>"All N account(s) failed (server errors or auth issues)"</b></summary>
 
 **Symptoms:**

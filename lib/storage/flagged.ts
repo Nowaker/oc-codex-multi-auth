@@ -120,6 +120,8 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
       organizationId:
         typeof rawAccount.organizationId === "string" ? rawAccount.organizationId : undefined,
       accountId: typeof rawAccount.accountId === "string" ? rawAccount.accountId : undefined,
+      accountUserId:
+        typeof rawAccount.accountUserId === "string" ? rawAccount.accountUserId : undefined,
       accountIdSource,
       accountLabel: typeof rawAccount.accountLabel === "string" ? rawAccount.accountLabel : undefined,
       accountTags,

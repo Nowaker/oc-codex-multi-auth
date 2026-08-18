@@ -21,6 +21,7 @@ import type { AccountStorageV3, CooldownReason, RateLimitStateV3 } from "../stor
 import {
 	extractAccountEmail,
 	extractAccountId,
+	extractAccountUserId,
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "../auth/token-utils.js";
@@ -32,6 +33,7 @@ import { logWarn } from "../logger.js";
 export interface ManagedAccount {
 	index: number;
 	accountId?: string;
+	accountUserId?: string;
 	organizationId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
@@ -74,6 +76,110 @@ function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	) as Record<ModelFamily, number>;
 }
 
+type StoredAccount = AccountStorageV3["accounts"][number];
+
+function getStoredAccountUserId(account: StoredAccount): string | undefined {
+	return account.accountUserId?.trim() || extractAccountUserId(account.accessToken);
+}
+
+function selectUniqueIndex(indices: number[]): number | undefined {
+	return indices.length === 1 ? indices[0] : undefined;
+}
+
+function resolveFallbackMatches(params: {
+	accounts: StoredAccount[];
+	refreshToken: string;
+	accountId: string | undefined;
+	accountUserId: string | undefined;
+	email: string | undefined;
+}): { indices: Set<number>; ambiguous: boolean } {
+	const refreshMatches: number[] = [];
+	const memberMatches: number[] = [];
+	const legacyCandidates: number[] = [];
+
+	for (let index = 0; index < params.accounts.length; index += 1) {
+		const account = params.accounts[index];
+		if (!account) continue;
+		if (account.refreshToken === params.refreshToken) refreshMatches.push(index);
+		const storedMemberId = getStoredAccountUserId(account);
+		if (params.accountUserId && storedMemberId === params.accountUserId) {
+			memberMatches.push(index);
+		}
+		if (!storedMemberId) legacyCandidates.push(index);
+	}
+
+	// One historical OAuth grant may intentionally back several legacy org
+	// variants, so an exact refresh-token match remains authoritative.
+	if (refreshMatches.length > 0) {
+		return { indices: new Set(refreshMatches), ambiguous: false };
+	}
+
+	if (params.accountUserId) {
+		const exactMember = selectUniqueIndex(memberMatches);
+		if (exactMember !== undefined) {
+			return { indices: new Set([exactMember]), ambiguous: false };
+		}
+		if (memberMatches.length > 1) {
+			return { indices: new Set(), ambiguous: true };
+		}
+	}
+
+	const candidates = params.accountUserId
+		? legacyCandidates
+		: params.accounts.map((_, index) => index);
+	const normalizedEmail = sanitizeEmail(params.email);
+	const accountAndEmailMatches = candidates.filter((index) => {
+		const account = params.accounts[index];
+		return (
+			!!account &&
+			!!params.accountId &&
+			account.accountId === params.accountId &&
+			!!normalizedEmail &&
+			sanitizeEmail(account.email) === normalizedEmail
+		);
+	});
+	const exactComposite = selectUniqueIndex(accountAndEmailMatches);
+	if (exactComposite !== undefined) {
+		return { indices: new Set([exactComposite]), ambiguous: false };
+	}
+
+	const emailMatches = normalizedEmail
+		? candidates.filter(
+				(index) => sanitizeEmail(params.accounts[index]?.email) === normalizedEmail,
+			)
+		: [];
+	const exactEmail = selectUniqueIndex(emailMatches);
+	if (exactEmail !== undefined) {
+		return { indices: new Set([exactEmail]), ambiguous: false };
+	}
+
+	const accountIdMatches = params.accountId && !params.accountUserId
+		? candidates.filter((index) => params.accounts[index]?.accountId === params.accountId)
+		: [];
+	const exactAccount = selectUniqueIndex(accountIdMatches);
+	if (exactAccount !== undefined) {
+		return { indices: new Set([exactAccount]), ambiguous: false };
+	}
+
+	return {
+		indices: new Set(),
+		ambiguous:
+			accountAndEmailMatches.length > 1 ||
+			emailMatches.length > 1 ||
+			accountIdMatches.length > 1,
+	};
+}
+
+/**
+ * Replaces any re-auth note already on the record with one describing the
+ * currently missing scopes, keeping operator-authored text intact.
+ *
+ * Replace, not append: the previous exact-match guard only recognized an
+ * identical sentence, so a record whose missing set had changed since it was
+ * written — the whole 6.11.2 population, once a real scope became known —
+ * ended up carrying both sentences, the stale one first and contradicting the
+ * accurate one.
+ */
 function appendReauthNote(accountNote: string | undefined, missingScopes: string[]): string {
 	const suffix = `Re-auth required for missing OAuth scope(s): ${missingScopes.join(", ")}.`;
 	if (!accountNote) return suffix;
@@ -116,12 +222,27 @@ export class AccountState {
 		stored: AccountStorageV3 | null | undefined,
 	): void {
 		const fallbackAccountId = extractAccountId(authFallback?.access);
+		const fallbackAccountUserId = extractAccountUserId(authFallback?.access);
 		const fallbackAccountEmail = sanitizeEmail(extractAccountEmail(authFallback?.access));
 		const fallbackOAuthScope = getAuthScope(authFallback);
 		const fallbackMissingOAuthScopes = getMissingRequiredOAuthScopes(fallbackOAuthScope);
 
 		if (stored && stored.accounts.length > 0) {
 			const baseNow = nowMs();
+			const fallbackMatch = authFallback
+				? resolveFallbackMatches({
+						accounts: stored.accounts,
+						refreshToken: authFallback.refresh,
+						accountId: fallbackAccountId,
+						accountUserId: fallbackAccountUserId,
+						email: fallbackAccountEmail,
+					})
+				: { indices: new Set<number>(), ambiguous: false };
+			if (authFallback && fallbackMatch.ambiguous) {
+				logWarn(
+					"Stored OAuth fallback matches multiple account records; ignoring the fallback rather than replacing multiple credentials.",
+				);
+			}
 			this.accounts = stored.accounts
 				.map((account, index): ManagedAccount | null => {
 					if (!account.refreshToken || typeof account.refreshToken !== "string") {
@@ -131,11 +252,7 @@ export class AccountState {
 					const accountOAuthScope = account.oauthScope;
 
 					const matchesFallback =
-						!!authFallback &&
-						((fallbackAccountId && account.accountId === fallbackAccountId) ||
-							account.refreshToken === authFallback.refresh ||
-							(!!fallbackAccountEmail &&
-								sanitizeEmail(account.email) === fallbackAccountEmail));
+						!!authFallback && fallbackMatch.indices.has(index);
 
 					const refreshToken =
 						matchesFallback && authFallback ? authFallback.refresh : account.refreshToken;
@@ -150,6 +267,9 @@ export class AccountState {
 						accountId: matchesFallback
 							? fallbackAccountId ?? account.accountId
 							: account.accountId,
+						accountUserId: matchesFallback
+							? fallbackAccountUserId ?? getStoredAccountUserId(account)
+							: getStoredAccountUserId(account),
 						organizationId: account.organizationId,
 						accountIdSource: account.accountIdSource,
 						accountLabel: account.accountLabel,
@@ -185,21 +305,15 @@ export class AccountState {
 				})
 				.filter((account): account is ManagedAccount => account !== null);
 
-			const hasMatchingFallback =
-				!!authFallback &&
-				this.accounts.some(
-					(account) =>
-						account.refreshToken === authFallback.refresh ||
-						(fallbackAccountId && account.accountId === fallbackAccountId) ||
-						(!!fallbackAccountEmail && account.email === fallbackAccountEmail),
-				);
+			const hasMatchingFallback = !!authFallback && fallbackMatch.indices.size > 0;
 
-			if (authFallback && !hasMatchingFallback) {
+			if (authFallback && !hasMatchingFallback && !fallbackMatch.ambiguous) {
 				const now = nowMs();
 				if (fallbackMissingOAuthScopes.length === 0) {
 					this.accounts.push({
 						index: this.accounts.length,
 						accountId: fallbackAccountId,
+						accountUserId: fallbackAccountUserId,
 						organizationId: undefined,
 						accountIdSource: fallbackAccountId ? "token" : undefined,
 						email: fallbackAccountEmail,
@@ -220,6 +334,7 @@ export class AccountState {
 					this.accounts.push({
 						index: this.accounts.length,
 						accountId: fallbackAccountId,
+						accountUserId: fallbackAccountUserId,
 						organizationId: undefined,
 						accountIdSource: fallbackAccountId ? "token" : undefined,
 						email: fallbackAccountEmail,
@@ -264,6 +379,7 @@ export class AccountState {
 				{
 					index: 0,
 					accountId: fallbackAccountId,
+					accountUserId: fallbackAccountUserId,
 					organizationId: undefined,
 					accountIdSource: fallbackAccountId ? "token" : undefined,
 					email: fallbackAccountEmail,
@@ -456,12 +572,16 @@ export class AccountState {
 			);
 		}
 		const tokenAccountId = extractAccountId(auth.access);
+		const tokenAccountUserId = extractAccountUserId(auth.access);
 		if (
 			tokenAccountId &&
 			shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId)
 		) {
 			account.accountId = tokenAccountId;
 			account.accountIdSource = "token";
+		}
+		if (tokenAccountUserId) {
+			account.accountUserId = tokenAccountUserId;
 		}
 		account.email = sanitizeEmail(extractAccountEmail(auth.access)) ?? account.email;
 	}

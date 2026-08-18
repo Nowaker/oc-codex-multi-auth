@@ -7,6 +7,7 @@ vi.mock("../lib/auth/auth.js", () => ({
 import { decodeJWT } from "../lib/auth/auth.js";
 import {
 	extractAccountId,
+	extractAccountUserId,
 	extractAccountEmail,
 	getAccountIdCandidates,
 	selectBestAccountCandidate,
@@ -71,6 +72,26 @@ describe("Token Utils Module", () => {
 				},
 			});
 			expect(extractAccountId("token")).toBe("  acc_123  ");
+		});
+	});
+
+	describe("extractAccountUserId", () => {
+		it("extracts and trims the account-scoped Business member id", () => {
+			mockedDecodeJWT.mockReturnValue({
+				[JWT_CLAIM_PATH]: {
+					chatgpt_account_user_id: "  member-123  ",
+				},
+			});
+
+			expect(extractAccountUserId("access-token")).toBe("member-123");
+		});
+
+		it("does not substitute a shared account id for a missing member id", () => {
+			mockedDecodeJWT.mockReturnValue({
+				[JWT_CLAIM_PATH]: { chatgpt_account_id: "business-account" },
+			});
+
+			expect(extractAccountUserId("access-token")).toBeUndefined();
 		});
 	});
 

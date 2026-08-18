@@ -1622,6 +1622,111 @@ describe("AccountManager", () => {
       expect(account?.access).toBe(accessToken);
     });
 
+		it("updates only the matching Business member when accountId is shared", () => {
+			const now = Date.now();
+			const accessToken = (memberId: string) => {
+				const payload = {
+					"https://api.openai.com/auth": {
+						chatgpt_account_id: "business-account",
+						chatgpt_account_user_id: memberId,
+					},
+				};
+				return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+			};
+			const ownerAccess = accessToken("member-owner");
+			const invitedAccess = accessToken("member-invited");
+			const refreshedInvitedAccess = accessToken("member-invited");
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "business-account",
+						accountUserId: "member-owner",
+						email: "owner@example.com",
+						refreshToken: "owner-refresh",
+						accessToken: ownerAccess,
+						addedAt: now,
+						lastUsed: now,
+					},
+					{
+						accountId: "business-account",
+						accountUserId: "member-invited",
+						email: "invited@example.com",
+						refreshToken: "invited-refresh",
+						accessToken: invitedAccess,
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+			const auth: OAuthAuthDetails = {
+				type: "oauth",
+				access: refreshedInvitedAccess,
+				refresh: "invited-refresh-new",
+				expires: now + 60_000,
+			};
+
+			const manager = new AccountManager(auth, stored);
+			const accounts = manager.getAccountsSnapshot();
+
+			expect(accounts).toHaveLength(2);
+			expect(accounts[0]).toMatchObject({
+				accountUserId: "member-owner",
+				refreshToken: "owner-refresh",
+				access: ownerAccess,
+			});
+			expect(accounts[1]).toMatchObject({
+				accountUserId: "member-invited",
+				refreshToken: "invited-refresh-new",
+				access: refreshedInvitedAccess,
+			});
+		});
+
+		it("ignores an accountId-only fallback when multiple Business members match", () => {
+			const now = Date.now();
+			const payload = {
+				"https://api.openai.com/auth": {
+					chatgpt_account_id: "business-account",
+				},
+			};
+			const auth: OAuthAuthDetails = {
+				type: "oauth",
+				access: `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`,
+				refresh: "unknown-refresh",
+				expires: now + 60_000,
+			};
+			const stored = {
+				version: 3 as const,
+				activeIndex: 0,
+				accounts: [
+					{
+						accountId: "business-account",
+						email: "owner@example.com",
+						refreshToken: "owner-refresh",
+						addedAt: now,
+						lastUsed: now,
+					},
+					{
+						accountId: "business-account",
+						email: "invited@example.com",
+						refreshToken: "invited-refresh",
+						addedAt: now,
+						lastUsed: now,
+					},
+				],
+			};
+
+			const manager = new AccountManager(auth, stored);
+			const accounts = manager.getAccountsSnapshot();
+
+			expect(accounts).toHaveLength(2);
+			expect(accounts.map((account) => account.refreshToken)).toEqual([
+				"owner-refresh",
+				"invited-refresh",
+			]);
+		});
+
     it("merges fallback auth when matching by email", () => {
       const now = Date.now();
       const payload = {

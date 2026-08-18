@@ -11,6 +11,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+	extractAccountUserId,
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "../auth/token-utils.js";
@@ -166,6 +167,8 @@ export class AccountRecovery {
 				!account.access || account.expires === undefined || account.expires <= now;
 			if (missingOrExpired) {
 				account.access = cached.accessToken;
+				account.accountUserId =
+					extractAccountUserId(cached.accessToken) ?? account.accountUserId;
 				if (typeof cached.expiresAt === "number") {
 					account.expires = cached.expiresAt;
 				}

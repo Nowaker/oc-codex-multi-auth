@@ -22,6 +22,7 @@
  */
 
 import { nowMs } from "../utils.js";
+import { extractAccountUserId } from "../auth/token-utils.js";
 
 /**
  * Subset of a stored account record this module mutates. Kept permissive so the
@@ -167,6 +168,46 @@ export function findDisabledTokenSourceDuplicates(
 	return duplicates;
 }
 
+export interface BusinessMemberCredentialScanAccount {
+	accountId?: string;
+	accountUserId?: string;
+	accessToken?: string;
+	email?: string;
+}
+
+/**
+ * Find records whose labels name different users but whose OAuth tokens resolve
+ * to the same member of the same Business workspace. Such records cannot
+ * consume separate quotas and must be re-authenticated independently.
+ */
+export function findConflictingBusinessMemberCredentials(
+	accounts: BusinessMemberCredentialScanAccount[],
+): number[][] {
+	const groups = new Map<string, number[]>();
+	for (let index = 0; index < accounts.length; index += 1) {
+		const account = accounts[index];
+		if (!account) continue;
+		const accountId = account.accountId?.trim();
+		const accountUserId =
+			account.accountUserId?.trim() || extractAccountUserId(account.accessToken);
+		if (!accountId || !accountUserId) continue;
+		const key = JSON.stringify([accountId, accountUserId]);
+		const group = groups.get(key);
+		if (group) group.push(index);
+		else groups.set(key, [index]);
+	}
+
+	return [...groups.values()].filter((indices) => {
+		if (indices.length < 2) return false;
+		const emails = new Set(
+			indices
+				.map((index) => accounts[index]?.email?.trim().toLowerCase())
+				.filter((email): email is string => !!email),
+		);
+		return emails.size > 1;
+	});
+}
+
 /**
  * Subset of a stored account used for the read-only stale-state diagnostic.
  */
@@ -264,4 +305,3 @@ export function findDisabledAccountsWithFreshCredential(
 	}
 	return flagged;
 }
-

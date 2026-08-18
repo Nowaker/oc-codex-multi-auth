@@ -2237,7 +2237,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							// RC-8: per-(account, family) circuit-breaker key. The breaker gates
 							// upstream calls so that repeated failures short-circuit to the
 							// rotation path instead of hammering a degraded endpoint.
-							const circuitBreakerKey = `${accountId}:${modelFamily}`;
+							const circuitBreakerKey = `${accountId}:index-${account.index}:${modelFamily}`;
 							const circuitBreaker = getCircuitBreaker(circuitBreakerKey);
 
 							while (true) {

@@ -8,6 +8,7 @@
  */
 
 import { queuedRefresh } from "../refresh-queue.js";
+import { extractAccountUserId } from "../auth/token-utils.js";
 import {
 	withAccountStorageTransaction,
 	type AccountMetadataV3,
@@ -21,6 +22,7 @@ import type { TokenResult } from "../types.js";
 export interface RefreshAccountIdentity {
 	organizationId?: string;
 	accountId?: string;
+	accountUserId?: string;
 	refreshToken: string;
 }
 
@@ -99,6 +101,8 @@ export async function persistRefreshResult(
 				}
 
 				target.refreshToken = refreshResult.refresh;
+				target.accountUserId =
+					extractAccountUserId(refreshResult.access) ?? target.accountUserId;
 				target.accessToken = refreshResult.access;
 				target.expiresAt = refreshResult.expires;
 				if (rotatedAt !== undefined) {
@@ -110,6 +114,8 @@ export async function persistRefreshResult(
 				// this workspace's freshly returned access token; do not overwrite
 				// non-credential state in the fresh snapshot.
 				target.accessToken = refreshResult.access;
+				target.accountUserId =
+					extractAccountUserId(refreshResult.access) ?? target.accountUserId;
 				target.expiresAt = refreshResult.expires;
 			} else {
 				// The refresh was keyed off `identity.refreshToken` (the consumed,
@@ -206,6 +212,8 @@ export function buildRefreshInputs(
 		identity: {
 			organizationId: account.organizationId,
 			accountId: account.accountId,
+			accountUserId:
+				account.accountUserId?.trim() || extractAccountUserId(account.accessToken),
 			refreshToken: account.refreshToken,
 		},
 	}));

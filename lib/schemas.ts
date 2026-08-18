@@ -449,7 +449,7 @@ export function getValidationErrors(schema: z.ZodType, data: unknown): string[] 
  * The JWT is produced by the OAuth provider (ChatGPT backend) and decoded on
  * the client. Unknown claims are preserved via `catchall(z.unknown())` so we
  * never reject a valid-but-unfamiliar token, but the claims we actually read
- * (account id, email, organization hints) are shape-checked. A failed parse
+ * (account/member ids, email, organization hints) are shape-checked. A failed parse
  * causes callers to treat the JWT as opaque (same behavior as an undecodable
  * JWT) instead of blindly casting arbitrary JSON into our `JWTPayload` type.
  */
@@ -458,6 +458,7 @@ export const JWTPayloadSchema = z
 		"https://api.openai.com/auth": z
 			.object({
 				chatgpt_account_id: z.string().optional(),
+				chatgpt_account_user_id: z.string().optional(),
 				organizations: z.unknown().optional(),
 				email: z.string().optional(),
 				chatgpt_user_email: z.string().optional(),

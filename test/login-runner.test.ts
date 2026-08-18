@@ -12,6 +12,7 @@ import {
 	type AccountSelectionResult,
 	type TokenSuccessWithAccount,
 } from "../lib/auth/login-runner.js";
+import { JWT_CLAIM_PATH } from "../lib/constants.js";
 import { loadAccounts, setStoragePathDirect } from "../lib/storage.js";
 
 function createTokenResult(
@@ -395,5 +396,91 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 
 		expect(mergeStoredAccountPair(a, b).enabled).toBe(false);
 		expect(mergeStoredAccountPair(b, a).enabled).toBe(false);
+	});
+});
+
+describe("login-runner Business workspace members", () => {
+	let testDir: string;
+	let storagePath: string;
+
+	beforeEach(async () => {
+		testDir = join(
+			tmpdir(),
+			`login-runner-business-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		storagePath = join(testDir, "oc-codex-multi-auth-accounts.json");
+		await fs.mkdir(testDir, { recursive: true });
+		setStoragePathDirect(storagePath);
+	});
+
+	afterEach(async () => {
+		setStoragePathDirect(null);
+		vi.restoreAllMocks();
+		await fs.rm(testDir, { recursive: true, force: true });
+	});
+
+	const encodeJwt = (payload: Record<string, unknown>): string => {
+		const b64 = (value: unknown) =>
+			Buffer.from(JSON.stringify(value)).toString("base64url");
+		return `${b64({ alg: "none" })}.${b64(payload)}.sig`;
+	};
+
+	const accessTokenFor = (
+		chatgptAccountId: string,
+		accountUserId: string,
+		email: string,
+	): string =>
+		encodeJwt({
+			[JWT_CLAIM_PATH]: {
+				chatgpt_account_id: chatgptAccountId,
+				chatgpt_account_user_id: accountUserId,
+				email,
+			},
+		});
+
+	it("keeps two Business members with the same workspace account id separate", async () => {
+		const persistMember = async (
+			memberId: string,
+			email: string,
+			refresh: string,
+		): Promise<void> => {
+			await persistAccountPool(
+				[
+					{
+						type: "success",
+						access: accessTokenFor("business-account", memberId, email),
+						refresh,
+						expires: Date.now() + 60_000,
+					},
+				],
+				false,
+			);
+		};
+
+		await persistMember("member-owner", "owner@example.com", "refresh-owner");
+		await persistMember("member-invited", "invited@example.com", "refresh-invited");
+
+		let stored = await loadAccounts();
+		expect(stored?.accounts).toHaveLength(2);
+		expect(stored?.accounts.map((account) => account.accountId)).toEqual([
+			"business-account",
+			"business-account",
+		]);
+		expect(stored?.accounts.map((account) => account.accountUserId)).toEqual([
+			"member-owner",
+			"member-invited",
+		]);
+		expect(stored?.accounts.map((account) => account.refreshToken)).toEqual([
+			"refresh-owner",
+			"refresh-invited",
+		]);
+
+		await persistMember("member-owner", "owner@example.com", "refresh-owner-new");
+		stored = await loadAccounts();
+		expect(stored?.accounts).toHaveLength(2);
+		expect(stored?.accounts.map((account) => account.refreshToken)).toEqual([
+			"refresh-owner-new",
+			"refresh-invited",
+		]);
 	});
 });

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { extractAccountId } from "./accounts.js";
+import { extractAccountId, extractAccountUserId } from "./accounts.js";
 import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
 import { CODEX_BASE_URL, PLUGIN_NAME } from "./constants.js";
 import { createUsageRequestTimeoutError } from "./error-sentinels.js";
@@ -381,6 +381,7 @@ export async function fetchCodexUsage(params: {
 function applyRefreshedCredentials(
 	target: {
 		refreshToken: string;
+		accountUserId?: string;
 		accessToken?: string;
 		expiresAt?: number;
 	},
@@ -391,6 +392,7 @@ function applyRefreshedCredentials(
 	},
 ): void {
 	target.refreshToken = result.refresh;
+	target.accountUserId = extractAccountUserId(result.access) ?? target.accountUserId;
 	target.accessToken = result.access;
 	target.expiresAt = result.expires;
 }
@@ -540,14 +542,12 @@ function normalizeUsageIdentityPart(value: string | undefined): string {
 /**
  * Derive a stable usage-quota dedupe key for an account.
  *
- * A single OAuth credential can authorize multiple ChatGPT workspaces, each
- * exposing distinct `accountId` / `organizationId` values while sharing one
- * refresh token. Quota deduplication must therefore key on workspace identity
- * first so separate workspaces are not collapsed into one row, falling back to
- * the refresh token only when no workspace identity is available.
+ * Business members can share one `accountId` while each bearer token has a
+ * distinct `accountUserId` and quota. Prefer that seat identity; older records
+ * without it retain workspace-level deduplication, then refresh-token fallback.
  *
- * Keys are emitted as `JSON.stringify` arrays (tagged `"workspace"` or
- * `"refresh"`) so values containing delimiter characters cannot collide.
+ * Keys are emitted as `JSON.stringify` arrays (tagged `"seat"`, `"workspace"`,
+ * or `"refresh"`) so values containing delimiter characters cannot collide.
  *
  * @param account - Stored account metadata to derive the key from.
  * @returns A unique identity key, or `undefined` when the account carries no
@@ -557,7 +557,13 @@ export function getUsageAccountDedupeKey(
 	account: AccountMetadataV3,
 ): string | undefined {
 	const accountId = normalizeUsageIdentityPart(account.accountId);
+	const accountUserId = normalizeUsageIdentityPart(
+		account.accountUserId?.trim() || extractAccountUserId(account.accessToken),
+	);
 	const organizationId = normalizeUsageIdentityPart(account.organizationId);
+	if (accountUserId) {
+		return JSON.stringify(["seat", accountId, accountUserId]);
+	}
 	if (accountId || organizationId) {
 		return JSON.stringify(["workspace", accountId, organizationId]);
 	}
@@ -677,6 +683,7 @@ export function createUsageAccountFingerprint(
 ): string {
 	const fingerprintSource = [
 		account.accountId ?? "",
+		account.accountUserId?.trim() || extractAccountUserId(account.accessToken) || "",
 		account.organizationId ?? "",
 		account.refreshToken ?? "",
 	].join("\0");

@@ -72,6 +72,8 @@ export interface RateLimitStateV3 {
 
 export interface AccountMetadataV1 {
 	accountId?: string;
+	/** Account-scoped user/seat id from the OAuth access token. */
+	accountUserId?: string;
 	organizationId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
@@ -102,6 +104,8 @@ export interface AccountStorageV1 {
 
 export interface AccountMetadataV3 {
 	accountId?: string;
+	/** Account-scoped user/seat id from the OAuth access token. */
+	accountUserId?: string;
 	organizationId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
@@ -155,6 +159,7 @@ export function migrateV1ToV3(v1: AccountStorageV1): AccountStorageV3 {
 			}
 			return {
 				accountId: account.accountId,
+				accountUserId: account.accountUserId,
 				organizationId: account.organizationId,
 				accountIdSource: account.accountIdSource,
 				accountLabel: account.accountLabel,

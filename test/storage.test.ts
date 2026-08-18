@@ -46,6 +46,19 @@ describe("storage", () => {
       ).toBe("accountId:workspace-only");
     });
 
+    it("includes the Business member id in workspace identity", () => {
+      expect(
+        getWorkspaceIdentityKey({
+          organizationId: "org-business",
+          accountId: "business-account",
+          accountUserId: "member-invited",
+          refreshToken: "member-refresh",
+        }),
+      ).toBe(
+        "organizationId:org-business|accountId:business-account|accountUserId:member-invited",
+      );
+    });
+
     it("falls back to refreshToken when workspace ids are missing", () => {
       expect(
         getWorkspaceIdentityKey({
@@ -58,6 +71,104 @@ describe("storage", () => {
   });
 
   describe("deduplication", () => {
+    it("preserves separate members of the same Business workspace", () => {
+      const accounts = deduplicateAccounts([
+        {
+          organizationId: "org-business",
+          accountId: "business-account",
+          accountUserId: "member-owner",
+          refreshToken: "owner-refresh",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+        {
+          organizationId: "org-business",
+          accountId: "business-account",
+          accountUserId: "member-invited",
+          refreshToken: "invited-refresh",
+          addedAt: 2,
+          lastUsed: 2,
+        },
+      ]);
+
+      expect(accounts).toHaveLength(2);
+      expect(accounts.map((account) => account.accountUserId)).toEqual([
+        "member-owner",
+        "member-invited",
+      ]);
+    });
+
+    it("preserves the active Business member while normalizing storage", () => {
+      const normalized = normalizeAccountStorage({
+        version: 3,
+        activeIndex: 1,
+        accounts: [
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accountUserId: "member-owner",
+            refreshToken: "owner-refresh",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accountUserId: "member-invited",
+            refreshToken: "invited-refresh",
+            addedAt: 2,
+            lastUsed: 2,
+          },
+        ],
+      });
+
+      expect(normalized?.accounts).toHaveLength(2);
+      expect(normalized?.activeIndex).toBe(1);
+      expect(normalized?.accounts[normalized.activeIndex]?.accountUserId).toBe(
+        "member-invited",
+      );
+    });
+
+    it("backfills member identity from cached tokens before deduplication", () => {
+      const accessToken = (memberId: string) => {
+        const payload = {
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "business-account",
+            chatgpt_account_user_id: memberId,
+          },
+        };
+        return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+      };
+      const normalized = normalizeAccountStorage({
+        version: 3,
+        activeIndex: 1,
+        accounts: [
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accessToken: accessToken("member-owner"),
+            refreshToken: "owner-refresh",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accessToken: accessToken("member-invited"),
+            refreshToken: "invited-refresh",
+            addedAt: 2,
+            lastUsed: 2,
+          },
+        ],
+      });
+
+      expect(normalized?.accounts.map((account) => account.accountUserId)).toEqual([
+        "member-owner",
+        "member-invited",
+      ]);
+      expect(normalized?.activeIndex).toBe(1);
+    });
+
     it("remaps activeIndex after deduplication using active account key", () => {
       const now = Date.now();
 

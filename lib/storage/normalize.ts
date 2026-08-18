@@ -8,6 +8,7 @@
  */
 
 import { createLogger } from "../logger.js";
+import { extractAccountUserId } from "../auth/token-utils.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { AccountStorageV2DetectionSchema } from "../schemas.js";
 import { StorageError } from "./errors.js";
@@ -121,7 +122,12 @@ export function normalizeAccountStorage(
       isRecord(account) && typeof account.refreshToken === "string" && !!account.refreshToken.trim(),
   );
 
-  const deduplicatedAccounts = deduplicateAccountsForStorage(validAccounts);
+  const accountsWithMemberIdentity = validAccounts.map((account) => {
+    if (account.accountUserId?.trim()) return account;
+    const accountUserId = extractAccountUserId(account.accessToken);
+    return accountUserId ? { ...account, accountUserId } : account;
+  });
+  const deduplicatedAccounts = deduplicateAccountsForStorage(accountsWithMemberIdentity);
 
   const activeIndex = (() => {
     if (deduplicatedAccounts.length === 0) return 0;

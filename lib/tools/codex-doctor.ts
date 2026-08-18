@@ -16,6 +16,7 @@ import {
 	clearRefreshedAccountsStaleState,
 	findDisabledAccountsWithFreshCredential,
 	findDisabledTokenSourceDuplicates,
+	findConflictingBusinessMemberCredentials,
 } from "../accounts/stale-state.js";
 import { clearTuiQuotaSnapshot } from "../tui-quota-cache.js";
 import {
@@ -123,6 +124,19 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 				summary: `${disabledTokenSourceDuplicates.length} disabled duplicate account entry(ies) shadow a real account.`,
 				action: `Remove the leftover entry(ies) with \`codex-remove\` (slots: ${disabledTokenSourceDuplicates
 					.map((index) => index + 1)
+					.join(", ")}).`,
+			});
+		}
+		const businessMemberConflicts = storage
+			? findConflictingBusinessMemberCredentials(storage.accounts)
+			: [];
+		if (businessMemberConflicts.length > 0) {
+			findings.push({
+				severity: "error",
+				code: "business-member-credential-conflict",
+				summary: `${businessMemberConflicts.length} Business member group(s) use one OAuth credential under different emails.`,
+				action: `Remove and re-login the affected slots separately (${businessMemberConflicts
+					.map((indices) => indices.map((index) => index + 1).join("/"))
 					.join(", ")}).`,
 			});
 		}
@@ -319,6 +333,7 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 						const bestIdentity: RefreshAccountIdentity = {
 							organizationId: bestAccount.organizationId,
 							accountId: bestAccount.accountId,
+							accountUserId: bestAccount.accountUserId,
 							refreshToken: bestAccount.refreshToken,
 						};
 						const switchResult = await withAccountStorageTransaction(
