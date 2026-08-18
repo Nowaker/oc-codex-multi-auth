@@ -39,6 +39,11 @@ export interface ModelAccountPoolMutationResult {
 	dryRun: boolean;
 }
 
+export interface ModelAccountPoolMutationOptions {
+	dryRun?: boolean;
+	normalizeExistingAccountIds?: (accountIds: readonly string[]) => readonly string[];
+}
+
 let modelAccountPoolMutationQueue: Promise<void> = Promise.resolve();
 
 /**
@@ -164,7 +169,7 @@ export function updateModelAccountPool(
 	model: string,
 	mutation: ModelAccountPoolMutation,
 	accountIds: readonly string[] = [],
-	options: { dryRun?: boolean } = {},
+	options: ModelAccountPoolMutationOptions = {},
 ): Promise<ModelAccountPoolMutationResult> {
 	const pending = modelAccountPoolMutationQueue.then(async () => {
 		await fs.mkdir(dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
@@ -202,7 +207,7 @@ async function performModelAccountPoolMutation(
 	model: string,
 	mutation: ModelAccountPoolMutation,
 	accountIds: readonly string[],
-	options: { dryRun?: boolean },
+	options: ModelAccountPoolMutationOptions,
 ): Promise<ModelAccountPoolMutationResult> {
 	const normalizedModel = model.trim().toLowerCase();
 	if (!normalizedModel) throw new Error("Model is required.");
@@ -235,8 +240,16 @@ async function performModelAccountPoolMutation(
 	const matchingKeys = Object.keys(pools).filter(
 		(key) => key.trim().toLowerCase() === normalizedModel,
 	);
-	const previousAccountIds = Array.from(
+	const storedPreviousAccountIds = Array.from(
 		new Set(matchingKeys.flatMap((key) => pools[key] ?? [])),
+	);
+	const previousAccountIds = Array.from(
+		new Set(
+			(options.normalizeExistingAccountIds?.(storedPreviousAccountIds) ??
+				storedPreviousAccountIds)
+				.map((id) => id.trim())
+				.filter(Boolean),
+		),
 	);
 	for (const key of matchingKeys) delete pools[key];
 
@@ -260,8 +273,8 @@ async function performModelAccountPoolMutation(
 	if (nextAccountIds.length > 0) pools[normalizedModel] = nextAccountIds;
 	const changed =
 		matchingKeys.length !== (nextAccountIds.length > 0 ? 1 : 0) ||
-		previousAccountIds.length !== nextAccountIds.length ||
-		previousAccountIds.some((id, index) => id !== nextAccountIds[index]) ||
+		storedPreviousAccountIds.length !== nextAccountIds.length ||
+		storedPreviousAccountIds.some((id, index) => id !== nextAccountIds[index]) ||
 		(matchingKeys[0] !== undefined && matchingKeys[0] !== normalizedModel);
 
 	if (changed && options.dryRun !== true) {

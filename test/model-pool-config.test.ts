@@ -91,6 +91,28 @@ describe("model account pool config mutation", () => {
 		expect(await readConfig()).not.toHaveProperty("modelAccountPools");
 	});
 
+	it("atomically canonicalizes legacy IDs before removing a Business seat", async () => {
+		await fs.writeFile(
+			configPath,
+			JSON.stringify({
+				modelAccountPools: { model: ["business-account", "unresolved"] },
+			}),
+		);
+
+		await updateModelAccountPool("model", "remove", ["seat-invited"], {
+			normalizeExistingAccountIds: (ids) =>
+				ids.flatMap((id) =>
+					id === "business-account"
+						? ["seat-owner", "seat-invited"]
+						: [id],
+				),
+		});
+
+		expect((await readConfig()).modelAccountPools).toEqual({
+			model: ["seat-owner", "unresolved"],
+		});
+	});
+
 	it("serializes concurrent mutations so updates are not lost", async () => {
 		await fs.writeFile(
 			configPath,

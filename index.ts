@@ -122,6 +122,7 @@ import {
         parseRateLimitReason,
 	lookupCodexCliTokensByEmail,
 } from "./lib/accounts.js";
+import { matchesModelPoolAccountKey } from "./lib/accounts/pool-identity.js";
 import { resolveDisplayEmail } from "./lib/account-display.js";
 import { CodexAuthError } from "./lib/errors.js";
 import {
@@ -2024,8 +2025,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					accountPoolMode:
 						preferredAccountIds.length === 0
 							? "general"
-							: account.accountId !== undefined &&
-								preferredAccountIds.includes(account.accountId)
+							: preferredAccountIds.some((key) =>
+									matchesModelPoolAccountKey(account, key),
+								)
 								? "preferred"
 								: "general-fallback",
 					configuredAccountPoolSize: preferredAccountIds.length,

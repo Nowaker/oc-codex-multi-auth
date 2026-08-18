@@ -8,6 +8,11 @@ import {
 } from "../config.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
 import { loadAccounts, type AccountStorageV3 } from "../storage.js";
+import {
+	expandLegacyModelPoolKeys,
+	getModelPoolAccountKey,
+	matchesModelPoolAccountKey,
+} from "../accounts/pool-identity.js";
 import type { ToolContext } from "./index.js";
 
 type CodexPoolAction = "status" | ModelAccountPoolMutation;
@@ -64,7 +69,7 @@ function resolveAccountIds(
 			);
 		}
 		const account = storage.accounts[accountNumber - 1];
-		const accountId = account?.accountId?.trim();
+		const accountId = account ? getModelPoolAccountKey(account) : undefined;
 		if (!accountId) {
 			throw new Error(
 				`Account ${accountNumber} has no stable account ID and cannot be assigned to a model pool.`,
@@ -93,23 +98,31 @@ function buildPoolSnapshot(
 	const storedAccounts = storage?.accounts ?? [];
 	const maskEmail = ctx.resolveMaskEmail();
 
+	const includedIndices = new Set<number>();
 	for (const accountId of accountIds) {
-		const index = storedAccounts.findIndex(
-			(account) => account.accountId?.trim() === accountId,
-		);
-		const account = index >= 0 ? storedAccounts[index] : undefined;
-		if (!account) {
+		const matchingIndices = storedAccounts
+			.map((account, index) =>
+				matchesModelPoolAccountKey(account, accountId) ? index : -1,
+			)
+			.filter((index) => index >= 0);
+		if (matchingIndices.length === 0) {
 			unresolvedAccountIds.push(accountId);
 			continue;
 		}
-		accounts.push({
-			...ctx.buildJsonAccountIdentity(index, {
-				includeSensitive,
-				account,
-				label: ctx.formatCommandAccountLabel(account, index, { maskEmail }),
-			}),
-			enabled: account.enabled !== false,
-		});
+		for (const index of matchingIndices) {
+			if (includedIndices.has(index)) continue;
+			includedIndices.add(index);
+			const account = storedAccounts[index];
+			if (!account) continue;
+			accounts.push({
+				...ctx.buildJsonAccountIdentity(index, {
+					includeSensitive,
+					account,
+					label: ctx.formatCommandAccountLabel(account, index, { maskEmail }),
+				}),
+				enabled: account.enabled !== false,
+			});
+		}
 	}
 
 	return {
@@ -220,6 +233,12 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 					: resolveAccountIds(storage, args.accounts);
 			const result = await updateModelAccountPool(model, action, accountIds, {
 				dryRun: args.dryRun,
+				...(action === "add" || action === "remove"
+					? {
+							normalizeExistingAccountIds: (ids: readonly string[]) =>
+								expandLegacyModelPoolKeys(ids, storage?.accounts ?? []),
+						}
+					: {}),
 			});
 			const pool = buildPoolSnapshot(
 				result.model,

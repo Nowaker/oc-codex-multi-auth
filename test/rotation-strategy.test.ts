@@ -5,6 +5,7 @@ import { getModelAccountPool, getRotationStrategy } from "../lib/config.js";
 import type { PluginConfig } from "../lib/types.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import type { ModelFamily } from "../lib/prompts/codex.js";
+import { getModelPoolAccountKey } from "../lib/accounts/pool-identity.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
@@ -98,6 +99,57 @@ describe("model account pool config", () => {
 
 	it("returns an empty pool for unmapped models", () => {
 		expect(getModelAccountPool({ modelAccountPools: {} } as PluginConfig, "gpt-5.5")).toEqual([]);
+	});
+});
+
+describe("Business seat model pools", () => {
+	const businessStorage: AccountStorageV3 = {
+		version: 3,
+		activeIndex: 0,
+		accounts: [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				refreshToken: "owner-refresh",
+				addedAt: 1,
+				lastUsed: 1,
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-invited",
+				refreshToken: "invited-refresh",
+				addedAt: 2,
+				lastUsed: 2,
+			},
+		],
+	};
+
+	it.each(["hybrid", "sticky", "round-robin"] as const)(
+		"selects only the configured Business seat with %s rotation",
+		(strategy) => {
+			const manager = new AccountManager(undefined, businessStorage);
+			const invitedKey = getModelPoolAccountKey(businessStorage.accounts[1]);
+			const selected = manager.getAccountForStrategy(
+				strategy,
+				FAMILY,
+				"gpt-5.6-sol",
+				{},
+				invitedKey ? [invitedKey] : [],
+			);
+			expect(selected?.index).toBe(1);
+		},
+	);
+
+	it("keeps legacy workspace IDs compatible with every Business seat", () => {
+		const manager = new AccountManager(undefined, businessStorage);
+		const selected = manager.getAccountForStrategy(
+			"round-robin",
+			FAMILY,
+			"gpt-5.6-sol",
+			{},
+			["business-account"],
+		);
+		expect(selected?.index).toBe(0);
 	});
 });
 
