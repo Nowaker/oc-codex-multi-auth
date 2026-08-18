@@ -39,6 +39,7 @@ import {
   type AccountStorageV3,
 } from "./migrations.js";
 import { acquireOrDetectLock } from "./worktree-lock.js";
+import { withStorageTransaction } from "./transaction-lock.js";
 import {
   isKeychainOptInEnabled,
   readFromKeychain,
@@ -703,10 +704,12 @@ export async function withAccountStorageTransaction<T>(
     persist: (storage: AccountStorageV3) => Promise<void>,
   ) => Promise<T>,
 ): Promise<T> {
-  return withStorageLock(async () => {
-    const current = await loadAccountsInternal(saveAccountsUnlocked);
-    return handler(current, saveAccountsUnlocked);
-  });
+	return withStorageTransaction({
+		storagePath: getStoragePath(),
+		load: () => loadAccountsInternal(saveAccountsUnlocked),
+		persist: saveAccountsUnlocked,
+		handler,
+	});
 }
 
 /**

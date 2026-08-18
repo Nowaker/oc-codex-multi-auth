@@ -26,6 +26,7 @@ import {
   writeFlaggedToKeychain,
 } from "./keychain.js";
 import type { AccountMetadataV3 } from "./migrations.js";
+import { withStorageTransaction } from "./transaction-lock.js";
 
 const log = createLogger("storage");
 
@@ -286,10 +287,12 @@ export async function withFlaggedAccountStorageTransaction<T>(
     persist: (storage: FlaggedAccountStorageV1) => Promise<void>,
   ) => Promise<T>,
 ): Promise<T> {
-  return withStorageLock(async () => {
-    const current = await loadFlaggedAccountsUnlocked(saveFlaggedAccountsUnlocked);
-    return handler(current, saveFlaggedAccountsUnlocked);
-  });
+	return withStorageTransaction({
+		storagePath: getFlaggedAccountsPath(),
+		load: () => loadFlaggedAccountsUnlocked(saveFlaggedAccountsUnlocked),
+		persist: saveFlaggedAccountsUnlocked,
+		handler,
+	});
 }
 
 export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Promise<void> {
