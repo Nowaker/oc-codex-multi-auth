@@ -64,7 +64,7 @@ describe("Codex usage refresh persistence for Business members", () => {
 		});
 	});
 
-	it("updates only the matching member when the consumed token is stale on disk", async () => {
+	it("refreshes only the matching member from the authoritative current token", async () => {
 		const staleOwner = storedMember("member-owner", "owner-refresh-stale");
 		transactionStorage = {
 			version: 3,
@@ -81,8 +81,10 @@ describe("Codex usage refresh persistence for Business members", () => {
 		});
 
 		expect(result.persisted).toBe(true);
+		expect(result.accessToken).toBe(accessTokenFor("member-owner"));
 		expect(persistedStorage?.accounts[0]?.refreshToken).toBe("owner-refresh-new");
 		expect(persistedStorage?.accounts[1]?.refreshToken).toBe("invited-refresh-current");
+		expect(queuedRefresh).toHaveBeenCalledWith("owner-refresh-current");
 	});
 
 	it("does not rotate another member that shares the consumed legacy token", async () => {
@@ -114,12 +116,12 @@ describe("Codex usage refresh persistence for Business members", () => {
 			accounts: [storedMember("member-invited", "invited-refresh-current")],
 		};
 
-		const result = await ensureCodexUsageAccessToken({
+		const result = ensureCodexUsageAccessToken({
 			storage: { version: 3, activeIndex: 0, accounts: [staleOwner] },
 			account: staleOwner,
 		});
 
-		expect(result.persisted).toBe(false);
+		await expect(result).rejects.toThrow(/removed/i);
 		expect(persistedStorage).toBeNull();
 		expect(transactionStorage.accounts[0]?.refreshToken).toBe("invited-refresh-current");
 	});

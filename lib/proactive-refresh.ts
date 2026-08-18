@@ -10,10 +10,10 @@
  * - Works alongside the existing reactive refresh in fetch-helpers
  */
 
-import { queuedRefresh } from "./refresh-queue.js";
 import { createLogger } from "./logger.js";
 import type { ManagedAccount } from "./accounts.js";
 import type { TokenResult } from "./types.js";
+import { coordinatePersistedRefresh } from "./storage/coordinated-refresh.js";
 
 const log = createLogger("proactive-refresh");
 
@@ -110,14 +110,25 @@ export async function proactiveRefreshAccount(
 		expiresInMinutes: Math.round(timeUntilExpiry / 60000),
 	});
 
-	const result = await queuedRefresh(account.refreshToken);
+	const result = await coordinatePersistedRefresh(account);
 
 	if (result.type === "success") {
 		log.info("Proactive refresh succeeded", {
 			accountIndex: account.index,
 			email: account.email,
 		});
-		return { refreshed: true, tokenResult: result, reason: "success" };
+		const tokenResult: TokenResult = {
+			type: "success",
+			access: result.access,
+			refresh: result.refresh,
+			expires: result.expires,
+			...(result.idToken ? { idToken: result.idToken } : {}),
+			...(result.scope ? { scope: result.scope } : {}),
+			...(result.multiAccount !== undefined
+				? { multiAccount: result.multiAccount }
+				: {}),
+		};
+		return { refreshed: true, tokenResult, reason: "success" };
 	}
 
 	log.warn("Proactive refresh failed", {

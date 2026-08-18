@@ -1415,11 +1415,11 @@ describe("OpenAIOAuthPlugin", () => {
 			]);
 			expect(reloadedStorage?.accounts.map((account) => account.accessToken)).toEqual([
 				"rotated-access",
-				"rotated-access",
+				"expired-access-2",
 			]);
 			expect(reloadedStorage?.accounts.map((account) => account.expiresAt)).toEqual([
 				rotatedExpires,
-				rotatedExpires,
+				0,
 			]);
 		});
 
@@ -1484,7 +1484,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 			await plugin.tool["codex-limits"].execute();
 
-			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledWith("stale-refresh");
+			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledWith("different-refresh");
 			const reloadedStorage = await vi.mocked(loadAccounts)();
 			expect(reloadedStorage?.accounts[0]?.refreshToken).toBe("single-refresh");
 			expect(reloadedStorage?.accounts[0]?.accessToken).toBe("single-access");
@@ -1540,10 +1540,9 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(reloadedStorage?.accounts[1]?.accessToken).toBe("still-valid");
 		});
 
-		it("warns when refreshed credentials would otherwise fall back to a different account with the same email", async () => {
+		it("fails closed when stable identity no longer exists in authoritative storage", async () => {
 			const { queuedRefresh } = await import("../lib/refresh-queue.js");
 			const { loadAccounts, withAccountStorageTransaction } = await import("../lib/storage.js");
-			const loggerModule = await import("../lib/logger.js");
 			const transactionStorage = {
 				version: 3 as const,
 				accounts: [
@@ -1613,19 +1612,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 			await plugin.tool["codex-limits"].execute();
 
-			const warningCall = vi
-				.mocked(loggerModule.logWarn)
-				.mock.calls.find(([message]) =>
-					typeof message === "string" &&
-					message.includes("persistRefreshedCredentials could not find a matching stored account"),
-				);
-			expect(warningCall).toBeDefined();
-			expect(warningCall?.[1]).toEqual(
-				expect.objectContaining({
-					accountId: "acc-1",
-				}),
-			);
-			expect(warningCall?.[1]).not.toHaveProperty("email");
+			expect(queuedRefresh).not.toHaveBeenCalled();
 			expect(transactionStorage.accounts[0]).toMatchObject({
 				accountId: "acc-other",
 				refreshToken: "different-refresh",
@@ -5861,7 +5848,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				refreshToken: "flagged-refresh-cache",
 				organizationId: "org-cache",
 				accountId: "flagged-cache",
-				accountIdSource: "manual",
+				accountIdSource: "manual" as const,
 				accountLabel: "Cache Workspace",
 				email: "cache@example.com",
 				flaggedAt: Date.now() - 1000,
@@ -5872,7 +5859,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				refreshToken: "flagged-refresh-live",
 				organizationId: "org-refresh",
 				accountId: "flagged-live",
-				accountIdSource: "manual",
+				accountIdSource: "manual" as const,
 				accountLabel: "Refresh Workspace",
 				email: "refresh@example.com",
 				flaggedAt: Date.now() - 500,
@@ -5880,6 +5867,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				lastUsed: Date.now() - 500,
 			},
 		];
+		mockFlaggedStorage.accounts = flaggedAccounts.map(cloneFlaggedAccount);
 
 		vi.mocked(cliModule.promptLoginMode)
 			.mockResolvedValueOnce({ mode: "verify-flagged" })

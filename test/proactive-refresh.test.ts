@@ -10,9 +10,14 @@ import {
 } from "../lib/proactive-refresh.js";
 import type { ManagedAccount } from "../lib/accounts.js";
 import * as refreshQueue from "../lib/refresh-queue.js";
+import * as refreshCoordinator from "../lib/storage/coordinated-refresh.js";
 
 vi.mock("../lib/refresh-queue.js", () => ({
 	queuedRefresh: vi.fn(),
+}));
+
+vi.mock("../lib/storage/coordinated-refresh.js", () => ({
+	coordinatePersistedRefresh: vi.fn(),
 }));
 
 function createMockAccount(overrides: Partial<ManagedAccount> = {}): ManagedAccount {
@@ -30,6 +35,14 @@ describe("proactive-refresh", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-30T12:00:00Z"));
+		vi.mocked(refreshCoordinator.coordinatePersistedRefresh).mockImplementation(
+			async (identity) => {
+				const result = await refreshQueue.queuedRefresh(identity.refreshToken);
+				return result.type === "success"
+					? { ...result, adopted: false }
+					: result;
+			},
+		);
 	});
 
 	afterEach(() => {

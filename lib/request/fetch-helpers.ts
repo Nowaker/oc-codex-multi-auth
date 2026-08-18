@@ -4,7 +4,10 @@
  */
 
 import type { Auth, OpencodeClient } from "@opencode-ai/sdk";
-import { queuedRefresh } from "../refresh-queue.js";
+import {
+	coordinatePersistedRefresh,
+	type PersistedRefreshIdentity,
+} from "../storage/coordinated-refresh.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import {
 	ensureInstructionIdentity,
@@ -32,7 +35,10 @@ import {
 import { resolveClientIdentity } from "./helpers/client-identity.js";
 import { convertSseToJson, ensureContentType } from "./response-handler.js";
 import type { OAuthAuthDetails, UserConfig, RequestBody } from "../types.js";
-import { CodexAuthError } from "../errors.js";
+import {
+	CodexAuthError,
+	StorageTransactionContentionError,
+} from "../errors.js";
 import {
 	DEACTIVATED_WORKSPACE_ERROR_CODE,
 	isInvalidatedAuthTokenMessage,
@@ -583,9 +589,22 @@ export function shouldRefreshToken(auth: Auth, skewMs = 0): boolean {
 export async function refreshAndUpdateToken(
 	currentAuth: OAuthAuthDetails,
 	client: OpencodeClient,
+	identity: Omit<PersistedRefreshIdentity, "refreshToken"> = {},
 ): Promise<OAuthAuthDetails> {
 	const refreshToken = currentAuth.refresh;
-	const refreshResult = await queuedRefresh(refreshToken);
+	let refreshResult: Awaited<ReturnType<typeof coordinatePersistedRefresh>>;
+	try {
+		refreshResult = await coordinatePersistedRefresh({ ...identity, refreshToken });
+	} catch (error) {
+		if (error instanceof StorageTransactionContentionError) {
+			throw new CodexAuthError(error.message, {
+				cause: error,
+				retryable: true,
+				refreshFailureReason: "storage_contention",
+			});
+		}
+		throw error;
+	}
 
 	if (refreshResult.type === "failed") {
 		// Distinguish transient failures (network blip / upstream 5xx) from

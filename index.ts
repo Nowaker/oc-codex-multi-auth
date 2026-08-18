@@ -49,7 +49,10 @@ import {
 	type AccountSelectionResult,
 	type TokenSuccessWithAccount,
 } from "./lib/auth/login-runner.js";
-import { queuedRefresh } from "./lib/refresh-queue.js";
+import {
+	coordinateFlaggedPersistedRefresh,
+	coordinatePersistedRefresh,
+} from "./lib/storage/coordinated-refresh.js";
 import { openBrowserUrl } from "./lib/auth/browser.js";
 import { startLocalOAuthServer } from "./lib/auth/server.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
@@ -131,12 +134,10 @@ import { CodexAuthError } from "./lib/errors.js";
 import {
 	getStoragePath,
 	loadAccounts,
-	saveAccounts,
 	withAccountStorageTransaction,
 	clearAccounts,
 	setStoragePath,
 	loadFlaggedAccounts,
-	saveFlaggedAccounts,
 	withFlaggedAccountStorageTransaction,
 	clearFlaggedAccounts,
 	StorageError,
@@ -864,7 +865,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 chunk.map(async (account) => {
                                 const originalRefreshToken = account.refreshToken;
                                 try {
-                                        const refreshed = await queuedRefresh(account.refreshToken);
+										const refreshed = await coordinatePersistedRefresh(account);
                                         if (refreshed.type !== "success") return;
                                         const update = hydrationUpdates.get(originalRefreshToken) ?? {};
                                         const id = extractAccountId(refreshed.access);
@@ -905,9 +906,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                                 update.refreshToken = refreshed.refresh;
                                                 changed = true;
                                         }
-                                        if (Object.keys(update).length > 0) {
-                                                hydrationUpdates.set(originalRefreshToken, update);
-                                        }
+										if (Object.keys(update).length > 0) {
+											hydrationUpdates.set(originalRefreshToken, update);
+											if (refreshed.refresh !== originalRefreshToken) {
+												hydrationUpdates.set(refreshed.refresh, update);
+											}
+										}
 				} catch {
 					logWarn(`[${PLUGIN_NAME}] Failed to hydrate email for account`);
 				}
@@ -1512,17 +1516,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
                                 const now = Date.now();
                                 const account = storage.accounts[index];
-                                if (account) {
-                                        account.lastUsed = now;
-                                        account.lastSwitchReason = "rotation";
-                                }
-                                storage.activeIndex = index;
-                                storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-                                for (const family of MODEL_FAMILIES) {
-                                        storage.activeIndexByFamily[family] = index;
-                                }
-
-                                await saveAccounts(storage);
+								if (!account) return;
+								const identityKey = getWorkspaceIdentityKey(account);
+								await withAccountStorageTransaction(async (current, persist) => {
+									if (!current) return;
+									const currentIndex = current.accounts.findIndex(
+										(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
+									);
+									const currentAccount = current.accounts[currentIndex];
+									if (!currentAccount || currentIndex < 0) return;
+									currentAccount.lastUsed = now;
+									currentAccount.lastSwitchReason = "rotation";
+									current.activeIndex = currentIndex;
+									current.activeIndexByFamily = current.activeIndexByFamily ?? {};
+									for (const family of MODEL_FAMILIES) {
+										current.activeIndexByFamily[family] = currentIndex;
+									}
+									await persist(current);
+								});
 								await clearPromptQuotaCache();
 
 								// Reload manager from disk so we don't overwrite newer rotated
@@ -2119,6 +2130,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							accountAuth = (await refreshAndUpdateToken(
 								accountAuth,
 								client,
+								{
+									organizationId: account.organizationId,
+									accountId: account.accountId,
+									accountUserId: account.accountUserId,
+								},
 							)) as OAuthAuthDetails;
 							accountManager.updateFromAuth(account, accountAuth);
 							accountManager.clearAuthFailures(account);
@@ -3326,7 +3342,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										}
 
 										if (!accessToken) {
-											const refreshResult = await queuedRefresh(account.refreshToken);
+											const refreshResult = await coordinatePersistedRefresh(account);
 											if (refreshResult.type !== "success") {
 												errors += 1;
 												const message =
@@ -3556,8 +3572,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								console.log("\nVerifying flagged accounts...\n");
 								const maskEmailEnabled = getCodexTuiMaskEmail(loadPluginConfig());
-								const remaining: FlaggedAccountMetadataV1[] = [];
-								const restored: TokenSuccessWithAccount[] = [];
+							const remaining: FlaggedAccountMetadataV1[] = [];
+							const restored: TokenSuccessWithAccount[] = [];
+							const processedIdentityKeys = new Set(
+								flaggedStorage.accounts.map((account) => getWorkspaceIdentityKey(account)),
+							);
+							const processedRefreshTokens = new Set(
+								flaggedStorage.accounts.map((account) => account.refreshToken),
+							);
 
 								for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
 									const flagged = flaggedStorage.accounts[i];
@@ -3608,7 +3630,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											continue;
 										}
 
-										const refreshResult = await queuedRefresh(flagged.refreshToken);
+										const refreshResult = await coordinateFlaggedPersistedRefresh(flagged);
 										if (refreshResult.type !== "success") {
 											console.log(
 												`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: STILL FLAGGED (${refreshResult.message ?? refreshResult.reason ?? "refresh failed"})`,
@@ -3627,6 +3649,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										},
 									);
 									restored.push(...resolved.variantsForPersistence);
+									processedRefreshTokens.add(refreshResult.refresh);
 									console.log(`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED`);
 									} catch (error) {
 										const message = error instanceof Error ? error.message : String(error);
@@ -3645,10 +3668,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									invalidateAccountManagerCache();
 								}
 
-								await saveFlaggedAccounts({
-									version: 1,
-									accounts: remaining,
+							const remainingByIdentity = new Map(
+								remaining.map((account) => [getWorkspaceIdentityKey(account), account]),
+							);
+							const remainingByRefreshToken = new Map(
+								remaining.map((account) => [account.refreshToken, account]),
+							);
+							await withFlaggedAccountStorageTransaction(async (current, persist) => {
+								current.accounts = current.accounts.flatMap((account) => {
+									const identityKey = getWorkspaceIdentityKey(account);
+									const processed =
+										processedIdentityKeys.has(identityKey) ||
+										processedRefreshTokens.has(account.refreshToken);
+									if (!processed) return [account];
+									const replacement =
+										remainingByIdentity.get(identityKey) ??
+										remainingByRefreshToken.get(account.refreshToken);
+									if (!replacement) return [];
+									return [{ ...account, lastError: replacement.lastError }];
 								});
+								await persist(current);
+							});
 
 								console.log("");
 								console.log(`Results: ${restored.length} restored, ${remaining.length} still flagged`);
@@ -3737,21 +3777,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 									if (menuResult.mode === "manage") {
 										if (typeof menuResult.deleteAccountIndex === "number") {
-											const target = workingStorage.accounts[menuResult.deleteAccountIndex];
-											if (target) {
-												workingStorage.accounts.splice(menuResult.deleteAccountIndex, 1);
-												clampActiveIndices(workingStorage);
-												await saveAccounts(workingStorage);
-												await saveFlaggedAccounts({
-													version: 1,
-													accounts: flaggedStorage.accounts.filter(
-														(flagged) =>
-															!matchesWorkspaceIdentity(
-																flagged,
-																getWorkspaceIdentityKey(target),
-															),
-													),
-												});
+										const target = workingStorage.accounts[menuResult.deleteAccountIndex];
+										if (target) {
+											const identityKey = getWorkspaceIdentityKey(target);
+											await withAccountStorageTransaction(async (current, persist) => {
+												if (!current) return;
+												const currentIndex = current.accounts.findIndex(
+													(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
+												);
+												if (currentIndex < 0) return;
+												current.accounts.splice(currentIndex, 1);
+												clampActiveIndices(current);
+												await persist(current);
+											});
+											await withFlaggedAccountStorageTransaction(async (current, persist) => {
+												current.accounts = current.accounts.filter(
+													(flagged) => !matchesWorkspaceIdentity(flagged, identityKey),
+												);
+												await persist(current);
+											});
 												invalidateAccountManagerCache();
 												console.log(`\nDeleted ${resolveDisplayEmail(target.email, maskEmailEnabled) ?? `Account ${menuResult.deleteAccountIndex + 1}`}.\n`);
 											}
@@ -3759,13 +3803,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										}
 
 										if (typeof menuResult.toggleAccountIndex === "number") {
-											const target = workingStorage.accounts[menuResult.toggleAccountIndex];
-											if (target) {
-												target.enabled = target.enabled === false ? true : false;
-												await saveAccounts(workingStorage);
-												invalidateAccountManagerCache();
-												console.log(
-													`\n${resolveDisplayEmail(target.email, maskEmailEnabled) ?? `Account ${menuResult.toggleAccountIndex + 1}`} ${target.enabled === false ? "disabled" : "enabled"}.\n`,
+										const target = workingStorage.accounts[menuResult.toggleAccountIndex];
+										if (target) {
+											const identityKey = getWorkspaceIdentityKey(target);
+											let enabled = target.enabled !== false;
+											await withAccountStorageTransaction(async (current, persist) => {
+												const currentTarget = current?.accounts.find(
+													(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
+												);
+												if (!current || !currentTarget) return;
+												currentTarget.enabled = currentTarget.enabled === false;
+												enabled = currentTarget.enabled;
+												await persist(current);
+											});
+											invalidateAccountManagerCache();
+											console.log(
+												`\n${resolveDisplayEmail(target.email, maskEmailEnabled) ?? `Account ${menuResult.toggleAccountIndex + 1}`} ${enabled ? "enabled" : "disabled"}.\n`,
 												);
 											}
 											continue;
