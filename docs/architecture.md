@@ -120,7 +120,9 @@ Full catalog: [tools-and-cli.md](tools-and-cli.md).
 
 ### 7. Storage and sync
 
-The storage layer uses V3 account files with migrations from older formats, atomic writes, keychain opt-in, import/export previews, flagged-account recovery, and per-project path resolution.
+The storage layer uses V3 account files with migrations from older formats, atomic writes, keychain opt-in, import/export previews, flagged-account recovery, and per-project path resolution. Mutations flow through one transaction primitive that combines the process-local mutex with a distinct `proper-lockfile` lease. OAuth refresh holds that lease across authoritative reload, adopt-or-exchange, and durable commit, so same-host processes cannot exchange the same current single-use refresh token concurrently. The existing `<storage>.lock` JSON sidecar remains advisory collision diagnostics; enforced transactions use `<storage>.transaction.lock`.
+
+This guarantee is intentionally local-filesystem/same-host. A process that exits after the provider accepts a refresh token but before the replacement token is committed still requires reauthentication, and cross-host or unreliable network filesystems require an external coordinator.
 
 | State | Default path |
 | --- | --- |
