@@ -258,7 +258,7 @@ function resolveOpenAIBaseURL(): string | undefined {
 	if (parsed.username || parsed.password) {
 		throw new Error("OPENAI_BASE_URL must not embed credentials");
 	}
-	if (parsed.search || parsed.hash) {
+	if (parsed.search || parsed.hash || raw.includes("?") || raw.includes("#")) {
 		throw new Error("OPENAI_BASE_URL must not include a query string or fragment");
 	}
 	const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");

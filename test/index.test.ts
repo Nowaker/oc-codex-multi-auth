@@ -890,6 +890,14 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
 
 			expect(result.baseURL).toBe("https://gateway.example/v1");
+			const logger = await import("../lib/logger.js");
+			expect(vi.mocked(logger.logWarn)).toHaveBeenCalledWith(
+				"Routing ChatGPT OAuth inference through OPENAI_BASE_URL",
+				{ origin: "https://gateway.example" },
+			);
+			const warningCount = vi.mocked(logger.logWarn).mock.calls.length;
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			expect(vi.mocked(logger.logWarn)).toHaveBeenCalledTimes(warningCount);
 			if (!result.fetch) throw new Error("Expected SDK fetch implementation");
 			await result.fetch("https://gateway.example/v1/responses", {
 				method: "POST",
@@ -904,6 +912,17 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("ignores OPENAI_BASE_URL without explicit OAuth gateway consent", async () => {
 			vi.stubEnv("OPENAI_BASE_URL", "https://gateway.example/v1");
+			mockStorage.accounts = [
+				{
+					accountId: "account-1",
+					refreshToken: "refresh-token",
+					accessToken: "access-token",
+					expiresAt: Date.now() + 60_000,
+				},
+			];
+			const fetchSpy = vi
+				.spyOn(globalThis, "fetch")
+				.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
 			const getAuth = async () => ({
 				type: "oauth" as const,
 				access: "a",
@@ -915,6 +934,16 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
 
 			expect(result.baseURL).toBe("https://chatgpt.com/backend-api");
+			if (!result.fetch) throw new Error("Expected SDK fetch implementation");
+			await result.fetch("https://api.openai.com/v1/responses", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+			});
+			expect(rewriteUrlForCodexMock).toHaveBeenCalledWith("https://api.openai.com/v1/responses");
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://api.openai.com/v1/responses",
+				expect.not.objectContaining({ redirect: "manual" }),
+			);
 		});
 
 		it("allows a loopback HTTP OAuth gateway", async () => {
@@ -937,6 +966,8 @@ describe("OpenAIOAuthPlugin", () => {
 			"http://gateway.example/v1",
 			"https://user:password@gateway.example/v1",
 			"https://gateway.example/v1?tenant=one",
+			"https://gateway.example/v1?",
+			"https://gateway.example/v1#",
 			"file:///tmp/gateway",
 		])("rejects an unsafe OAuth gateway URL: %s", async (baseURL) => {
 			vi.stubEnv("OPENAI_BASE_URL", baseURL);
