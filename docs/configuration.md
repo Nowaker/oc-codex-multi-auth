@@ -333,6 +333,7 @@ override any config with env vars (boolean values are truthy only for `"1"`):
 
 | variable | what it does |
 |----------|--------------|
+| `OPENAI_BASE_URL=https://gateway.example/v1` | route OAuth inference through an explicitly trusted OpenAI-compatible gateway; the plugin keeps the configured URL and skips ChatGPT-specific URL rewriting |
 | `DEBUG_CODEX_PLUGIN=1` | enable debug logging |
 | `ENABLE_PLUGIN_REQUEST_LOGGING=1` | log request metadata (no raw prompt/response bodies) |
 | `CODEX_PLUGIN_LOG_BODIES=1` | include raw request/response bodies in log files (sensitive) |

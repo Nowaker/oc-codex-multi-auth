@@ -65,7 +65,8 @@ OpenCode provider system
   | custom fetch()
   v
 oc-codex-multi-auth index.ts
-  |- rewrite OpenAI SDK URL to chatgpt.com/backend-api/codex/responses
+  |- rewrite OpenAI SDK URL to chatgpt.com/backend-api/codex/responses by default
+  |- preserve OPENAI_BASE_URL when an explicitly trusted compatible gateway is configured
   |- shape body for native or legacy transform mode
   |- for GPT-5.6: apply responses-lite reshape (per attempt)
   |- force stream:true, store:false, reasoning.encrypted_content
@@ -73,7 +74,7 @@ oc-codex-multi-auth index.ts
   |- attach OAuth headers + client identity (originator / User-Agent)
   |- handle SSE, errors, retries, fallback, and metrics
   v
-ChatGPT-backed Codex endpoint
+ChatGPT-backed Codex endpoint or configured OpenAI-compatible gateway
 ```
 
 **Native mode** keeps the host payload shape whenever possible. **Legacy mode** applies compatibility rewrites for older OpenCode/AI SDK behavior, including filtering unsupported `item_reference` payloads and stripping IDs that cannot be used with `store: false`.

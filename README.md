@@ -356,6 +356,7 @@ Selected runtime/environment overrides:
 
 | Variable | Effect |
 | --- | --- |
+| `OPENAI_BASE_URL=https://gateway.example/v1` | Route OAuth inference through an explicitly trusted OpenAI-compatible gateway instead of the ChatGPT Codex endpoint |
 | `CODEX_AUTH_REQUEST_TRANSFORM_MODE=legacy` | Re-enable legacy Codex request rewriting |
 | `CODEX_MODE=0/1` | Disable/enable bridge prompt behavior |
 | `CODEX_TUI_V2=0/1` | Disable/enable codex-style tool output |
