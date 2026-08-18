@@ -867,6 +867,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("uses OPENAI_BASE_URL for multiAccount OAuth requests", async () => {
 			vi.stubEnv("OPENAI_BASE_URL", "https://gateway.example/v1");
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
 			mockStorage.accounts = [
 				{
 					accountId: "account-1",
@@ -895,7 +896,60 @@ describe("OpenAIOAuthPlugin", () => {
 				body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
 			});
 			expect(rewriteUrlForCodexMock).not.toHaveBeenCalled();
-			expect(fetchSpy).toHaveBeenCalledWith("https://gateway.example/v1/responses", expect.any(Object));
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://gateway.example/v1/responses",
+				expect.objectContaining({ redirect: "manual" }),
+			);
+		});
+
+		it("ignores OPENAI_BASE_URL without explicit OAuth gateway consent", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "https://gateway.example/v1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(result.baseURL).toBe("https://chatgpt.com/backend-api");
+		});
+
+		it("allows a loopback HTTP OAuth gateway", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "http://127.0.0.1:8080/v1/");
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(result.baseURL).toBe("http://127.0.0.1:8080/v1");
+		});
+
+		it.each([
+			"http://gateway.example/v1",
+			"https://user:password@gateway.example/v1",
+			"https://gateway.example/v1?tenant=one",
+			"file:///tmp/gateway",
+		])("rejects an unsafe OAuth gateway URL: %s", async (baseURL) => {
+			vi.stubEnv("OPENAI_BASE_URL", baseURL);
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			await expect(plugin.auth.loader(getAuth, { options: {}, models: {} })).rejects.toThrow();
 		});
 	});
 

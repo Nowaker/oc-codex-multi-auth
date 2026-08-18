@@ -244,6 +244,30 @@ import {
 	writeTuiQuotaSnapshot,
 } from "./lib/tui-quota-cache.js";
 
+const LOOPBACK_GATEWAY_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function resolveOpenAIBaseURL(): string | undefined {
+	if (process.env.CODEX_AUTH_ALLOW_OPENAI_BASE_URL !== "1") return undefined;
+	const raw = process.env.OPENAI_BASE_URL?.trim();
+	if (!raw) return undefined;
+
+	const parsed = new URL(raw);
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+		throw new Error("OPENAI_BASE_URL must use http:// or https://");
+	}
+	if (parsed.username || parsed.password) {
+		throw new Error("OPENAI_BASE_URL must not embed credentials");
+	}
+	if (parsed.search || parsed.hash) {
+		throw new Error("OPENAI_BASE_URL must not include a query string or fragment");
+	}
+	const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+	if (parsed.protocol === "http:" && !LOOPBACK_GATEWAY_HOSTS.has(hostname)) {
+		throw new Error("OPENAI_BASE_URL requires https:// for non-loopback hosts");
+	}
+	return parsed.toString().replace(/\/+$/, "");
+}
+
 /**
  * OpenAI Codex OAuth authentication plugin for opencode
  *
@@ -263,6 +287,7 @@ import {
  
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
+	let customBaseURLWarningShown = false;
 	let cachedAccountManager: AccountManager | null = null;
 	let accountManagerPromise: Promise<AccountManager> | null = null;
 	let loaderMutex: Promise<void> | null = null;
@@ -1619,7 +1644,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			async loader(getAuth: () => Promise<Auth>, provider: unknown) {
 				const auth = await getAuth();
 				const pluginConfig = loadPluginConfig();
-				const openAIBaseURL = process.env.OPENAI_BASE_URL?.replace(/\/+$/, "") || undefined;
+				const openAIBaseURL = resolveOpenAIBaseURL();
+				if (openAIBaseURL && !customBaseURLWarningShown) {
+					customBaseURLWarningShown = true;
+					logWarn("Routing ChatGPT OAuth inference through OPENAI_BASE_URL", {
+						origin: new URL(openAIBaseURL).origin,
+					});
+				}
 				applyUiRuntimeFromConfig(pluginConfig);
 				const perProjectAccounts = getPerProjectAccounts(pluginConfig);
 				setStoragePath(perProjectAccounts ? process.cwd() : null);
@@ -2381,6 +2412,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									...requestInit,
 									headers,
 									signal: fetchController.signal,
+									...(openAIBaseURL ? { redirect: "manual" as const } : {}),
 								});
 							} catch (networkError) {
 								if (abortSignal?.aborted && fetchController.signal.aborted) {
