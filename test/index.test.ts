@@ -964,6 +964,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it.each([
 			"http://gateway.example/v1",
+			"http://localhost:8080/v1",
 			"https://user:password@gateway.example/v1",
 			"https://gateway.example/v1?tenant=one",
 			"https://gateway.example/v1?",

@@ -244,7 +244,7 @@ import {
 	writeTuiQuotaSnapshot,
 } from "./lib/tui-quota-cache.js";
 
-const LOOPBACK_GATEWAY_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const LOOPBACK_GATEWAY_HOSTS = new Set(["127.0.0.1", "::1"]);
 
 function resolveOpenAIBaseURL(): string | undefined {
 	if (process.env.CODEX_AUTH_ALLOW_OPENAI_BASE_URL !== "1") return undefined;
