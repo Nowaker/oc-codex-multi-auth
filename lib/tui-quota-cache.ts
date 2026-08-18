@@ -2,6 +2,13 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import {
+	CODEX_QUOTA_WINDOW_KINDS,
+	hasCodexQuotaHeaders,
+	isQuotaWindowDisabled,
+	parseCodexQuotaWindow,
+	type CodexQuotaWindowKind,
+} from "./quota-windows.js";
 import { renameWithWindowsRetry } from "./storage/atomic-write.js";
 import type { CompactQuotaLimit } from "./tui-status.js";
 
@@ -59,16 +66,6 @@ export function getTuiQuotaCachePath(stateDir?: string): string {
 	return join(stateDir?.trim() || envStateDir || getDefaultOpenCodeStateDir(), TUI_QUOTA_CACHE_FILE);
 }
 
-function parseFiniteNumberHeader(
-	headers: Headers,
-	name: string,
-): number | undefined {
-	const raw = headers.get(name);
-	if (!raw) return undefined;
-	const parsed = Number(raw);
-	return Number.isFinite(parsed) ? parsed : undefined;
-}
-
 function parseFiniteIntHeader(
 	headers: Headers,
 	name: string,
@@ -77,35 +74,6 @@ function parseFiniteIntHeader(
 	if (!raw) return undefined;
 	const parsed = Number.parseInt(raw, 10);
 	return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function parseResetAtMs(headers: Headers, prefix: string): number | undefined {
-	const resetAfterSeconds = parseFiniteIntHeader(
-		headers,
-		`${prefix}-reset-after-seconds`,
-	);
-	if (
-		typeof resetAfterSeconds === "number" &&
-		Number.isFinite(resetAfterSeconds) &&
-		resetAfterSeconds > 0
-	) {
-		return Date.now() + resetAfterSeconds * 1000;
-	}
-
-	const resetAtRaw = headers.get(`${prefix}-reset-at`);
-	if (!resetAtRaw) return undefined;
-	const trimmed = resetAtRaw.trim();
-	if (/^\d+$/.test(trimmed)) {
-		const parsedNumber = Number.parseInt(trimmed, 10);
-		if (Number.isFinite(parsedNumber) && parsedNumber > 0) {
-			return parsedNumber < 10_000_000_000
-				? parsedNumber * 1000
-				: parsedNumber;
-		}
-	}
-
-	const parsedDate = Date.parse(trimmed);
-	return Number.isFinite(parsedDate) ? parsedDate : undefined;
 }
 
 function formatWindowLabel(windowMinutes: number | undefined): string {
@@ -127,27 +95,14 @@ function getLeftPercent(usedPercent: number | undefined): number | null {
 		: null;
 }
 
-function hasCodexQuotaHeaders(headers: Headers): boolean {
-	const keys = [
-		"x-codex-primary-used-percent",
-		"x-codex-primary-window-minutes",
-		"x-codex-primary-reset-at",
-		"x-codex-primary-reset-after-seconds",
-		"x-codex-secondary-used-percent",
-		"x-codex-secondary-window-minutes",
-		"x-codex-secondary-reset-at",
-		"x-codex-secondary-reset-after-seconds",
-	];
-	return keys.some((key) => headers.get(key) !== null);
-}
-
-function parseLimit(headers: Headers, prefix: string): TuiQuotaLimit {
-	const usedPercent = parseFiniteNumberHeader(headers, `${prefix}-used-percent`);
-	const windowMinutes = parseFiniteIntHeader(
+function parseLimit(
+	headers: Headers,
+	kind: CodexQuotaWindowKind,
+): TuiQuotaLimit {
+	const { usedPercent, windowMinutes, resetAtMs } = parseCodexQuotaWindow(
 		headers,
-		`${prefix}-window-minutes`,
+		kind,
 	);
-	const resetAtMs = parseResetAtMs(headers, prefix);
 	return {
 		label: formatWindowLabel(windowMinutes),
 		leftPercent: getLeftPercent(usedPercent),
@@ -166,7 +121,7 @@ function parseLimit(headers: Headers, prefix: string): TuiQuotaLimit {
  * window, and it is still shown under the generic `quota` label.
  */
 export function isDisabledQuotaLimit(limit: TuiQuotaLimit): boolean {
-	return limit.windowMinutes === 0;
+	return isQuotaWindowDisabled(limit);
 }
 
 function hasUsefulLimit(limit: TuiQuotaLimit): boolean {
@@ -213,10 +168,9 @@ export function parseTuiQuotaSnapshotFromHeaders(
 	input: Omit<TuiQuotaSnapshotInput, "source" | "limits">,
 ): TuiQuotaSnapshot | undefined {
 	if (!hasCodexQuotaHeaders(headers)) return undefined;
-	const limits = [
-		parseLimit(headers, "x-codex-primary"),
-		parseLimit(headers, "x-codex-secondary"),
-	].filter(hasUsefulLimit);
+	const limits = CODEX_QUOTA_WINDOW_KINDS.map((kind) =>
+		parseLimit(headers, kind),
+	).filter(hasUsefulLimit);
 	if (limits.length === 0) return undefined;
 
 	const planTypeRaw = headers.get("x-codex-plan-type");

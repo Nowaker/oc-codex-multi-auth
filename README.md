@@ -46,7 +46,7 @@ Use it when you want OpenCode to run Codex-style coding workflows from your own 
 
 | Surface | Purpose |
 | --- | --- |
-| `oc-codex-multi-auth` | npm installer bin; updates `~/.config/opencode/opencode.json`, manages `tui.json`, normalizes stale plugin entries, and clears OpenCode plugin cache. Also runs standalone commands: `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm` |
+| `oc-codex-multi-auth` | npm CLI; explicit install modes manage OpenCode provider/TUI config, while `update` only clears the managed package cache. Also runs standalone commands: `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm` |
 | OpenCode plugin entry (`index.ts`) | auth loader, OAuth login modes, provider fetch pipeline, account rotation, retry/failover, and `codex-*` tool registry |
 | OpenCode TUI plugin (`tui.ts`) | prompt quota status, quota details, shared quota cache, and active-account-aware display |
 | 24 `codex-*` tools | setup, help, status, list, switch, warm, limits, health, metrics, doctor, dashboard, pool, backup, keychain, diagnostics, and recovery actions |
@@ -76,9 +76,9 @@ The plugin does not replace OpenCode. OpenCode remains the host; this package in
 <details open>
 <summary><b>For Humans</b></summary>
 
-### Option A: Standard install (compact modern)
+### Option A: Standard install (preserve provider config)
 
-Default mode writes 12 base OAuth model families and leaves reasoning depth to OpenCode's variant picker.
+Default mode registers the OpenCode and TUI plugin entries without changing `provider.openai`.
 
 ```bash
 npx -y oc-codex-multi-auth@latest
@@ -88,13 +88,22 @@ Installer flags:
 
 | Flag | Effect |
 | --- | --- |
-| (default) / `--modern` | Compact modern catalog: 12 bases, 53 variants |
+| (default) / `--plugin-only` | Register the plugin and TUI integration without changing `provider.openai` |
+| `--modern` | Install compact modern catalog: 12 bases, 53 variants |
 | `--full` | Compact bases plus 53 explicit selector IDs |
 | `--legacy` | Explicit-only catalog for older OpenCode |
-| `--dry-run` | Show actions without writing |
+| `--dry-run` | Show changed config paths without values or writes |
 | `--no-cache-clear` | Skip clearing the OpenCode plugin cache |
 
-### Option B: Full explicit model catalog
+### Option B: Compact modern model catalog
+
+```bash
+npx -y oc-codex-multi-auth@latest --modern
+```
+
+Use this when OpenCode does not already provide the OAuth model definitions or you want the shipped variant presets.
+
+### Option C: Full explicit model catalog
 
 Use this when you want direct selector IDs such as `openai/gpt-5.5-medium` in addition to OpenCode variants.
 
@@ -102,7 +111,15 @@ Use this when you want direct selector IDs such as `openai/gpt-5.5-medium` in ad
 npx -y oc-codex-multi-auth@latest --full
 ```
 
-### Option C: Verify wiring
+### Updating without config changes
+
+```bash
+npx -y oc-codex-multi-auth@latest update
+```
+
+`update` clears only the OpenCode-managed package cache. It does not read or write `opencode.json` or `tui.json`; restart OpenCode afterward to install the current package.
+
+### Option D: Verify wiring
 
 ```bash
 opencode --version
@@ -110,7 +127,7 @@ opencode debug config
 opencode auth login
 ```
 
-The installer updates `~/.config/opencode/opencode.json`, backs up the previous config, normalizes the plugin entry to `"oc-codex-multi-auth"`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the OpenCode cached plugin copy so OpenCode reinstalls the latest package.
+The default installer only normalizes the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the cached plugin copy. Catalog modes additionally merge their selected `provider.openai` definitions. Changed config files are backed up before writing.
 
 ### Standalone CLI (no agent / no token cost)
 
@@ -133,13 +150,14 @@ oc-codex-multi-auth diag
 
 ### Step-by-step
 
-1. Install or refresh config:
+1. Register the plugin without changing `provider.openai`:
    - `npx -y oc-codex-multi-auth@latest`
+   - Use `--modern` only when the shipped compact model catalog is required.
 2. Run first login flow:
    - `opencode auth login`
 3. Validate config:
    - `opencode debug config`
-4. Run a smoke request (compact modern selectors):
+4. Run a smoke request (after OpenCode or `--modern` supplies the selector):
    - `opencode run "Explain this repository" --model=openai/gpt-5.5 --variant=medium`
 5. Inspect plugin state with the OpenCode tool surface:
    - `codex-status`
@@ -292,6 +310,10 @@ usage identities even when they belong to the same login.
     "gpt-5.6-terra": [
       "org-another-account-id"
     ]
+  },
+  "modelAccountPoolModes": {
+    "gpt-5.6-sol": "strict",
+    "gpt-5.6-terra": "preferred"
   }
 }
 ```
@@ -308,6 +330,7 @@ codex-pool
 codex-pool action="set" model="gpt-5.6-sol" accounts=[7,8]
 codex-pool action="add" model="gpt-5.6-sol" accounts=[9]
 codex-pool action="remove" model="gpt-5.6-sol" accounts=[7]
+codex-pool action="set-mode" model="gpt-5.6-sol" poolMode="strict"
 codex-pool action="clear" model="gpt-5.6-sol"
 ```
 
@@ -319,11 +342,12 @@ the current project is reported but never automatically deleted.
 
 Routing behavior:
 
-- A mapped model uses only healthy, selectable accounts in its preferred pool.
+- A mapped model defaults to `preferred` mode and uses healthy, selectable accounts in its pool.
 - Existing rotation strategy, quota, cooldown, and token-health rules still apply within the preferred pool.
-- If every preferred account is unavailable, disabled, unknown, cooling down, or rate-limited, routing automatically falls back to the healthy general account pool.
+- In `preferred` mode, an unavailable pool falls back to the healthy general account pool.
+- In `strict` mode, routing never leaves the configured pool and immediately returns `strict_pool_unavailable` when no pooled account is selectable.
 - An unmapped model or an empty account list uses the general account pool directly.
-- `codex-status`, `codex-dashboard`, and routing diagnostics report the account-pool mode as `preferred`, `general`, or `general-fallback`.
+- `codex-status`, `codex-dashboard`, and routing diagnostics also report `strict` and `strict-unavailable` modes.
 
 Account IDs are local account metadata but should still be treated as private
 configuration. Do not publish a populated configuration file.
@@ -403,7 +427,7 @@ If the keychain is unavailable, the plugin logs a warning and falls back to JSON
 <summary><b>60-second recovery</b></summary>
 
 ```text
-codex-doctor --fix
+codex-doctor fix=true
 codex-next
 codex-status format="json"
 ```
@@ -462,13 +486,12 @@ codex-doctor deep=true format="json"
 - Maintainer architecture: [docs/development/ARCHITECTURE.md](docs/development/ARCHITECTURE.md)
 - Testing: [docs/development/TESTING.md](docs/development/TESTING.md)
 - Discoverability guide: [docs/development/GITHUB_DISCOVERABILITY.md](docs/development/GITHUB_DISCOVERABILITY.md)
-- Audit index: [docs/audits/INDEX.md](docs/audits/INDEX.md)
 
 ---
 
 ## Release Notes
 
-- Current package version: `6.9.1`
+- Current published version: see the npm badge above, or run `npm view oc-codex-multi-auth version`
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Releases are automated with [release-please](https://github.com/googleapis/release-please)
 

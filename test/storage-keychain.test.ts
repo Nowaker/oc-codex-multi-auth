@@ -219,8 +219,9 @@ describe("lib/storage/keychain: low-level backend", () => {
 		});
 
 		it("readFromKeychain returns null when the native backend cannot load", async () => {
-			// Genuinely-unavailable branch (`keychain.ts:211`: `if (!backend)
-			// return null`). Replace `@napi-rs/keyring` with an empty module
+			// Genuinely-unavailable branch (the `if (!backend) return null`
+			// guard at the top of `readFromKeychain` in
+			// `lib/storage/keychain.ts`). Replace `@napi-rs/keyring` with an empty module
 			// via `vi.doMock` so `loadNativeBackend` sees
 			// `typeof mod.Entry !== "function"`, logs a warning, and
 			// memoizes `null`. `vi.resetModules` + dynamic import forces a
@@ -390,7 +391,6 @@ describe("load-save integration with CODEX_KEYCHAIN", () => {
 	// --- F1 post-merge review regression tests -----------------------------------
 	// Each test below is named against the finding it covers so the next
 	// reviewer can trace test -> review ledger without code archaeology.
-	// See docs/audits/_meta/f1-post-merge-review.md.
 
 	it("[HIGH] does not resurrect stale JSON after opt-in toggle off when backup rename fails", async () => {
 		// Seed: opt-in off, write a "stale" blob to the on-disk JSON. This

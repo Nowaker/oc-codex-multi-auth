@@ -25,7 +25,7 @@ import {
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "../auth/token-utils.js";
-import { getMissingRequiredOAuthScopes } from "../auth/scopes.js";
+import { getMissingRequiredOAuthScopes, normalizeScope } from "../auth/scopes.js";
 import { getHealthTracker, getTokenTracker } from "../rotation.js";
 import { remapRateLimitBackoffAfterRemoval } from "../request/rate-limit-backoff.js";
 import { logWarn } from "../logger.js";
@@ -182,9 +182,8 @@ function resolveFallbackMatches(params: {
  */
 function appendReauthNote(accountNote: string | undefined, missingScopes: string[]): string {
 	const suffix = `Re-auth required for missing OAuth scope(s): ${missingScopes.join(", ")}.`;
-	if (!accountNote) return suffix;
-	if (accountNote.includes(suffix)) return accountNote;
-	return `${accountNote} ${suffix}`;
+	const preserved = stripReauthNote(accountNote);
+	return preserved ? `${preserved} ${suffix}` : suffix;
 }
 
 const MISSING_SCOPE_NOTE_MARKER = "Re-auth required for missing OAuth scope(s):";
@@ -197,9 +196,55 @@ function hasMissingScopeReauthNote(accountNote: string | undefined): boolean {
 	return typeof accountNote === "string" && accountNote.includes(MISSING_SCOPE_NOTE_MARKER);
 }
 
+/**
+ * Removes a re-auth note this class previously appended, preserving any
+ * operator-authored text that came before it. `appendReauthNote` always appends
+ * its sentence last, so everything from the marker onward is ours to drop.
+ */
+function stripReauthNote(accountNote: string | undefined): string | undefined {
+	if (!accountNote) return undefined;
+	const markerIndex = accountNote.indexOf(MISSING_SCOPE_NOTE_MARKER);
+	if (markerIndex < 0) return accountNote;
+	const preserved = accountNote.slice(0, markerIndex).trim();
+	return preserved.length > 0 ? preserved : undefined;
+}
+
+/**
+ * Required-scope check that only fires when the granted scope is actually
+ * known. Absent scope metadata means "unknown", NOT "nothing was granted":
+ * `refreshAccessToken` deliberately omits `scope` when the token response does,
+ * and host credentials restored by the OpenAI backfill carry no scope either.
+ * Treating that absence as a total scope failure disabled freshly-authenticated
+ * accounts with "missing: openid, profile, email, offline_access" (issue #213).
+ */
+function getEnforceableMissingOAuthScopes(scope: string | undefined): string[] {
+	return hasExplicitOAuthScope(scope) ? getMissingRequiredOAuthScopes(scope) : [];
+}
+
+/**
+ * Same check across several records of the *same* grant — typically the pool's
+ * stored scope and the host credential's scope. If any known source shows the
+ * required scopes, the account is fine; disabling on the weaker of two sources
+ * would strand an account the other already vouches for. When none satisfies,
+ * the smallest missing set wins so the note reports the best evidence held.
+ */
+function getEnforceableMissingOAuthScopesAcross(
+	scopes: (string | undefined)[],
+): string[] {
+	let fewestMissing: string[] | undefined;
+	for (const scope of scopes) {
+		if (!hasExplicitOAuthScope(scope)) continue;
+		const missing = getMissingRequiredOAuthScopes(scope);
+		if (missing.length === 0) return [];
+		if (!fewestMissing || missing.length < fewestMissing.length) {
+			fewestMissing = missing;
+		}
+	}
+	return fewestMissing ?? [];
+}
+
 function getAuthScope(auth: OAuthAuthDetails | undefined): string | undefined {
-	const scope = auth?.scope;
-	return typeof scope === "string" && scope.trim() ? scope : undefined;
+	return normalizeScope(auth?.scope);
 }
 
 export class AccountState {
@@ -213,9 +258,23 @@ export class AccountState {
 	 * Per-refresh-token promise chain used to serialize concurrent
 	 * `incrementAuthFailures` calls. Prevents lost updates when two org-variant
 	 * accounts that share a refresh token observe an auth failure at once — see
-	 * audit finding `docs/audits/03-critical-issues.md` (ledger id `47`).
+	 * the lost-update fix for shared-refresh-token accounts.
 	 */
 	incrementAuthFailuresChain: Map<string, Promise<number>> = new Map();
+	/**
+	 * Set when `initializeFromStorage` re-enabled an account that an earlier
+	 * build had wrongly disabled for missing scopes. The repair happens in
+	 * memory, so it must be flushed to disk or every surface that reads storage
+	 * directly keeps showing the stale disabled state and re-auth note.
+	 * `consumeScopeRepairs()` clears it, so the extra write happens once.
+	 */
+	private scopeRepairsPending = false;
+
+	consumeScopeRepairs(): boolean {
+		const pending = this.scopeRepairsPending;
+		this.scopeRepairsPending = false;
+		return pending;
+	}
 
 	initializeFromStorage(
 		authFallback: OAuthAuthDetails | undefined,
@@ -225,7 +284,7 @@ export class AccountState {
 		const fallbackAccountUserId = extractAccountUserId(authFallback?.access);
 		const fallbackAccountEmail = sanitizeEmail(extractAccountEmail(authFallback?.access));
 		const fallbackOAuthScope = getAuthScope(authFallback);
-		const fallbackMissingOAuthScopes = getMissingRequiredOAuthScopes(fallbackOAuthScope);
+		const fallbackMissingOAuthScopes = getEnforceableMissingOAuthScopes(fallbackOAuthScope);
 
 		if (stored && stored.accounts.length > 0) {
 			const baseNow = nowMs();
@@ -249,7 +308,9 @@ export class AccountState {
 						return null;
 					}
 
-					const accountOAuthScope = account.oauthScope;
+					// Canonicalize at the load boundary so a legacy blank on disk is
+					// carried as absent rather than as an explicit empty grant.
+					const accountOAuthScope = normalizeScope(account.oauthScope);
 
 					const matchesFallback =
 						!!authFallback && fallbackMatch.indices.has(index);
@@ -258,9 +319,24 @@ export class AccountState {
 						matchesFallback && authFallback ? authFallback.refresh : account.refreshToken;
 					const oauthScope =
 						matchesFallback && fallbackOAuthScope ? fallbackOAuthScope : accountOAuthScope;
-					const hasExplicitScope = hasExplicitOAuthScope(accountOAuthScope);
-					const shouldEnforceScope = hasExplicitScope || hasMissingScopeReauthNote(account.accountNote);
-					const missingOAuthScopes = shouldEnforceScope ? getMissingRequiredOAuthScopes(oauthScope) : [];
+					// The stored record and the matching host credential describe the
+					// same grant, so weigh both before disabling anything.
+					const missingOAuthScopes = getEnforceableMissingOAuthScopesAcross(
+						matchesFallback
+							? [accountOAuthScope, fallbackOAuthScope]
+							: [accountOAuthScope],
+					);
+					// An account this class disabled carries the re-auth note. Once the
+					// scope check stops firing, undo our own damage instead of leaving
+					// it disabled forever — 6.11.2 disabled accounts whose scope was
+					// merely unknown, and re-login alone could not clear that (#213).
+					// A note-less `enabled: false` stays disabled: that one is the
+					// operator's own choice.
+					const disabledByScopeCheck =
+						account.enabled === false && hasMissingScopeReauthNote(account.accountNote);
+					if (disabledByScopeCheck && missingOAuthScopes.length === 0) {
+						this.scopeRepairsPending = true;
+					}
 
 					return {
 						index,
@@ -276,14 +352,16 @@ export class AccountState {
 						accountTags: account.accountTags,
 						accountNote: missingOAuthScopes.length > 0
 							? appendReauthNote(account.accountNote, missingOAuthScopes)
-							: account.accountNote,
+							: disabledByScopeCheck
+								? stripReauthNote(account.accountNote)
+								: account.accountNote,
 						email: matchesFallback
 							? fallbackAccountEmail ?? sanitizeEmail(account.email)
 							: sanitizeEmail(account.email),
 						refreshToken,
 						enabled:
-							account.enabled !== false &&
-							(!shouldEnforceScope || missingOAuthScopes.length === 0),
+							missingOAuthScopes.length === 0 &&
+							(disabledByScopeCheck || account.enabled !== false),
 						access:
 							matchesFallback && authFallback ? authFallback.access : account.accessToken,
 						expires:

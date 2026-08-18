@@ -8,12 +8,20 @@ vi.mock("../lib/storage.js", () => ({
 	loadAccounts: vi.fn(),
 }));
 
-vi.mock("../lib/config.js", () => ({
-	loadPluginConfig: vi.fn(),
-	updateModelAccountPool: vi.fn(),
-}));
+vi.mock("../lib/config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/config.js")>();
+	return {
+		...actual,
+		getModelAccountPoolMode: vi.fn((config, model) =>
+			config.modelAccountPoolModes?.[model] ?? "preferred",
+		),
+		loadPluginConfig: vi.fn(),
+		updateModelAccountPool: vi.fn(),
+	};
+});
 
 import { loadPluginConfig, updateModelAccountPool } from "../lib/config.js";
+import { ConfigLockContentionError } from "../lib/errors.js";
 import { loadAccounts } from "../lib/storage.js";
 
 const storage: AccountStorageV3 = {
@@ -74,7 +82,10 @@ function buildCtx(): ToolContext {
 				? { accountId: options.account?.accountId ?? null }
 				: {}),
 		}),
-	} as unknown as ToolContext;
+	} satisfies Pick<
+		ToolContext,
+		"resolveMaskEmail" | "formatCommandAccountLabel" | "buildJsonAccountIdentity"
+	> as unknown as ToolContext;
 }
 
 describe("codex-pool tool", () => {
@@ -87,6 +98,7 @@ describe("codex-pool tool", () => {
 			modelAccountPools: {
 				"gpt-5.6-sol": ["account-one", "missing-account"],
 			},
+			modelAccountPoolModes: { "gpt-5.6-sol": "strict" },
 		});
 	});
 
@@ -98,6 +110,7 @@ describe("codex-pool tool", () => {
 		const parsed = JSON.parse(output as string) as {
 			pools: Array<{
 				configuredCount: number;
+				poolMode: string;
 				accounts: Array<Record<string, unknown>>;
 				unresolvedCount: number;
 				unresolvedAccountIds?: string[];
@@ -106,6 +119,7 @@ describe("codex-pool tool", () => {
 
 		expect(parsed.pools[0]).toMatchObject({
 			configuredCount: 2,
+			poolMode: "strict",
 			unresolvedCount: 1,
 		});
 		expect(parsed.pools[0]?.accounts[0]).toMatchObject({ index: 1 });
@@ -136,6 +150,8 @@ describe("codex-pool tool", () => {
 			model: "gpt-5.6-sol",
 			previousAccountIds: [],
 			accountIds: ["account-two", "account-one"],
+			previousPoolMode: "preferred",
+			poolMode: "preferred",
 			changed: true,
 			dryRun: false,
 		});
@@ -153,7 +169,7 @@ describe("codex-pool tool", () => {
 			"gpt-5.6-sol",
 			"set",
 			["account-two", "account-one"],
-			{ dryRun: undefined },
+			{ dryRun: undefined, poolMode: undefined },
 		);
 		expect(output).toContain("Restart OpenCode");
 	});
@@ -209,6 +225,8 @@ describe("codex-pool tool", () => {
 			model: "gpt-5.6-sol",
 			previousAccountIds: ["account-one"],
 			accountIds: ["account-one", "account-two"],
+			previousPoolMode: "preferred",
+			poolMode: "preferred",
 			changed: true,
 			dryRun: true,
 		});
@@ -227,7 +245,7 @@ describe("codex-pool tool", () => {
 			"gpt-5.6-sol",
 			"add",
 			["account-two"],
-			expect.objectContaining({ dryRun: true }),
+			expect.objectContaining({ dryRun: true, poolMode: undefined }),
 		);
 		const options = vi.mocked(updateModelAccountPool).mock.calls[0]?.[3];
 		expect(options?.normalizeExistingAccountIds?.(["account-one"])).toEqual([
@@ -242,6 +260,8 @@ describe("codex-pool tool", () => {
 			model: "gpt-5.6-sol",
 			previousAccountIds: ["account-one"],
 			accountIds: [],
+			previousPoolMode: "strict",
+			poolMode: "preferred",
 			changed: true,
 			dryRun: false,
 		});
@@ -255,8 +275,37 @@ describe("codex-pool tool", () => {
 			"gpt-5.6-sol",
 			"clear",
 			[],
-			{ dryRun: undefined },
+			{ dryRun: undefined, poolMode: undefined },
 		);
+	});
+
+	it("switches an existing pool between preferred and strict", async () => {
+		vi.mocked(updateModelAccountPool).mockResolvedValue({
+			model: "gpt-5.6-sol",
+			previousAccountIds: ["account-one"],
+			accountIds: ["account-one"],
+			previousPoolMode: "preferred",
+			poolMode: "strict",
+			changed: true,
+			dryRun: false,
+		});
+
+		const output = await createCodexPoolTool(buildCtx()).execute(
+			{
+				action: "set-mode",
+				model: "gpt-5.6-sol",
+				poolMode: "strict",
+			},
+			{} as never,
+		);
+
+		expect(updateModelAccountPool).toHaveBeenCalledWith(
+			"gpt-5.6-sol",
+			"set-mode",
+			[],
+			{ dryRun: undefined, poolMode: "strict" },
+		);
+		expect(output).toContain("Pool mode: strict");
 	});
 
 	it("rejects invalid account numbers before writing", async () => {
@@ -281,5 +330,102 @@ describe("codex-pool tool", () => {
 				{} as never,
 			),
 		).rejects.toThrow("has no stable account ID");
+	});
+
+	it("returns retry guidance when configuration lock acquisition is exhausted", async () => {
+		vi.mocked(updateModelAccountPool).mockRejectedValue(
+			new ConfigLockContentionError("/tmp/config.json"),
+		);
+
+		const output = await createCodexPoolTool(buildCtx()).execute(
+			{ action: "set", model: "gpt-5.6-sol", accounts: [1] },
+			{} as never,
+		);
+
+		expect(output).toContain("locked by another process");
+		expect(output).toContain("No change was made");
+	});
+
+	it("returns structured retryable lock contention in JSON", async () => {
+		vi.mocked(updateModelAccountPool).mockRejectedValue(
+			new ConfigLockContentionError("/tmp/config.json"),
+		);
+
+		const output = await createCodexPoolTool(buildCtx()).execute(
+			{
+				action: "set",
+				model: "gpt-5.6-sol",
+				accounts: [1],
+				format: "json",
+			},
+			{} as never,
+		);
+		const parsed = JSON.parse(output as string) as Record<string, unknown>;
+
+		expect(parsed).toMatchObject({
+			action: "set",
+			model: "gpt-5.6-sol",
+			changed: false,
+			applied: false,
+			dryRun: false,
+			restartRequired: false,
+			// Nothing was mutated, so the payload reports the pool still on disk.
+			previousConfiguredCount: 2,
+			previousPoolMode: "strict",
+			// Same token as the class name and the ErrorCode used in logs, so a
+			// caller that greps for what it saw in tool JSON finds something.
+			error: "CODEX_CONFIG_LOCK_CONTENTION",
+			retryable: true,
+		});
+		expect(parsed.pool).toMatchObject({ poolMode: "strict" });
+	});
+
+	// ---------- finding 4: the degrade path must not break strict consumers ----------
+	it("keeps the contention payload shape identical to a successful mutation", async () => {
+		vi.mocked(updateModelAccountPool).mockResolvedValue({
+			model: "gpt-5.6-sol",
+			accountIds: ["account-one"],
+			changed: true,
+			dryRun: false,
+			previousAccountIds: ["account-one", "missing-account"],
+			previousPoolMode: "strict",
+			poolMode: "strict",
+		});
+		const okPayload = JSON.parse(
+			(await createCodexPoolTool(buildCtx()).execute(
+				{ action: "set", model: "gpt-5.6-sol", accounts: [1], format: "json" },
+				{} as never,
+			)) as string,
+		) as Record<string, unknown>;
+
+		vi.mocked(updateModelAccountPool).mockRejectedValue(
+			new ConfigLockContentionError("/tmp/config.json"),
+		);
+		const lockedPayload = JSON.parse(
+			(await createCodexPoolTool(buildCtx()).execute(
+				{ action: "set", model: "gpt-5.6-sol", accounts: [1], format: "json" },
+				{} as never,
+			)) as string,
+		) as Record<string, unknown>;
+
+		// A consumer reading parsed.pool.accounts must not start throwing just
+		// because the tool degraded.
+		expect(Object.keys(lockedPayload)).toEqual(
+			expect.arrayContaining(Object.keys(okPayload)),
+		);
+		expect(Array.isArray((lockedPayload.pool as { accounts?: unknown }).accounts)).toBe(
+			true,
+		);
+	});
+
+	it("rethrows non-contention persistence failures", async () => {
+		vi.mocked(updateModelAccountPool).mockRejectedValue(new Error("disk failed"));
+
+		await expect(
+			createCodexPoolTool(buildCtx()).execute(
+				{ action: "set", model: "gpt-5.6-sol", accounts: [1] },
+				{} as never,
+			),
+		).rejects.toThrow("disk failed");
 	});
 });

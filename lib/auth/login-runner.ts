@@ -5,8 +5,16 @@ import {
 	sanitizeEmail,
 	selectBestAccountCandidate,
 } from "../accounts.js";
-import { extractAccountUserId } from "./token-utils.js";
+// Imported from its defining module rather than through the `../accounts.js`
+// barrel: it is a pure formatter with no reason to be stubbed, and routing it
+// through the barrel would force every suite that mocks accounts.js to
+// re-export it.
+import {
+	extractAccountUserId,
+	relabelCandidateForAccountId,
+} from "./token-utils.js";
 import { logInfo } from "../logger.js";
+import { normalizeScope } from "./scopes.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { withAccountStorageTransaction } from "../storage.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
@@ -220,34 +228,40 @@ export function resolveAccountSelection(tokens: TokenSuccess): AccountSelectionR
 		};
 	}
 
+	// One login yields exactly one persisted account.
+	//
+	// `id_token_add_organizations=true` means the id_token lists every
+	// organization the user belongs to, and this function used to persist one
+	// entry per organization. Every one of those entries shared this login's
+	// single OAuth token, and the Codex backend meters quota by the
+	// `chatgpt-account-id` header while ignoring organization ids - so N entries
+	// all drew from the token's default subscription instead of N pools, and
+	// re-logging in under another workspace overwrote all of them (#226).
+	//
+	// A workspace subscription is its own ChatGPT account with its own
+	// `chatgpt_account_id` claim, so per-entry tokens are what give per-entry
+	// quotas: bind to the token-scoped id and let a second `auth login` under
+	// the other workspace append a separate account carrying its own token.
+	// The chosen workspace's name and organization id ride along as metadata -
+	// `organizationId` is display/dedupe-only and is not sent as a header unless
+	// CODEX_AUTH_SEND_ORGANIZATION_HEADER=1 (see lib/request/fetch-helpers.ts).
+	const routingCandidate =
+		candidates.find((candidate) => candidate.source === "token") ??
+		candidates.find((candidate) => candidate.source === "id_token") ??
+		choice;
 	const primary = createSelectionVariant(tokens, {
-		accountId: choice.accountId,
+		accountId: routingCandidate.accountId,
 		organizationId: choice.organizationId,
-		source: choice.source ?? "token",
-		label: choice.label,
+		source: routingCandidate.source ?? "token",
+		label:
+			routingCandidate === choice
+				? choice.label
+				: relabelCandidateForAccountId(choice.label, routingCandidate.accountId),
 	});
-
-	const variantsForPersistence: TokenSuccessWithAccount[] = [primary];
-	for (const candidate of candidates) {
-		if (
-			candidate.accountId === primary.accountIdOverride &&
-			(candidate.organizationId ?? "") === (primary.organizationIdOverride ?? "")
-		) {
-			continue;
-		}
-		variantsForPersistence.push(
-			createSelectionVariant(tokens, {
-				accountId: candidate.accountId,
-				organizationId: candidate.organizationId,
-				source: candidate.source,
-				label: candidate.label,
-			}),
-		);
-	}
 
 	return {
 		primary,
-		variantsForPersistence,
+		variantsForPersistence: [primary],
 	};
 }
 
@@ -673,6 +687,12 @@ export async function persistAccountPool(
 					: undefined;
 			const accountLabel = result.accountLabel;
 			const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
+			// A blank scope must never reach storage: it is indistinguishable from
+			// "granted nothing" at load time, and `?? existing.oauthScope` below
+			// would let it overwrite a good stored value instead of deferring to
+			// it. Absent stays absent — we do not invent a scope we were not told
+			// about (issue #213).
+			const normalizedScope = normalizeScope(result.scope);
 
 			const existingIndex = (() => {
 				if (normalizedAccountUserId) {
@@ -761,7 +781,7 @@ export async function persistAccountPool(
 					refreshToken: result.refresh,
 					accessToken: result.access,
 					expiresAt: result.expires,
-					oauthScope: result.scope,
+					oauthScope: normalizedScope,
 					addedAt: now,
 					lastUsed: now,
 				});
@@ -801,7 +821,7 @@ export async function persistAccountPool(
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
-				oauthScope: result.scope ?? existing.oauthScope,
+				oauthScope: normalizedScope ?? existing.oauthScope,
 				lastUsed: now,
 			};
 			identityIndexes = buildIdentityIndexes();

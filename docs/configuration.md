@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Complete reference for configuring `oc-codex-multi-auth` v6.9.1. Most of this is optional; the defaults work for most people.
+Complete reference for configuring `oc-codex-multi-auth`. Most of this is optional; the defaults work for most people.
 
 Boolean environment overrides are truthy only for the literal string `"1"`.
 
@@ -53,7 +53,7 @@ controls how much thinking the model does.
 | `gpt-5.1-codex-mini` | medium, high |
 | `gpt-5.1` | none, low, medium, high |
 
-The shipped config templates include 12 base model families and 53 shipped presets overall (53 modern variants or 53 legacy explicit entries). The default installer uses the compact modern template so the TUI model picker shows base OAuth model families and the separate variant picker selects the reasoning preset. Use `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin), while `gpt-5.3-codex-spark` remains a manual add-on for entitled workspaces only.
+The shipped config templates include 12 base model families and 53 shipped presets overall (53 modern variants or 53 legacy explicit entries). Default install preserves `provider.openai`; use `--modern` to install the compact base families and variant picker, or `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin), while `gpt-5.3-codex-spark` remains a manual add-on for entitled workspaces only.
 
 Base families:
 
@@ -106,14 +106,14 @@ model normalization aliases:
 - `gpt-5.5*`, `gpt-5.5-fast*`, and user-typed `gpt-5.5-pro*` normalize to the public Codex model id `gpt-5.5`
 - legacy `gpt-5` maps to `gpt-5.5`; legacy `gpt-5-mini` / `gpt-5-nano` map to `gpt-5.4-mini` / `gpt-5.4-nano`
 - snapshot ids `gpt-5.4-2026-03-05*`, `gpt-5.4-mini-2026-03-05*`, and `gpt-5.4-pro-2026-03-05*` map to stable `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.4-pro`
-- `opencode debug config` is the reliable way to confirm merged custom/template model entries; default installs expose compact entries like `gpt-5.5` and `gpt-5.5-fast`, while `--full` also exposes explicit entries like `gpt-5.5-medium`, `gpt-5.5-fast-medium`, and `gpt-5.5-high`
+- `opencode debug config` is the reliable way to confirm merged custom/template model entries; `--modern` exposes compact entries like `gpt-5.5` and `gpt-5.5-fast`, while `--full` also exposes explicit entries like `gpt-5.5-medium`, `gpt-5.5-fast-medium`, and `gpt-5.5-high`
 
 if your OpenCode runtime supports global compaction tuning, you can set:
 - `model_context_window = 1000000`
 - `model_auto_compact_token_limit = 900000`
 
 selector note:
-- the default installer is optimized for the TUI model picker: choose a base `(OAuth)` model, then choose a variant
+- `--modern` is optimized for the TUI model picker: choose a base `(OAuth)` model, then choose a variant
 - install with `--full` when you need direct selector IDs such as `openai/gpt-5.5-medium` or `openai/gpt-5.5-fast-medium`
 
 what they mean:
@@ -179,6 +179,9 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
   "modelAccountPools": {
     "gpt-5.6-sol": ["org-example-account-id"]
   },
+  "modelAccountPoolModes": {
+    "gpt-5.6-sol": "strict"
+  },
   "retryProfile": "balanced",
   "retryBudgetOverrides": {
     "network": 2,
@@ -231,6 +234,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `fastSessionMaxInputItems` | `30` | max input items kept when fast mode is applied |
 | `rotationStrategy` | `hybrid` | account selection strategy: `hybrid` (stick while healthy, else score-select), `sticky` (drain one account first), or `round-robin` |
 | `modelAccountPools` | `{}` | optional map of effective model IDs to preferred stable account or Business-seat identities; selection uses the configured pool while it has a healthy account, then falls back to the general account pool |
+| `modelAccountPoolModes` | `{}` | optional per-model `preferred` or `strict` policy; omitted models default to `preferred` |
 | `retryProfile` | `balanced` | retry budget profile for request classes (`conservative`, `balanced`, `aggressive`) |
 | `retryBudgetOverrides` | `{}` | optional per-class budget overrides (`authRefresh`, `network`, `server`, `rateLimitShort`, `rateLimitGlobal`, `emptyResponse`) |
 | `perProjectAccounts` | `true` | each project gets its own account storage |
@@ -258,15 +262,19 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 
 Use `codex-pool action="set" model="gpt-5.6-sol" accounts=[7,8]` to manage a
 pool with 1-based account numbers while persisting stable IDs. The tool also
-supports `status` (default), `add`, `remove`, `clear`, `dryRun=true`, and JSON
+supports `status` (default), `add`, `remove`, `clear`, `set-mode`, `dryRun=true`, and JSON
 output. Restart OpenCode after an applied mutation. Because this config is
 global while account storage is per-project by default, references unavailable
 in the current project are reported but not automatically pruned.
 
 Model keys are matched case-insensitively after request model normalization.
-Empty lists, unmapped models, and pools with no selectable accounts use the
-general account pool. Routing diagnostics expose the resulting mode as
-`preferred`, `general`, or `general-fallback`.
+Empty lists and unmapped models use the general account pool. A `preferred`
+pool with no selectable account falls back to the general pool. A `strict`
+pool never leaves its configured accounts and immediately returns
+`strict_pool_unavailable` instead of entering the global wait loop. Switch an
+existing pool with `codex-pool action="set-mode" model="gpt-5.6-sol"
+poolMode="strict"`. Routing diagnostics expose `general`, `preferred`,
+`general-fallback`, `strict`, or `strict-unavailable`.
 
 ### Beginner Safe Mode Behavior
 
@@ -464,7 +472,7 @@ global (`~/.config/opencode/opencode.json`):
 
 project override (`<project>/.opencode.json`) can set a default model or per-project provider options without changing the global install.
 
-### Compact modern selectors (default install)
+### Compact modern selectors (`--modern` install)
 
 ```bash
 opencode run "task" --model=openai/gpt-5.5 --variant=medium

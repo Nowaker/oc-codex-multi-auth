@@ -5,6 +5,11 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
+  # Manual trigger. Lets a maintainer run the full gate on any ref from the
+  # Actions tab without pushing a throwaway commit — useful for confirming the
+  # pipeline itself works, and for re-running against a branch after an
+  # infrastructure problem rather than a code change.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
@@ -47,11 +52,13 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
-
+      # Build must precede Test: dist/ is gitignored, and the standalone CLI
+      # tests load the compiled warm/limits runtime out of dist/.
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm test
 
   audit-ci:
     name: Dependency audit

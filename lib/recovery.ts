@@ -7,8 +7,8 @@
  * consumer that imports from `./recovery` / `../lib/recovery` resolves exactly
  * as it did before the refactor.
  *
- * See `docs/audits/07-refactoring-plan.md#rc-4` and
- * `docs/audits/06-filesystem.md` for the motivation.
+ * Split out of the former monolithic module so the filesystem-touching
+ * recovery paths stay isolated and independently testable.
  */
 
 // --- Types re-exported from the recovery/types module ----------------------

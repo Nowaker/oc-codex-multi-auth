@@ -11,7 +11,11 @@ import {
 } from "./request/retry-budget.js";
 import { logWarn } from "./logger.js";
 import { stripEffortSuffix } from "./request/helpers/effort-suffix.js";
-import { renameWithWindowsRetry } from "./storage/atomic-write.js";
+import {
+	isWindowsLockError,
+	renameWithWindowsRetry,
+} from "./storage/atomic-write.js";
+import { ConfigLockContentionError } from "./errors.js";
 import {
 	PluginConfigSchema,
 	getValidationErrors,
@@ -29,18 +33,28 @@ const RETRY_PROFILES = new Set(["conservative", "balanced", "aggressive"]);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
-export type ModelAccountPoolMutation = "set" | "add" | "remove" | "clear";
+export type ModelAccountPoolMode = "preferred" | "strict";
+
+export type ModelAccountPoolMutation =
+	| "set"
+	| "add"
+	| "remove"
+	| "clear"
+	| "set-mode";
 
 export interface ModelAccountPoolMutationResult {
 	model: string;
 	previousAccountIds: string[];
 	accountIds: string[];
+	previousPoolMode: ModelAccountPoolMode;
+	poolMode: ModelAccountPoolMode;
 	changed: boolean;
 	dryRun: boolean;
 }
 
 export interface ModelAccountPoolMutationOptions {
 	dryRun?: boolean;
+	poolMode?: ModelAccountPoolMode;
 	normalizeExistingAccountIds?: (accountIds: readonly string[]) => readonly string[];
 }
 
@@ -160,6 +174,71 @@ export function loadPluginConfig(): PluginConfig {
 	}
 }
 
+type LockRetryBudget = {
+	retries: number;
+	factor: number;
+	minTimeout: number;
+	maxTimeout: number;
+	randomize: boolean;
+};
+
+/**
+ * Full budget: roughly three seconds of retries, enough to ride out another
+ * process finishing a mutation of its own.
+ */
+const LOCK_RETRY_BUDGET_FULL: LockRetryBudget = {
+	retries: 20,
+	factor: 1.2,
+	minTimeout: 25,
+	maxTimeout: 200,
+	randomize: true,
+};
+
+/**
+ * Short budget used once contention has just been observed: long enough to win
+ * a lock its holder is releasing right now, far short of the full budget.
+ */
+const LOCK_RETRY_BUDGET_PROBE: LockRetryBudget = {
+	retries: 3,
+	factor: 1.2,
+	minTimeout: 25,
+	maxTimeout: 50,
+	randomize: true,
+};
+
+/** How long one contention observation keeps later mutations on the probe budget. */
+const LOCK_CONTENTION_FAST_FAIL_WINDOW_MS = 1_000;
+
+/**
+ * When another process was last seen holding the config lock past our budget.
+ *
+ * `modelAccountPoolMutationQueue` serializes every in-process mutation, so
+ * without this each queued caller independently waited out the full budget
+ * against the same foreign holder: ten parallel `codex-pool` calls blocked for
+ * ten times the budget and then all failed anyway, which is the "completely
+ * stalls the sub tasks" half of #224. Once one call has established that the
+ * lock is externally held, the rest probe briefly and degrade immediately, so
+ * the stall is bounded rather than multiplied by the queue depth.
+ */
+let lastLockContentionAt: number | null = null;
+
+function nextLockRetryBudget(): LockRetryBudget {
+	if (lastLockContentionAt === null) return LOCK_RETRY_BUDGET_FULL;
+	if (
+		Date.now() - lastLockContentionAt >=
+		LOCK_CONTENTION_FAST_FAIL_WINDOW_MS
+	) {
+		lastLockContentionAt = null;
+		return LOCK_RETRY_BUDGET_FULL;
+	}
+	return LOCK_RETRY_BUDGET_PROBE;
+}
+
+/** Test hook: forget any observed contention so budgets start from full. */
+export function __resetLockContentionStateForTests(): void {
+	lastLockContentionAt = null;
+}
+
 /**
  * Update one model pool while preserving every unrelated raw config key.
  * Account indexes are deliberately resolved by the caller; only stable IDs
@@ -172,19 +251,45 @@ export function updateModelAccountPool(
 	options: ModelAccountPoolMutationOptions = {},
 ): Promise<ModelAccountPoolMutationResult> {
 	const pending = modelAccountPoolMutationQueue.then(async () => {
+		if (options.dryRun === true) {
+			return performModelAccountPoolMutation(
+				model,
+				mutation,
+				accountIds,
+				options,
+			);
+		}
+
 		await fs.mkdir(dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
-		const release = await lock(CONFIG_PATH, {
-			realpath: false,
-			stale: 10_000,
-			update: 2_000,
-			retries: {
-				retries: 20,
-				factor: 1.2,
-				minTimeout: 25,
-				maxTimeout: 200,
-				randomize: true,
-			},
-		});
+		let release: () => Promise<void>;
+		try {
+			release = await lock(CONFIG_PATH, {
+				realpath: false,
+				stale: 10_000,
+				update: 2_000,
+				// proper-lockfile's default `onCompromised` rethrows from inside an
+				// fs callback. Nothing in this process installs an
+				// `uncaughtException` handler, so a lock that goes stale mid-mutation
+				// (event loop blocked past `stale`, or another process reclaiming the
+				// entry) would take the whole plugin down instead of failing this one
+				// call. The mutation is already in flight and cannot be rolled back,
+				// so the only useful response is to record it; the release below
+				// tolerates the ERELEASED that follows.
+				onCompromised: (error: Error) => {
+					logWarn(
+						`Plugin configuration lock at ${CONFIG_PATH} was compromised mid-mutation: ${error.message}`,
+					);
+				},
+				retries: nextLockRetryBudget(),
+			});
+			lastLockContentionAt = null;
+		} catch (error) {
+			if (isLockContentionError(error)) {
+				lastLockContentionAt = Date.now();
+				throw new ConfigLockContentionError(CONFIG_PATH, error);
+			}
+			throw error;
+		}
 		try {
 			return await performModelAccountPoolMutation(
 				model,
@@ -193,7 +298,12 @@ export function updateModelAccountPool(
 				options,
 			);
 		} finally {
-			await release();
+			// A release failure must never replace the mutation's outcome. By this
+			// point the config has already been written, so surfacing ERELEASED (or
+			// a Windows EPERM/EBUSY on the lock directory, which `removeLock`
+			// propagates straight from `rmdir`) would report a fatal lock error for
+			// a change that actually landed - the exact symptom this fix removes.
+			await releaseLockQuietly(release);
 		}
 	});
 	modelAccountPoolMutationQueue = pending.then(
@@ -201,6 +311,49 @@ export function updateModelAccountPool(
 		() => undefined,
 	);
 	return pending;
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		error.code === code
+	);
+}
+
+/**
+ * True when a lock acquisition failure means "another process holds it", as
+ * opposed to a genuine environment fault the caller must see.
+ *
+ * proper-lockfile forwards raw fs errors from the lock directory's
+ * `mkdir`/`stat`/`rmdir` straight into its retry loop, so the error that
+ * finally escapes (`operation.mainError()`) is not always ELOCKED. On Windows a
+ * lock directory held open by another process - or by an antivirus scanner or
+ * the search indexer - surfaces as EPERM/EBUSY rather than EEXIST, the same
+ * class `renameWithWindowsRetry` already tolerates one layer down. Those codes
+ * count as contention only on win32; on POSIX an EPERM really is a permission
+ * problem and has to stay fatal.
+ */
+function isLockContentionError(error: unknown): boolean {
+	if (hasErrorCode(error, "ELOCKED")) return true;
+	return process.platform === "win32" && isWindowsLockError(error);
+}
+
+/** Release a config lock, downgrading any failure to a warning. */
+async function releaseLockQuietly(release: () => Promise<void>): Promise<void> {
+	try {
+		await release();
+	} catch (error) {
+		// Losing the lock directory is recoverable on its own: `stale` reclaims a
+		// leftover entry within 10s, and the mutation it guarded is already
+		// durable on disk.
+		logWarn(
+			`Failed to release plugin configuration lock at ${CONFIG_PATH}: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
 }
 
 async function performModelAccountPoolMutation(
@@ -226,6 +379,7 @@ async function performModelAccountPoolMutation(
 
 	const poolResult = PluginConfigSchema.safeParse({
 		modelAccountPools: rawConfig.modelAccountPools,
+		modelAccountPoolModes: rawConfig.modelAccountPoolModes,
 	});
 	if (!poolResult.success) {
 		throw new Error(
@@ -237,7 +391,11 @@ async function performModelAccountPoolMutation(
 	}
 
 	const pools = { ...(poolResult.data.modelAccountPools ?? {}) };
+	const poolModes = { ...(poolResult.data.modelAccountPoolModes ?? {}) };
 	const matchingKeys = Object.keys(pools).filter(
+		(key) => key.trim().toLowerCase() === normalizedModel,
+	);
+	const matchingModeKeys = Object.keys(poolModes).filter(
 		(key) => key.trim().toLowerCase() === normalizedModel,
 	);
 	const storedPreviousAccountIds = Array.from(
@@ -252,12 +410,24 @@ async function performModelAccountPoolMutation(
 		),
 	);
 	for (const key of matchingKeys) delete pools[key];
+	const previousPoolMode = matchingModeKeys
+		.map((key) => poolModes[key])
+		.find((mode): mode is ModelAccountPoolMode => mode !== undefined) ?? "preferred";
+	for (const key of matchingModeKeys) delete poolModes[key];
+	if (mutation === "set-mode" && previousAccountIds.length === 0) {
+		throw new Error(`No model account pool configured for ${normalizedModel}.`);
+	}
+	if (mutation === "set-mode" && options.poolMode === undefined) {
+		throw new Error("poolMode is required for set-mode.");
+	}
 
 	const normalizedAccountIds = Array.from(
 		new Set(accountIds.map((id) => id.trim()).filter(Boolean)),
 	);
 	let nextAccountIds: string[];
-	if (mutation === "set") {
+	if (mutation === "set-mode") {
+		nextAccountIds = previousAccountIds;
+	} else if (mutation === "set") {
 		nextAccountIds = normalizedAccountIds;
 	} else if (mutation === "add") {
 		nextAccountIds = Array.from(
@@ -270,18 +440,34 @@ async function performModelAccountPoolMutation(
 		nextAccountIds = [];
 	}
 
-	if (nextAccountIds.length > 0) pools[normalizedModel] = nextAccountIds;
+	const nextPoolMode = mutation === "clear"
+		? "preferred"
+		: options.poolMode ?? previousPoolMode;
+	if (nextAccountIds.length > 0) {
+		pools[normalizedModel] = nextAccountIds;
+		if (nextPoolMode !== "preferred") {
+			poolModes[normalizedModel] = nextPoolMode;
+		}
+	}
 	const changed =
 		matchingKeys.length !== (nextAccountIds.length > 0 ? 1 : 0) ||
 		storedPreviousAccountIds.length !== nextAccountIds.length ||
 		storedPreviousAccountIds.some((id, index) => id !== nextAccountIds[index]) ||
-		(matchingKeys[0] !== undefined && matchingKeys[0] !== normalizedModel);
+		(matchingKeys[0] !== undefined && matchingKeys[0] !== normalizedModel) ||
+		matchingModeKeys.length !== (nextPoolMode !== "preferred" && nextAccountIds.length > 0 ? 1 : 0) ||
+		previousPoolMode !== nextPoolMode ||
+		(matchingModeKeys[0] !== undefined && matchingModeKeys[0] !== normalizedModel);
 
 	if (changed && options.dryRun !== true) {
 		if (Object.keys(pools).length > 0) {
 			rawConfig.modelAccountPools = pools;
 		} else {
 			delete rawConfig.modelAccountPools;
+		}
+		if (Object.keys(poolModes).length > 0) {
+			rawConfig.modelAccountPoolModes = poolModes;
+		} else {
+			delete rawConfig.modelAccountPoolModes;
 		}
 
 		const tempPath = `${CONFIG_PATH}.${process.pid}.${randomUUID()}.tmp`;
@@ -300,6 +486,8 @@ async function performModelAccountPoolMutation(
 		model: normalizedModel,
 		previousAccountIds,
 		accountIds: nextAccountIds,
+		previousPoolMode,
+		poolMode: nextPoolMode,
 		changed,
 		dryRun: options.dryRun === true,
 	};
@@ -333,13 +521,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object";
 }
 
-/**
- * Get the effective CODEX_MODE setting
- * Priority: environment variable > config file > default (true)
- *
- * @param pluginConfig - Plugin configuration from file
- * @returns True if CODEX_MODE should be enabled
- */
 // RC-9: the env-var parsing helpers below are thin wrappers around Zod
 // schemas that live in `lib/schemas.ts`. Keeping them here (instead of
 // inlining the schema use at every call site) preserves the existing
@@ -414,6 +595,13 @@ function resolveStringSetting<T extends string>(
 	return defaultValue;
 }
 
+/**
+ * Get the effective CODEX_MODE setting.
+ * Priority: environment variable > config file > default (true).
+ *
+ * @param pluginConfig - Plugin configuration from file
+ * @returns True if CODEX_MODE should be enabled
+ */
 export function getCodexMode(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting("CODEX_MODE", pluginConfig.codexMode, true);
 }
@@ -549,6 +737,20 @@ export function getModelAccountPool(
 		}
 	}
 	return [];
+}
+
+export function getModelAccountPoolMode(
+	pluginConfig: PluginConfig,
+	model?: string | null,
+): ModelAccountPoolMode {
+	if (!model) return "preferred";
+	const normalizedModel = model.trim().toLowerCase();
+	for (const [configuredModel, mode] of Object.entries(
+		pluginConfig.modelAccountPoolModes ?? {},
+	)) {
+		if (configuredModel.trim().toLowerCase() === normalizedModel) return mode;
+	}
+	return "preferred";
 }
 
 export function getFastSessionMaxInputItems(pluginConfig: PluginConfig): number {

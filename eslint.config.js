@@ -3,7 +3,17 @@ import tsparser from "@typescript-eslint/parser";
 
 export default [
   {
-    ignores: ["dist/**", "node_modules/**", "winston/**", "*.cjs", "*.mjs"],
+    // `coverage/` holds vitest's generated HTML report, including vendored JS.
+    // It is gitignored but was still being linted, so `npm run lint` reported
+    // warnings from generated files after any `npm run test:coverage`.
+    ignores: [
+      "dist/**",
+      "coverage/**",
+      "node_modules/**",
+      "winston/**",
+      "*.cjs",
+      "*.mjs",
+    ],
   },
   {
     files: ["index.ts", "tui.ts", "lib/**/*.ts"],

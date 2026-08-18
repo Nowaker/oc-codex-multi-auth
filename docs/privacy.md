@@ -124,11 +124,19 @@ Export/import and installer backups may create files under `~/.opencode/backups/
 
 API and auth traffic go **directly from your machine** to OpenAI/ChatGPT endpoints over HTTPS. There is no maintainer proxy.
 
-| Service | Endpoint family |
-|---------|-----------------|
+| Service | Endpoint |
+|---------|----------|
 | OAuth authorize / token | `https://auth.openai.com/...` (e.g. `/oauth/authorize`, `/oauth/token`) |
 | Codex API | `https://chatgpt.com/backend-api/codex/responses` |
-| Usage / quota helpers | related `chatgpt.com/backend-api` paths used for usage windows |
+| Usage / quota window | `https://chatgpt.com/backend-api/wham/usage` |
+| Reset-credit listing (`codex-reset`) | `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` |
+| Reset-credit redemption (`codex-reset`) | `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume` |
+
+The `wham` endpoints are the same undocumented endpoints the official Codex
+clients use for the `/usage` screen and reset-credit redemption. They are
+reached only from quota-facing surfaces — `codex-limits`, `codex-reset`, the
+"Check quotas" action in the interactive auth dashboard, and the TUI quota
+status refresh. The model request path does not call them.
 
 ### What gets sent on a normal model request
 

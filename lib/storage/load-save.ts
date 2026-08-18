@@ -48,6 +48,62 @@ import {
 import os from "node:os";
 
 const log = createLogger("storage");
+const COLLISION_WARNING_THROTTLE_MS = 60_000;
+const COLLISION_WARNING_THROTTLE_MAX_ENTRIES = 128;
+const collisionWarningTimes = new Map<string, number>();
+
+export function __resetCollisionWarningThrottleForTests(): void {
+  collisionWarningTimes.clear();
+}
+
+/**
+ * Identity a collision warning is throttled against.
+ *
+ * Deliberately storage path + host only. Including the foreign `pid` and
+ * `startedAt` meant a foreign holder that restarts - or several short-lived
+ * sessions rotating - produced a brand new key on every probe, so the throttle
+ * never fired and the log spam it exists to stop continued unabated. Those dead
+ * identities also evicted live ones from the bounded map, which could stop a
+ * genuinely recurring collision from ever being deduped.
+ */
+function collisionWarningKey(
+  storagePath: string,
+  foreign: { hostname: string },
+): string {
+  return JSON.stringify([storagePath, foreign.hostname]);
+}
+
+/** Pure query: has this identity already warned inside the current window? */
+function hasWarnedForCollision(key: string, now: number): boolean {
+  const warnedAt = collisionWarningTimes.get(key);
+  if (warnedAt === undefined) return false;
+  if (now < warnedAt) return false;
+  return now - warnedAt < COLLISION_WARNING_THROTTLE_MS;
+}
+
+/**
+ * Record a warning the caller has already emitted.
+ *
+ * Split from the check, and called after the emit, so a `log.warn` that throws
+ * cannot leave the throttle believing it warned - which would silently suppress
+ * the next 60s of collisions.
+ */
+function recordCollisionWarning(key: string, now: number): void {
+  for (const [existingKey, warnedAt] of collisionWarningTimes) {
+    if (now < warnedAt || now - warnedAt >= COLLISION_WARNING_THROTTLE_MS) {
+      collisionWarningTimes.delete(existingKey);
+    }
+  }
+
+  collisionWarningTimes.set(key, now);
+  while (
+    collisionWarningTimes.size > COLLISION_WARNING_THROTTLE_MAX_ENTRIES
+  ) {
+    const oldestKey = collisionWarningTimes.keys().next().value;
+    if (oldestKey === undefined) break;
+    collisionWarningTimes.delete(oldestKey);
+  }
+}
 
 /**
  * Probes the worktree lock for the currently active storage path and surfaces
@@ -79,17 +135,22 @@ async function checkWorktreeLockForCurrentStorage(
   try {
     const result = await acquireOrDetectLock(path);
     if (!result.acquired && result.foreign) {
-      log.warn("Multi-worktree collision detected on account storage", {
-        operation,
-        storagePath: path,
-        foreignPid: result.foreign.pid,
-        foreignHost: result.foreign.hostname,
-        foreignCwd: result.foreign.cwd,
-        foreignLastActive: result.foreign.lastActive,
-        ourPid: process.pid,
-        ourHost: os.hostname(),
-        ourCwd: process.cwd(),
-      });
+      const now = Date.now();
+      const warningKey = collisionWarningKey(path, result.foreign);
+      if (!hasWarnedForCollision(warningKey, now)) {
+        log.warn("Multi-worktree collision detected on account storage", {
+          operation,
+          storagePath: path,
+          foreignPid: result.foreign.pid,
+          foreignHost: result.foreign.hostname,
+          foreignCwd: result.foreign.cwd,
+          foreignLastActive: result.foreign.lastActive,
+          ourPid: process.pid,
+          ourHost: os.hostname(),
+          ourCwd: process.cwd(),
+        });
+        recordCollisionWarning(warningKey, now);
+      }
     }
   } catch (error) {
     log.debug("Worktree lock probe failed", {
@@ -299,7 +360,7 @@ async function loadAccountsInternal(
   // fails for any reason (native module missing, keychain locked, no entry
   // yet) we fall through to the existing JSON load path so the plugin never
   // silently loses credentials. This preserves the default-off contract
-  // documented in docs/audits/13-phased-roadmap.md#phase-4-f1.
+  // default-off keychain contract.
   if (isKeychainOptInEnabled()) {
     const projectKey = getCurrentProjectStorageKey();
     try {

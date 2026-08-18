@@ -16,6 +16,7 @@ import {
 	type AccountStorageV3,
 } from "../storage.js";
 import { getWorkspaceIdentityKey } from "../storage/identity.js";
+import { nowMs } from "../utils.js";
 import { clampNonNegativeInt } from "./rate-limits.js";
 import type { AccountState } from "./state.js";
 
@@ -63,9 +64,12 @@ export class AccountPersistence {
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,
 				lastSwitchReason: account.lastSwitchReason,
+				// Copied, not referenced: adoptLongerDiskRateLimits merges the
+				// on-disk blocks into this payload, and it must not reach back
+				// through a shared reference into live rotation state.
 				rateLimitResetTimes:
 					Object.keys(account.rateLimitResetTimes).length > 0
-						? account.rateLimitResetTimes
+						? { ...account.rateLimitResetTimes }
 						: undefined,
 				coolingDownUntil: account.coolingDownUntil,
 				cooldownReason: account.cooldownReason,
@@ -83,10 +87,69 @@ export class AccountPersistence {
 		// persisting.
 		await withAccountStorageTransaction(async (current, persist) => {
 			if (current) {
+				// Before adoptNewerDiskCredentials: for records without workspace
+				// ids the refresh token participates in the identity key, and
+				// adopting a rotated token would change which disk record this
+				// account matches.
+				this.adoptLongerDiskRateLimits(storage, current);
 				this.adoptNewerDiskCredentials(storage, current);
 			}
 			await persist(storage);
 		});
+	}
+
+	/**
+	 * Merges still-active rate-limit blocks from `disk` into `outgoing`, keeping
+	 * whichever block runs longer per quota key.
+	 *
+	 * Rate-limit state is otherwise last-writer-wins, which is fine for a 5h
+	 * window that both processes rediscover within minutes. It is not fine for a
+	 * quota block: a second opencode process holding a stale snapshot would save
+	 * over the weekly block another process had just recorded, and the exhausted
+	 * account would be back in rotation after the next reload (issue #218).
+	 *
+	 * Only blocks still in the future are adopted, so an expired entry another
+	 * process has not pruned yet cannot be resurrected, and a block this process
+	 * deliberately cleared stays cleared once it has elapsed. `codex-doctor --fix`
+	 * is unaffected: it persists through its own storage transaction rather than
+	 * this method.
+	 *
+	 * Live in-memory state is intentionally left alone — unlike a consumed
+	 * refresh token, a missing block is self-correcting, since the very next
+	 * response re-applies it from the quota headers.
+	 */
+	private adoptLongerDiskRateLimits(
+		outgoing: AccountStorageV3,
+		disk: AccountStorageV3,
+	): void {
+		const now = nowMs();
+		const diskByIdentity = new Map<string, AccountMetadataV3>();
+		for (const record of disk.accounts) {
+			diskByIdentity.set(getWorkspaceIdentityKey(record), record);
+		}
+
+		for (const mine of outgoing.accounts) {
+			if (!mine) continue;
+			const theirs = diskByIdentity.get(getWorkspaceIdentityKey(mine));
+			const theirResets = theirs?.rateLimitResetTimes;
+			if (!theirResets) continue;
+
+			for (const [key, theirReset] of Object.entries(theirResets)) {
+				if (
+					typeof theirReset !== "number" ||
+					!Number.isFinite(theirReset) ||
+					theirReset <= now
+				) {
+					continue;
+				}
+				const myReset = mine.rateLimitResetTimes?.[key];
+				if (typeof myReset === "number" && myReset >= theirReset) continue;
+				mine.rateLimitResetTimes = {
+					...(mine.rateLimitResetTimes ?? {}),
+					[key]: theirReset,
+				};
+			}
+		}
 	}
 
 	/**
@@ -122,7 +185,10 @@ export class AccountPersistence {
 			mine.refreshToken = theirs.refreshToken;
 			mine.accessToken = theirs.accessToken;
 			mine.expiresAt = theirs.expiresAt;
-			mine.oauthScope = theirs.oauthScope ?? mine.oauthScope;
+			// Truthy, not `??`: a legacy record can hold an empty-string scope, and
+			// `??` would let it overwrite a good in-memory value. Matches the live
+			// mirror below (issue #213).
+			mine.oauthScope = theirs.oauthScope || mine.oauthScope;
 			mine.tokenRotatedAt = theirs.tokenRotatedAt;
 
 			// Mirror into live state so this process stops refreshing with the

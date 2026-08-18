@@ -1,5 +1,4 @@
-import { generatePKCE } from "@openauthjs/openauth/pkce";
-import { randomBytes } from "node:crypto";
+import { randomBytes, webcrypto } from "node:crypto";
 import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
 import {
@@ -13,7 +12,7 @@ export {
 	getMissingRequiredOAuthScopes,
 	hasRequiredOAuthScopes,
 } from "./scopes.js";
-import { SCOPE } from "./scopes.js";
+import { normalizeScope, SCOPE } from "./scopes.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -115,7 +114,11 @@ export async function exchangeAuthorizationCode(
 		refresh: json.refresh_token ?? "",
 		expires: Date.now() + json.expires_in * 1000,
 		idToken: json.id_token,
-		scope: json.scope ?? SCOPE,
+		// A blank `scope` must fall back to what we actually requested, not be
+		// stored verbatim: `??` lets an empty string through, and that empty
+		// string then overwrites known-good scope metadata downstream
+		// (`result.scope ?? existing.oauthScope`). See issue #213.
+		scope: normalizeScope(json.scope) ?? SCOPE,
 		multiAccount: true,
 	};
 }
@@ -203,12 +206,40 @@ export interface AuthorizationFlowOptions {
 }
 
 /**
+ * Generate an RFC 7636 S256 PKCE pair.
+ *
+ * Previously `generatePKCE` from `@openauthjs/openauth/pkce`. That package was
+ * pulled in for this one function and dragged `hono` into the production tree
+ * as a peer dependency - which is the only reason `hono` was a direct
+ * dependency and an override here - carrying advisories that could not be
+ * cleared without it.
+ *
+ * Semantics are preserved exactly:
+ *   - 64 random bytes, base64url-encoded, giving an 86-character verifier
+ *     (RFC 7636 allows 43-128).
+ *   - challenge = base64url(SHA-256(ASCII(verifier))).
+ *   - The upstream helper also returned `method: "S256"`; nothing read it.
+ *     {@link PKCEPair} is `{ challenge, verifier }` and the request hardcodes
+ *     `code_challenge_method=S256` below.
+ *
+ * Both encoders emit unpadded base64url, so the wire format is unchanged.
+ */
+async function generatePKCE(): Promise<PKCEPair> {
+	const verifier = randomBytes(64).toString("base64url");
+	const digest = await webcrypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(verifier),
+	);
+	return { verifier, challenge: Buffer.from(digest).toString("base64url") };
+}
+
+/**
  * Create OAuth authorization flow
  * @param options - Optional configuration for the flow
  * @returns Authorization flow details
  */
 export async function createAuthorizationFlow(options?: AuthorizationFlowOptions): Promise<AuthorizationFlow> {
-	const pkce = (await generatePKCE()) as PKCEPair;
+	const pkce = await generatePKCE();
 	const state = createState();
 
 	const url = new URL(AUTHORIZE_URL);

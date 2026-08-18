@@ -193,9 +193,17 @@ Examples:
 | `openai/gpt-5.6-terra-medium` | `gpt-5.6-terra` |
 | `openai/gpt-5.6-luna-max` | `gpt-5.6-luna` |
 | `openai/gpt-5.4-mini-xhigh` | `gpt-5.4-mini` |
-| `openai/gpt-5.1-codex-high` | `gpt-5.1-codex` |
+| `openai/gpt-5.1-codex-high` | `gpt-5-codex` |
+| `openai/gpt-5.1-codex-max-high` | `gpt-5.1-codex-max` |
 | `openai/gpt-5-mini` | `gpt-5.4-mini` |
 | `openai/gpt-5-nano` | `gpt-5.4-nano` |
+
+Note that the `gpt-5.1-codex` catalog entry normalizes to the canonical
+`gpt-5-codex` family upstream, while `gpt-5.1-codex-max` and
+`gpt-5.1-codex-mini` are each their own family. The catalog ID you select and
+the family actually sent to the backend are therefore not always the same
+string; `MODEL_MAP` in `lib/request/helpers/model-map.ts` is the authoritative
+mapping.
 
 This normalization is why legacy aliases and snapshot-like IDs can still route to a stable family while preserving the user-facing config surface. GPT-5.6 tiers also trigger the responses-lite request shape after normalization.
 
@@ -220,6 +228,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `fastSessionMaxInputItems` | `30` | `CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS` | Max input items kept in fast mode |
 | `rotationStrategy` | `hybrid` | `CODEX_AUTH_ROTATION_STRATEGY` | `hybrid`, `sticky`, or `round-robin` account selection |
 | `modelAccountPools` | `{}` | (file only) | Preferred stable account IDs per effective model |
+| `modelAccountPoolModes` | `{}` | (file only) | Per-model `preferred` or `strict` pool policy |
 | `retryProfile` | `balanced` | `CODEX_AUTH_RETRY_PROFILE` | `conservative` / `balanced` / `aggressive` |
 | `retryBudgetOverrides` | `{}` | (file only) | Per-class budget overrides |
 | `retryAllAccountsRateLimited` | `true` | `CODEX_AUTH_RETRY_ALL_RATE_LIMITED` | Wait/retry when every account is limited |
@@ -232,6 +241,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `tokenRefreshSkewMs` | `60000` | `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS` | Refresh tokens this many ms before expiry |
 | `rateLimitToastDebounceMs` | `60000` | `CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS` | Debounce rate-limit toasts |
 | `toastDurationMs` | `5000` | `CODEX_AUTH_TOAST_DURATION_MS` | Toast visibility duration |
+| `accountToasts` | `true` | `CODEX_AUTH_ACCOUNT_TOASTS` | Gates only the informational "Using \<account\> (N/N)" selection toast; warning/error toasts are unaffected |
 | `perProjectAccounts` | `true` | `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | Project-scoped account pools |
 | `sessionRecovery` | `true` | `CODEX_AUTH_SESSION_RECOVERY` | Auto-recover common API errors |
 | `autoResume` | `true` | `CODEX_AUTH_AUTO_RESUME` | Auto-resume after thinking-block recovery |
@@ -254,23 +264,27 @@ Business-seat identities:
   "modelAccountPools": {
     "gpt-5.6-sol": ["org-example-account-id"],
     "gpt-5.5": ["org-another-account-id"]
+  },
+  "modelAccountPoolModes": {
+    "gpt-5.6-sol": "strict"
   }
 }
 ```
 
 The request pipeline resolves the pool after model normalization. All rotation
 strategies restrict selection to healthy accounts in the preferred pool while
-one is available. If the configured IDs are unknown or every preferred account
-is disabled, cooling down, rate-limited, or locally depleted, selection falls
-back to the general account pool. Empty lists and unmapped models use the
-general pool directly.
+one is available. `modelAccountPoolModes` defaults each mapping to `preferred`,
+which falls back to the general pool when the mapping is unavailable. A
+`strict` mapping never leaves its configured accounts and fails immediately.
+Empty lists and unmapped models use the general pool directly.
 
 `codex-pool` is the supported mutation surface. It accepts 1-based account
 numbers for `set`, `add`, and `remove`, but resolves and atomically persists
 stable identities. Business members that share one workspace are persisted as
 distinct seat keys derived from `accountId` and `accountUserId`. Legacy raw
 `accountId` entries remain supported and match every seat in that workspace;
-the next mutation canonicalizes known entries. `clear` removes a model mapping, and every mutation
+the next mutation canonicalizes known entries. `set-mode` switches between `preferred` and `strict`,
+`clear` removes a model mapping and its mode, and every mutation
 supports a dry-run preview. Writes preserve unrelated raw config fields and
 refuse to replace malformed JSON or an invalid existing pool.
 
@@ -282,7 +296,7 @@ the tool does not automatically prune them because they may be valid elsewhere.
 
 Use these commands when validating config fields.
 
-### Compact modern (default install)
+### Compact modern (`--modern` install)
 
 ```bash
 opencode debug config
@@ -301,7 +315,7 @@ ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-5.5-mediu
 Important behavior:
 
 - `opencode debug config` shows merged config-defined models and variants.
-- Default compact installs expose base OAuth entries such as `gpt-5.5`, `gpt-5.5-fast`, and `gpt-5.6-sol`.
+- Compact modern (`--modern`) installs expose base OAuth entries such as `gpt-5.5`, `gpt-5.5-fast`, and `gpt-5.6-sol`. The default plugin-only install writes no catalog, so `gpt-5.5-fast` and the `--variant` presets are unavailable until you install one.
 - Bare `openai/gpt-5.5` works with `--variant=medium` on compact modern installs.
 - Explicit IDs such as `openai/gpt-5.5-medium` require `--full` or `--legacy` unless you added them manually.
 - Do not use `gpt-5.5-medium` for verification unless the full/legacy catalog is installed.
@@ -337,4 +351,4 @@ These fields are updated by `codex-label`, `codex-tag`, and `codex-note`.
 
 - [CONFIG_FLOW.md](./CONFIG_FLOW.md)
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
-- [../../docs/configuration.md](../../configuration.md)
+- [Public configuration reference](../configuration.md)

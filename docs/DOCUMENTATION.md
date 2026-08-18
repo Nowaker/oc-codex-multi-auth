@@ -26,18 +26,13 @@ docs/
 ├── faq.md                              # short common answers
 ├── privacy.md                          # data handling notes
 ├── OPENCODE_PR_PROPOSAL.md             # upstream OpenCode proposal notes
-├── development/
-│   ├── ARCHITECTURE.md                 # technical design and current module/docs layout
-│   ├── GITHUB_DISCOVERABILITY.md       # repository description, topics, and search terms
-│   ├── CONFIG_FIELDS.md                # config field semantics
-│   ├── CONFIG_FLOW.md                  # config resolution internals
-│   ├── TESTING.md                      # testing strategy and commands
-│   └── TUI_PARITY_CHECKLIST.md         # auth dashboard UI parity checks
-└── audits/                             # HISTORICAL review archive (not live product contract)
-    ├── INDEX.md
-    ├── 01-executive-summary.md ... 16-verdict.md
-    ├── _findings/                      # T01 through T16 detailed findings
-    └── _meta/                          # audit rubric, ledger, environment, verification
+└── development/
+    ├── ARCHITECTURE.md                 # technical design and current module/docs layout
+    ├── GITHUB_DISCOVERABILITY.md       # repository description, topics, and search terms
+    ├── CONFIG_FIELDS.md                # config field semantics
+    ├── CONFIG_FLOW.md                  # config resolution internals
+    ├── TESTING.md                      # testing strategy and commands
+    └── TUI_PARITY_CHECKLIST.md         # auth dashboard UI parity checks
 ```
 
 ## config/ (copy-paste templates)
@@ -47,9 +42,16 @@ docs/
 - `config/minimal-opencode.json` - minimal debug template
 - `config/README.md` - template-selection guide and install modes
 
+## Nested agent guides
+
+- `lib/AGENTS.md` - runtime module map
+- `lib/tools/AGENTS.md` - per-tool factory pattern for the `codex-*` registry
+- `test/AGENTS.md` - test-suite conventions
+
 ## Notes
 
 - `dist/` is build output and not a documentation source of truth.
-- `tmp*` files are release scratch artifacts and not part of user docs.
-- `docs/audits/` is retained as a **historical** audit snapshot; verify current behavior against user guides, development docs, and tests.
 - For user-facing guidance, start with `README.md`, `docs/getting-started.md`, `docs/tools-and-cli.md`, or `docs/architecture.md`.
+- Documentation claims that mirror runtime behavior (tool counts, config keys,
+  model catalog sizes, storage paths, internal links) are pinned by
+  `test/doc-parity.test.ts`. Update the docs and that test together.

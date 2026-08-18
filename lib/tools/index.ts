@@ -11,7 +11,7 @@
  * `lib/tools/`. The plugin entrypoint wires the shared context once and
  * exposes the returned registry on the OpenCode plugin surface.
  *
- * See `docs/audits/07-refactoring-plan.md#rc-1` and `lib/tools/AGENTS.md`.
+ * See `lib/tools/AGENTS.md` for the per-tool factory pattern.
  */
 
 import type {

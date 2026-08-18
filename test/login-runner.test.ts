@@ -14,6 +14,7 @@ import {
 } from "../lib/auth/login-runner.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
 import { loadAccounts, setStoragePathDirect } from "../lib/storage.js";
+import { JWT_CLAIM_PATH } from "../lib/constants.js";
 
 function createTokenResult(
 	accountId: string,
@@ -90,6 +91,76 @@ describe("login-runner persistAccountPool", () => {
 		// Case-insensitive email index => merged into the existing entry, not appended.
 		expect(second?.accounts).toHaveLength(1);
 		expect(second?.accounts[0]?.refreshToken).toBe("refresh-new");
+	});
+
+	// Issue #213: a blank scope reaching storage is indistinguishable from
+	// "granted nothing" at load time, and would disable the account.
+	it("never persists a blank oauthScope for a fresh login", async () => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: jwtWithEmail("user@example.com"),
+					refresh: "refresh-blank-scope",
+					expires: Date.now() + 60_000,
+					scope: "   ",
+				},
+			],
+			false,
+		);
+
+		const loaded = await loadAccounts();
+		expect(loaded?.accounts).toHaveLength(1);
+		expect(loaded?.accounts[0]?.oauthScope).toBeUndefined();
+	});
+
+	it("does not let a blank scope overwrite a stored one on re-login", async () => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: jwtWithEmail("user@example.com"),
+					refresh: "refresh-scoped",
+					expires: Date.now() + 60_000,
+					scope: "openid profile email offline_access",
+				},
+			],
+			false,
+		);
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: jwtWithEmail("user@example.com"),
+					refresh: "refresh-scoped-2",
+					expires: Date.now() + 60_000,
+					scope: "",
+				},
+			],
+			false,
+		);
+
+		const loaded = await loadAccounts();
+		expect(loaded?.accounts).toHaveLength(1);
+		expect(loaded?.accounts[0]?.oauthScope).toBe("openid profile email offline_access");
+	});
+
+	it("normalizes a padded scope before persisting it", async () => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: jwtWithEmail("user@example.com"),
+					refresh: "refresh-padded",
+					expires: Date.now() + 60_000,
+					scope: "  openid   profile\temail offline_access  ",
+				},
+			],
+			false,
+		);
+
+		const loaded = await loadAccounts();
+		expect(loaded?.accounts[0]?.oauthScope).toBe("openid profile email offline_access");
 	});
 
 	it("keeps two genuinely distinct emails as separate accounts (control)", async () => {
@@ -399,14 +470,14 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 	});
 });
 
-describe("login-runner Business workspace members", () => {
+describe("login-runner account and quota identities", () => {
 	let testDir: string;
 	let storagePath: string;
 
 	beforeEach(async () => {
 		testDir = join(
 			tmpdir(),
-			`login-runner-business-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+			`login-runner-identity-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
 		storagePath = join(testDir, "oc-codex-multi-auth-accounts.json");
 		await fs.mkdir(testDir, { recursive: true });
@@ -425,7 +496,7 @@ describe("login-runner Business workspace members", () => {
 		return `${b64({ alg: "none" })}.${b64(payload)}.sig`;
 	};
 
-	const accessTokenFor = (
+	const businessAccessTokenFor = (
 		chatgptAccountId: string,
 		accountUserId: string,
 		email: string,
@@ -448,7 +519,7 @@ describe("login-runner Business workspace members", () => {
 				[
 					{
 						type: "success",
-						access: accessTokenFor("business-account", memberId, email),
+						access: businessAccessTokenFor("business-account", memberId, email),
 						refresh,
 						expires: Date.now() + 60_000,
 					},
@@ -481,6 +552,174 @@ describe("login-runner Business workspace members", () => {
 		expect(stored?.accounts.map((account) => account.refreshToken)).toEqual([
 			"refresh-owner-new",
 			"refresh-invited",
+		]);
+	});
+
+	/** An access token that names one ChatGPT account, the unit the backend meters. */
+	const accessTokenFor = (chatgptAccountId: string): string =>
+		encodeJwt({ [JWT_CLAIM_PATH]: { chatgpt_account_id: chatgptAccountId } });
+
+	/**
+	 * An id_token from a login with `id_token_add_organizations=true`: it lists
+	 * every organization the Apple ID belongs to, not just the active one.
+	 */
+	const idTokenFor = (
+		organizations: Array<Record<string, unknown>>,
+		extra: Record<string, unknown> = {},
+	): string => encodeJwt({ [JWT_CLAIM_PATH]: { organizations, ...extra } });
+
+	it("persists the token account, not one entry per organization", () => {
+		const selection = resolveAccountSelection({
+			type: "success",
+			access: accessTokenFor("chatgpt-team-account"),
+			refresh: "refresh-team",
+			expires: Date.now() + 60_000,
+			idToken: idTokenFor([
+				{
+					organization_id: "org-acme",
+					name: "Acme",
+					is_default: true,
+					is_personal: false,
+				},
+				{
+					organization_id: "org-personal",
+					name: "Personal",
+					is_personal: true,
+				},
+			]),
+		});
+
+		// Two organizations, one OAuth token, therefore one quota pool.
+		expect(selection.variantsForPersistence).toHaveLength(1);
+		expect(selection.variantsForPersistence[0]).toBe(selection.primary);
+		expect(selection.primary.accountIdOverride).toBe("chatgpt-team-account");
+		expect(selection.primary.accountIdSource).toBe("token");
+		// The active workspace still supplies the name and org id.
+		expect(selection.primary.organizationIdOverride).toBe("org-acme");
+		expect(selection.primary.accountLabel).toBe("Acme [id:ccount]");
+	});
+
+	it("gives each workspace login its own entry, token and quota", async () => {
+		// The #226 repro: one Apple ID, two workspace subscriptions, one
+		// `auth login` per workspace.
+		await persistAccountPool(
+			[
+				resolveAccountSelection({
+					type: "success",
+					access: accessTokenFor("account-team"),
+					refresh: "refresh-team",
+					expires: Date.now() + 60_000,
+					idToken: idTokenFor([
+						{ organization_id: "org-acme", name: "Acme", is_default: true },
+					]),
+				}).primary,
+			],
+			false,
+		);
+		await persistAccountPool(
+			[
+				resolveAccountSelection({
+					type: "success",
+					access: accessTokenFor("account-plus"),
+					refresh: "refresh-plus",
+					expires: Date.now() + 60_000,
+					idToken: idTokenFor([
+						{ organization_id: "org-solo", name: "Solo", is_default: true },
+					]),
+				}).primary,
+			],
+			false,
+		);
+
+		const stored = await loadAccounts();
+		expect(stored?.accounts).toHaveLength(2);
+		// Distinct ChatGPT account ids are what make these distinct quota pools;
+		// distinct refresh tokens are what stop the second login overwriting the
+		// first.
+		expect(stored?.accounts.map((account) => account.accountId)).toEqual([
+			"account-team",
+			"account-plus",
+		]);
+		expect(stored?.accounts.map((account) => account.refreshToken)).toEqual([
+			"refresh-team",
+			"refresh-plus",
+		]);
+	});
+
+	it("re-logging in under the same workspace updates in place", async () => {
+		for (const refresh of ["refresh-first", "refresh-second"]) {
+			await persistAccountPool(
+				[
+					resolveAccountSelection({
+						type: "success",
+						access: accessTokenFor("account-team"),
+						refresh,
+						expires: Date.now() + 60_000,
+						idToken: idTokenFor([
+							{ organization_id: "org-acme", name: "Acme", is_default: true },
+						]),
+					}).primary,
+				],
+				false,
+			);
+		}
+
+		const stored = await loadAccounts();
+		expect(stored?.accounts).toHaveLength(1);
+		expect(stored?.accounts[0]?.refreshToken).toBe("refresh-second");
+	});
+
+	it("falls back to the id_token account when the access token carries no account id", () => {
+		const selection = resolveAccountSelection({
+			type: "success",
+			access: encodeJwt({ [JWT_CLAIM_PATH]: {} }),
+			refresh: "refresh-idtoken",
+			expires: Date.now() + 60_000,
+			idToken: encodeJwt({
+				[JWT_CLAIM_PATH]: {
+					chatgpt_account_id: "id-token-account",
+					organizations: [
+						{ organization_id: "org-acme", name: "Acme", is_default: true },
+					],
+				},
+			}),
+		});
+
+		expect(selection.variantsForPersistence).toHaveLength(1);
+		expect(selection.primary.accountIdOverride).toBe("id-token-account");
+		expect(selection.primary.accountIdSource).toBe("id_token");
+	});
+
+	it("still persists two records that share a refresh token but differ by accountId", async () => {
+		// Guards the persistAccountPool dedup path directly. resolveAccountSelection
+		// no longer emits shared-token variants, but stored pools written before
+		// this change - or by an explicit multi-record persist - must not collapse.
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: accessTokenFor("account-one"),
+					refresh: "refresh-shared",
+					expires: Date.now() + 60_000,
+					accountIdOverride: "account-one",
+					accountIdSource: "token",
+				},
+				{
+					type: "success",
+					access: accessTokenFor("account-two"),
+					refresh: "refresh-shared",
+					expires: Date.now() + 60_000,
+					accountIdOverride: "account-two",
+					accountIdSource: "token",
+				},
+			],
+			false,
+		);
+
+		const stored = await loadAccounts();
+		expect(stored?.accounts.map((account) => account.accountId).sort()).toEqual([
+			"account-one",
+			"account-two",
 		]);
 	});
 });

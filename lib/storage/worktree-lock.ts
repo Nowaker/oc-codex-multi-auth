@@ -28,8 +28,8 @@
  * but matches the audit requirement to "not block" — the worst case is a
  * warning the user can dismiss.
  *
- * See `docs/audits/08-feature-recommendations.md` and
- * `docs/audits/13-phased-roadmap.md#phase-4-f2` for background.
+ * Guards against two worktrees of the same repository racing on one
+ * account file.
  */
 
 import { promises as fs } from "node:fs";

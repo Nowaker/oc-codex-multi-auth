@@ -48,12 +48,13 @@ That file controls plugin behavior such as retry policy, rotation strategy, begi
 `scripts/install-oc-codex-multi-auth.js` performs these steps:
 
 1. Load the selected template set:
-   - default / `--modern`: `config/opencode-modern.json` (compact 12 bases / 53 variants)
+   - default / `--plugin-only`: preserve `provider.openai`
+   - `--modern`: `config/opencode-modern.json` (compact 12 bases / 53 variants)
    - `--full`: modern bases merged with `config/opencode-legacy.json` explicit entries
    - `--legacy`: `config/opencode-legacy.json` only (53 explicit IDs)
-2. Back up an existing `~/.config/opencode/opencode.json`.
+2. Back up an existing `~/.config/opencode/opencode.json` only when the merged result changes.
 3. Normalize the plugin list so it ends with plain `oc-codex-multi-auth`.
-4. Replace `provider.openai` with the selected shipped template block.
+4. Merge `provider.openai` with the selected shipped template block; `--plugin-only` skips this step entirely.
 5. Enable the TUI plugin in `~/.config/opencode/tui.json`.
 6. Clear the cached OpenCode plugin copy under `~/.cache/opencode/` unless `--no-cache-clear`.
 
@@ -61,15 +62,19 @@ Additional flags:
 
 | Flag | Effect |
 |------|--------|
-| `--dry-run` | Print planned actions without writing |
+| `--dry-run` | Print changed config paths without values or writes |
 | `--no-cache-clear` | Skip OpenCode plugin cache cleanup |
+| `--plugin-only` | Explicit alias for default plugin/TUI registration without changing `provider.openai` |
+| `update [--dry-run]` | Clear managed package caches without reading or writing OpenCode config |
 | standalone first arg | Run CLI without install: `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm` |
 
 Important detail:
 
 - The installer intentionally writes the plugin entry as `oc-codex-multi-auth`, not `oc-codex-multi-auth@latest`.
-- The default install mode uses the compact modern base-model template so the TUI model picker shows real OAuth model families and leaves reasoning depth to the variant picker.
+- The default install mode only manages plugin entries; catalog installation is explicit.
+- `--modern` uses the compact base-model template so the TUI model picker shows real OAuth model families and leaves reasoning depth to the variant picker.
 - `--full` merges the modern base-model template with the explicit legacy preset entries for scripts that require direct selector IDs.
+- `update` returns before template loading and config parsing, so even malformed user config is left untouched.
 
 ## Shipped Template Structure
 
@@ -107,11 +112,16 @@ gpt-5-codex
 
 ### Default installer mode
 
-The default installer mode writes:
+The default installer mode writes only:
 
-- the 12 modern base model entries from `config/opencode-modern.json`
+- the `oc-codex-multi-auth` entry in OpenCode's plugin list
+- the `oc-codex-multi-auth` entry in the TUI plugin list
 
-That compact install mode keeps the OpenCode TUI model picker focused on actual OAuth model families. Reasoning presets are selected through the separate variant picker.
+It preserves `provider.openai` exactly.
+
+### Modern installer mode
+
+`--modern` writes the 12 modern base model entries from `config/opencode-modern.json`. Reasoning presets are selected through the separate variant picker.
 
 Example shape:
 
@@ -148,7 +158,7 @@ Example shape:
 }
 ```
 
-Default install uses base model IDs plus variants:
+Modern install uses base model IDs plus variants:
 
 ```bash
 opencode run "task" --model=openai/gpt-5.5 --variant=medium
@@ -221,7 +231,7 @@ ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-5.6-sol -
 Important runtime behavior:
 
 - `opencode debug config` shows merged provider models from your config.
-- The default install shows compact OAuth base entries such as `gpt-5.5`, `gpt-5.5-fast`, and `gpt-5.6-sol`.
+- `--modern` shows compact OAuth base entries such as `gpt-5.5`, `gpt-5.5-fast`, and `gpt-5.6-sol`.
 - `--full` additionally shows explicit entries such as `gpt-5.5-medium` / `gpt-5.5-fast-medium` / `gpt-5.6-sol-high`.
 - Compact verification should use `--model=openai/gpt-5.5 --variant=medium`, not `gpt-5.5-medium`, unless `--full` or `--legacy` was installed.
 

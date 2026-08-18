@@ -53,8 +53,9 @@ describe("contract: OpenAI OAuth token endpoint", () => {
 		});
 
 		// Production code derives `expires` as `Date.now() + expires_in * 1000`
-		// (see lib/auth/auth.ts:111,179). Guard against the field becoming a
-		// string ("3600") or ms-based without a coordinated code change.
+		// in both `exchangeAuthorizationCode` and `refreshAccessToken`
+		// (lib/auth/auth.ts). Guard against the field becoming a string
+		// ("3600") or ms-based without a coordinated code change.
 		expect(typeof parsed.data.expires_in).toBe("number");
 		expect(parsed.data.expires_in).toBeGreaterThan(0);
 	});
@@ -70,8 +71,9 @@ describe("contract: OpenAI OAuth token endpoint", () => {
 			);
 		}
 
-		// These are the exact fields the production auth flow reads
-		// (lib/auth/auth.ts:109-112 + :177-180).
+		// These are the exact fields the production auth flow reads when it
+		// builds a `TokenResult`, in both `exchangeAuthorizationCode` and
+		// `refreshAccessToken` (lib/auth/auth.ts).
 		expect(parsed.access_token.length).toBeGreaterThan(0);
 		expect(parsed.expires_in).toBeGreaterThan(0);
 	});
@@ -91,10 +93,11 @@ describe("contract: OpenAI OAuth token endpoint", () => {
 
 	it("accepts a refresh response that omits refresh_token (rotation-skip case)", () => {
 		// The real OAuth server returns `refresh_token` on initial exchange but
-		// may omit it on some refresh responses. lib/auth/auth.ts:169 handles
-		// that explicitly by reusing the existing refresh token — the schema
-		// must therefore allow `refresh_token` to be optional. This case is
-		// part of the contract.
+		// may omit it on some refresh responses. `refreshAccessToken`
+		// (lib/auth/auth.ts) handles that explicitly via
+		// `json.refresh_token ?? refreshToken`, reusing the existing refresh
+		// token — the schema must therefore allow `refresh_token` to be
+		// optional. This case is part of the contract.
 		const refreshOnly = {
 			access_token: "FAKE_REFRESHED_ACCESS_TOKEN",
 			token_type: "Bearer",

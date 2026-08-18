@@ -5,7 +5,7 @@
  * role of `BaseError`: every subclass inherits `code: string`, `cause?: unknown`,
  * optional `context`, stack capture, and a stable `name`.
  *
- * Consolidated in RC-3 (docs/audits/07-refactoring-plan.md#rc-3):
+ * Consolidated error surface:
  * - `StorageError` moved here from `lib/storage/errors.ts` (that path stays as
  *   a thin re-export so existing imports keep working).
  * - `CircuitOpenError` moved here from `lib/circuit-breaker.ts` (same re-export
@@ -38,6 +38,7 @@ export const ErrorCode = {
 	PROMPT_ERROR: "CODEX_PROMPT_ERROR",
 	REQUEST_ERROR: "CODEX_REQUEST_ERROR",
 	CONFIG_ERROR: "CODEX_CONFIG_ERROR",
+	CONFIG_LOCK_CONTENTION: "CODEX_CONFIG_LOCK_CONTENTION",
 } as const;
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -309,12 +310,37 @@ export class RequestError extends CodexError {
  * input, bad format flags, missing required options).
  */
 export class ConfigError extends CodexError {
-	override readonly name = "ConfigError";
+	override readonly name: string = "ConfigError";
 
 	constructor(message: string, options?: CodexErrorOptions) {
 		super(message, {
 			...options,
 			code: options?.code ?? ErrorCode.CONFIG_ERROR,
 		});
+	}
+}
+
+/**
+ * Another process currently holds the plugin configuration lock.
+ *
+ * Deliberately NOT a {@link ConfigError}: that class means "the user's
+ * configuration is wrong" (missing TTY, malformed CLI input, bad format flags),
+ * and any handler catching it to print "fix your configuration" and stop
+ * retrying would give exactly the wrong advice for a condition that resolves on
+ * its own. It sits with the transient family instead and carries `retryable`
+ * the same way {@link CodexNetworkError} does.
+ */
+export class ConfigLockContentionError extends CodexError {
+	override readonly name = "ConfigLockContentionError";
+	readonly path: string;
+	readonly retryable = true;
+
+	constructor(path: string, cause?: unknown) {
+		super(`Plugin configuration at ${path} is locked by another process.`, {
+			code: ErrorCode.CONFIG_LOCK_CONTENTION,
+			cause,
+			context: { path },
+		});
+		this.path = path;
 	}
 }

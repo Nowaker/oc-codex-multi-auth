@@ -1,8 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-Generated: 2026-07-18
 Branch: main
-Package version: 6.9.1
+Package version: see `package.json` (`version` field).
 
 ## OVERVIEW
 
@@ -18,7 +17,7 @@ Package version: 6.9.1
 ├── test/                 # vitest suites (see test/AGENTS.md)
 ├── scripts/              # installer, standalone CLI, build, audit, and validation helpers
 ├── config/               # opencode.json examples (modern/full/legacy/minimal)
-├── docs/                 # public docs, architecture, audits, maintainer guides
+├── docs/                 # public docs, architecture, maintainer guides
 ├── skills/               # repo-local setup skill
 ├── assets/               # static assets
 ├── .codex-plugin/        # plugin metadata for Codex skill/plugin tooling
@@ -61,7 +60,7 @@ Package version: 6.9.1
 - Canonical package/plugin name is `oc-codex-multi-auth`.
 - The npm bin is an installer and thin standalone CLI, not a long-running runtime daemon.
 - OpenCode loads the provider plugin and TUI plugin from built package exports.
-- Default installer mode writes compact modern OpenCode config (12 bases / 53 variants); `--full` adds 53 explicit selector IDs; `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
+- Default installer mode only registers plugin entries and preserves `provider.openai`; `--modern` writes compact config (12 bases / 53 variants), `--full` adds 53 explicit selector IDs, and `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
 - Runtime requests preserve Codex stateless requirements: `store: false` and `reasoning.encrypted_content`.
 - GPT-5.6 uses responses-lite shaping and default client identity `opencode`; other models default to `codex_cli_rs`.
 - Account selection uses `rotationStrategy` (`hybrid` default) with health scoring in `lib/rotation.ts`.

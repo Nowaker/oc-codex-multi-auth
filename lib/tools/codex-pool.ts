@@ -2,10 +2,15 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import {
+	getModelAccountPoolMode,
 	loadPluginConfig,
+	type ModelAccountPoolMode,
+	type ModelAccountPoolMutationResult,
 	updateModelAccountPool,
 	type ModelAccountPoolMutation,
 } from "../config.js";
+import { ConfigLockContentionError, ErrorCode } from "../errors.js";
+import { logWarn } from "../logger.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
 import { loadAccounts, type AccountStorageV3 } from "../storage.js";
 import {
@@ -22,6 +27,7 @@ type CodexPoolArgs = {
 	model?: string;
 	accounts?: number[];
 	dryRun?: boolean;
+	poolMode?: string;
 	format?: string;
 	includeSensitive?: boolean;
 };
@@ -32,12 +38,22 @@ function normalizePoolAction(action?: string): CodexPoolAction {
 		action === "set" ||
 		action === "add" ||
 		action === "remove" ||
-		action === "clear"
+		action === "clear" ||
+		action === "set-mode"
 	) {
 		return action;
 	}
 	throw new Error(
-		`Invalid action "${action}". Expected "status", "set", "add", "remove", or "clear".`,
+		`Invalid action "${action}". Expected "status", "set", "add", "remove", "clear", or "set-mode".`,
+	);
+}
+
+function normalizePoolMode(mode?: string): ModelAccountPoolMode | undefined {
+	const normalized = mode?.trim().toLowerCase();
+	if (!normalized) return undefined;
+	if (normalized === "preferred" || normalized === "strict") return normalized;
+	throw new Error(
+		`Invalid pool mode "${mode}". Expected "preferred" or "strict".`,
 	);
 }
 
@@ -86,8 +102,10 @@ function buildPoolSnapshot(
 	storage: AccountStorageV3 | null,
 	ctx: ToolContext,
 	includeSensitive: boolean,
+	poolMode: ModelAccountPoolMode,
 ): {
 	model: string;
+	poolMode: ModelAccountPoolMode;
 	configuredCount: number;
 	accounts: Record<string, unknown>[];
 	unresolvedCount: number;
@@ -127,6 +145,7 @@ function buildPoolSnapshot(
 
 	return {
 		model,
+		poolMode,
 		configuredCount: accountIds.length,
 		accounts,
 		unresolvedCount: unresolvedAccountIds.length,
@@ -143,7 +162,7 @@ function renderPoolStatusText(
 	const lines = ["Model account pools"];
 	const maskEmail = ctx.resolveMaskEmail();
 	for (const pool of pools) {
-		lines.push("", pool.model);
+		lines.push("", `${pool.model} [${pool.poolMode}]`);
 		for (const identity of pool.accounts) {
 			const index = identity.zeroBasedIndex;
 			if (typeof index !== "number") continue;
@@ -173,7 +192,7 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 			action: tool.schema
 				.string()
 				.optional()
-				.describe('"status" (default), "set", "add", "remove", or "clear".'),
+				.describe('"status" (default), "set", "add", "remove", "clear", or "set-mode".'),
 			model: tool.schema
 				.string()
 				.optional()
@@ -186,6 +205,10 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 				.boolean()
 				.optional()
 				.describe("Preview a mutation without changing configuration."),
+			poolMode: tool.schema
+				.string()
+				.optional()
+				.describe('Pool routing mode used by "set-mode": "preferred" or "strict".'),
 			format: tool.schema
 				.string()
 				.optional()
@@ -199,11 +222,13 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 			const action = normalizePoolAction(args.action);
 			const format = normalizeToolOutputFormat(args.format);
 			const model = normalizeModel(args.model);
+			const poolMode = normalizePoolMode(args.poolMode);
 			const storage = await loadAccounts();
 			const includeSensitive = args.includeSensitive === true;
 
 			if (action === "status") {
-				const configuredPools = loadPluginConfig().modelAccountPools ?? {};
+				const config = loadPluginConfig();
+				const configuredPools = config.modelAccountPools ?? {};
 				const entries = Object.entries(configuredPools).filter(
 					([configuredModel]) =>
 						model === undefined || configuredModel.trim().toLowerCase() === model,
@@ -215,6 +240,7 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 						storage,
 						ctx,
 						includeSensitive,
+						getModelAccountPoolMode(config, configuredModel),
 					),
 				);
 				if (format === "json") {
@@ -227,25 +253,88 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 			}
 
 			if (!model) throw new Error(`Model is required for action "${action}".`);
+			if (action === "set-mode" && !poolMode) {
+				throw new Error('poolMode is required for action "set-mode".');
+			}
+			if (action !== "set-mode" && poolMode) {
+				throw new Error('poolMode is only valid for action "set-mode".');
+			}
 			const accountIds =
-				action === "clear"
+				action === "clear" || action === "set-mode"
 					? []
 					: resolveAccountIds(storage, args.accounts);
-			const result = await updateModelAccountPool(model, action, accountIds, {
-				dryRun: args.dryRun,
-				...(action === "add" || action === "remove"
-					? {
-							normalizeExistingAccountIds: (ids: readonly string[]) =>
-								expandLegacyModelPoolKeys(ids, storage?.accounts ?? []),
-						}
-					: {}),
-			});
+			let result: ModelAccountPoolMutationResult;
+			try {
+				result = await updateModelAccountPool(model, action, accountIds, {
+					dryRun: args.dryRun,
+					poolMode,
+					...(action === "add" || action === "remove"
+						? {
+								normalizeExistingAccountIds: (ids: readonly string[]) =>
+									expandLegacyModelPoolKeys(ids, storage?.accounts ?? []),
+							}
+						: {}),
+				});
+			} catch (error) {
+				if (!(error instanceof ConfigLockContentionError)) throw error;
+
+				const message =
+					"The plugin configuration is locked by another process. No change was made — retry shortly.";
+				logWarn("codex-pool could not acquire the plugin configuration lock", {
+					action,
+					model,
+				});
+				if (format === "json") {
+					// Mirror the success payload's shape. Dropping `pool`,
+					// `previousPoolMode` and friends makes every consumer that reads
+					// `pool.accounts` throw a TypeError - a harder failure than the raw
+					// lock error this degrade path replaced. Nothing was mutated, so the
+					// pool currently on disk is the accurate answer.
+					const config = loadPluginConfig();
+					const currentAccountIds = Array.from(
+						new Set(
+							Object.entries(config.modelAccountPools ?? {})
+								.filter(
+									([configuredModel]) =>
+										configuredModel.trim().toLowerCase() === model,
+								)
+								.flatMap(([, ids]) => ids ?? []),
+						),
+					);
+					const currentPoolMode = getModelAccountPoolMode(config, model);
+					return renderJsonOutput({
+						action,
+						model,
+						changed: false,
+						applied: false,
+						dryRun: args.dryRun === true,
+						restartRequired: false,
+						previousConfiguredCount: currentAccountIds.length,
+						previousPoolMode: currentPoolMode,
+						pool: buildPoolSnapshot(
+							model,
+							currentAccountIds,
+							storage,
+							ctx,
+							includeSensitive,
+							currentPoolMode,
+						),
+						// Same identifier the class and the logs use, so a caller that
+						// greps for what it saw in tool JSON actually finds something.
+						error: ErrorCode.CONFIG_LOCK_CONTENTION,
+						retryable: true,
+						message,
+					});
+				}
+				return `Could not update the account pool for ${model}: ${message}`;
+			}
 			const pool = buildPoolSnapshot(
 				result.model,
 				result.accountIds,
 				storage,
 				ctx,
 				includeSensitive,
+				result.poolMode,
 			);
 			const applied = result.changed && !result.dryRun;
 			const payload = {
@@ -256,6 +345,7 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 				dryRun: result.dryRun,
 				restartRequired: applied,
 				previousConfiguredCount: result.previousAccountIds.length,
+				previousPoolMode: result.previousPoolMode,
 				pool,
 			};
 			if (format === "json") return renderJsonOutput(payload);
@@ -265,6 +355,7 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 				`${verb} model account pool: ${result.model}`,
 				`Previous accounts: ${result.previousAccountIds.length}`,
 				`Current accounts: ${result.accountIds.length}`,
+				`Pool mode: ${result.poolMode}`,
 			];
 			if (applied) lines.push("Restart OpenCode to apply this routing change.");
 			return lines.join("\n");

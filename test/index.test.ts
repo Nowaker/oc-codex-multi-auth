@@ -148,6 +148,7 @@ vi.mock("../lib/config.js", () => ({
 	getPidOffsetEnabled: () => false,
 	getRotationStrategy: () => "hybrid",
 	getModelAccountPool: vi.fn(() => []),
+	getModelAccountPoolMode: vi.fn(() => "preferred"),
 	getFetchTimeoutMs: () => 60000,
 	getStreamStallTimeoutMs: () => 45000,
 	getCodexTuiV2: () => false,
@@ -285,6 +286,13 @@ const mockStorage = {
 	activeIndex: 0,
 	activeIndexByFamily: {} as Record<string, number>,
 };
+
+/** Records every quota-exhaustion block the request path applies (issue #218). */
+const mockQuotaExhaustionCalls: Array<{
+	resetAtMs: number;
+	family: string;
+	model?: string | null;
+}> = [];
 
 const cloneAccount = (account: (typeof mockStorage.accounts)[number]) => structuredClone(account);
 
@@ -427,7 +435,21 @@ vi.mock("../lib/accounts.js", () => {
 			return this.accounts[0] ?? null;
 		}
 
-		getAccountForStrategy() {
+		getAccountForStrategy(
+			_strategy?: string,
+			_family?: string,
+			_model?: string,
+			_options?: unknown,
+			preferredAccountIds: readonly string[] = [],
+			poolMode: "preferred" | "strict" = "preferred",
+		) {
+			const preferred = this.accounts.find(
+				(account) =>
+					account.accountId !== undefined &&
+					preferredAccountIds.includes(account.accountId),
+			);
+			if (preferred) return preferred;
+			if (poolMode === "strict" && preferredAccountIds.length > 0) return null;
 			return this.getCurrentOrNextForFamilyHybrid();
 		}
 
@@ -472,6 +494,15 @@ vi.mock("../lib/accounts.js", () => {
 		markAccountsWithRefreshTokenCoolingDown() { return 1; }
 		markRateLimited() {}
 		markRateLimitedWithReason() {}
+		markQuotaExhausted(
+			_account: unknown,
+			resetAtMs: number,
+			family: string,
+			model?: string | null,
+		) {
+			mockQuotaExhaustionCalls.push({ resetAtMs, family, model });
+			return true;
+		}
 		consumeToken() { return true; }
 		refundToken() {}
 		markSwitched() {}
@@ -729,6 +760,44 @@ describe("OpenAIOAuthPlugin", () => {
 	});
 
 	describe("auth loader", () => {
+		// The loader caches `accountManagerPromise` before awaiting it. A rejected
+		// load therefore parks a rejected promise in that cache, and nothing
+		// clears it on failure — so a transient read error (a momentary Windows
+		// file lock, a partially-written save) keeps failing every later request
+		// until opencode is restarted, long after the cause is gone.
+		it("recovers on the next call when a load fails transiently", async () => {
+			const accountsModule = await import("../lib/accounts.js");
+			const healthyManager = {
+				getAccountCount: () => 1,
+				getSelectionExplainability: () => null,
+				getCurrentOrNextForFamilyHybrid: () => null,
+				getAccountForStrategy: () => null,
+				getMinWaitTimeForFamily: () => 0,
+				hasRefreshToken: () => true,
+				saveToDisk: async () => {},
+			} as unknown as InstanceType<typeof accountsModule.AccountManager>;
+
+			const spy = vi
+				.spyOn(accountsModule.AccountManager, "loadFromDisk")
+				.mockRejectedValueOnce(new Error("EBUSY: storage temporarily locked"))
+				.mockResolvedValue(healthyManager);
+
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			await expect(plugin.auth.loader(getAuth, {})).rejects.toThrow();
+
+			// The transient cause is gone; the next load must be attempted again.
+			const result = await plugin.auth.loader(getAuth, {});
+			expect(result.fetch).toBeDefined();
+			expect(spy).toHaveBeenCalledTimes(2);
+		});
+
 		it("returns SDK config for non-oauth auth when stored accounts exist", async () => {
 			const getAuth = async () => ({ type: "apikey" as const, key: "test" });
 			const result = await plugin.auth.loader(getAuth, {});
@@ -3533,14 +3602,16 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	});
 
 	it.each([
-		{ pool: [], mode: "general", size: 0 },
-		{ pool: ["acc-1"], mode: "preferred", size: 1 },
-		{ pool: ["unavailable-account"], mode: "general-fallback", size: 1 },
+		{ pool: [], policy: "preferred", mode: "general", size: 0 },
+		{ pool: ["acc-1"], policy: "preferred", mode: "preferred", size: 1 },
+		{ pool: ["unavailable-account"], policy: "preferred", mode: "general-fallback", size: 1 },
+		{ pool: ["acc-1"], policy: "strict", mode: "strict", size: 1 },
 	] as const)(
 		"reports $mode account pool routing diagnostics",
-		async ({ pool, mode, size }) => {
+		async ({ pool, policy, mode, size }) => {
 			const configModule = await import("../lib/config.js");
 			vi.mocked(configModule.getModelAccountPool).mockReturnValueOnce([...pool]);
+			vi.mocked(configModule.getModelAccountPoolMode).mockReturnValueOnce(policy);
 			globalThis.fetch = vi.fn().mockResolvedValue(
 				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
 			);
@@ -3564,6 +3635,38 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			});
 		},
 	);
+
+	it("fails immediately when a strict model pool has no selectable account", async () => {
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.getModelAccountPool).mockReturnValueOnce([
+			"unavailable-account",
+		]);
+		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValueOnce("strict");
+		globalThis.fetch = vi.fn();
+
+		const { plugin, sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+		expect(configModule.getModelAccountPoolMode).toHaveBeenCalled();
+		expect(response).toBeInstanceOf(Response);
+		const body = (await response.json()) as {
+			error: { code: string; message: string };
+		};
+
+		expect(response.status).toBe(503);
+		expect(body.error).toMatchObject({
+			code: "strict_pool_unavailable",
+		});
+		expect(body.error.message).toContain("Strict account pool unavailable");
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+
+		const metrics = parseJsonOutput<{
+			routingVisibility: { accountPoolMode: string | null };
+		}>(await plugin.tool["codex-metrics"].execute({ format: "json" }));
+		expect(metrics.routingVisibility.accountPoolMode).toBe("strict-unavailable");
+	});
 
 	it("records TUI quota cache from successful Codex response headers", async () => {
 		const previousStateDir = process.env.OPENCODE_STATE_DIR;
@@ -3632,6 +3735,77 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			}
 			await rm(stateDir, { recursive: true, force: true });
 		}
+	});
+
+	// Issue #218: an account whose weekly window is spent was picked again on
+	// every prompt because nothing consumed the used-percent headers, and the
+	// 429 path collapsed the weekly and 5h resets with Math.min.
+	describe("issue #218: weekly quota exhaustion", () => {
+		const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+		const respondWith = (headers: Record<string, string>, status = 200) => {
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status, headers }),
+			);
+		};
+
+		const sendPrompt = async () => {
+			const { sdk } = await setupPlugin();
+			return sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+		};
+
+		beforeEach(() => {
+			mockQuotaExhaustionCalls.length = 0;
+		});
+
+		it("blocks the account until the weekly reset when it reports 0% left", async () => {
+			const weeklyResetAtSeconds = nowSeconds() + 7 * 24 * 60 * 60;
+			respondWith({
+				"x-codex-primary-used-percent": "40",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-primary-reset-at": String(nowSeconds() + 5 * 60 * 60),
+				"x-codex-secondary-used-percent": "100",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-at": String(weeklyResetAtSeconds),
+			});
+
+			expect((await sendPrompt()).status).toBe(200);
+
+			// The weekly reset wins over the sooner 5h reset: an account whose
+			// weekly quota is gone stays unusable after the 5h window rolls over.
+			expect(mockQuotaExhaustionCalls).toEqual([
+				expect.objectContaining({ resetAtMs: weeklyResetAtSeconds * 1000 }),
+			]);
+		});
+
+		it("leaves an account with quota left in rotation", async () => {
+			respondWith({
+				"x-codex-primary-used-percent": "40",
+				"x-codex-primary-window-minutes": "300",
+				"x-codex-secondary-used-percent": "99",
+				"x-codex-secondary-window-minutes": "10080",
+				"x-codex-secondary-reset-at": String(nowSeconds() + 7 * 24 * 60 * 60),
+			});
+
+			expect((await sendPrompt()).status).toBe(200);
+			expect(mockQuotaExhaustionCalls).toEqual([]);
+		});
+
+		it("ignores a window the plan has switched off", async () => {
+			respondWith({
+				"x-codex-primary-used-percent": "100",
+				"x-codex-primary-window-minutes": "0",
+				"x-codex-primary-reset-at": String(nowSeconds() + 5 * 60 * 60),
+				"x-codex-secondary-used-percent": "12",
+				"x-codex-secondary-window-minutes": "10080",
+			});
+
+			expect((await sendPrompt()).status).toBe(200);
+			expect(mockQuotaExhaustionCalls).toEqual([]);
+		});
 	});
 
 	it("persists the selected account before writing TUI quota snapshots", async () => {
@@ -5087,7 +5261,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts).toHaveLength(1);
 	});
 
-	it("persists distinct organization candidates from a single login while keeping best candidate primary", async () => {
+	it("persists one token-scoped account per login instead of one per organization", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
@@ -5116,32 +5290,22 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
 
-		expect(mockStorage.accounts).toHaveLength(3);
-		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
-			"org-default",
-			"token-personal",
-			"id-secondary",
-		]);
-		expect(mockStorage.accounts.map((account) => account.accountIdSource)).toEqual([
-			"org",
-			"token",
-			"id_token",
-		]);
-		expect(mockStorage.accounts.map((account) => account.accountLabel)).toEqual([
-			"Workspace Alpha [id:fault]",
-			"Token Personal [id:sonal]",
-			"Workspace Beta [id:ndary]",
-		]);
+		// Every candidate shares this login's single OAuth token, so persisting
+		// one entry per organization produced N rows that all drew from the same
+		// quota pool (#226). Only the token-scoped id routes.
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.accountId).toBe("token-personal");
+		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
+		// The selected workspace's name survives, re-suffixed with the id that
+		// actually identifies the entry.
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("Workspace Alpha [id:rsonal]");
+		// organizationId is display/dedupe metadata only - it is not sent as a
+		// header unless CODEX_AUTH_SEND_ORGANIZATION_HEADER=1.
+		expect(mockStorage.accounts[0]?.organizationId).toBe("org-default");
 		expect(mockStorage.activeIndex).toBe(0);
-
-		const persistedOrgIds = mockStorage.accounts
-			.map((account) => account.organizationId)
-			.filter((organizationId): organizationId is string => typeof organizationId === "string");
-		// Personal identities are left intact while team org duplicates are collapsed.
-		expect(persistedOrgIds).toEqual(["org-default", "org-personal", "org-secondary"]);
 	});
 
-	it("keeps non-primary candidates persisted even when best candidate differs", async () => {
+	it("binds the login to the token account even when the best candidate is an organization", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
@@ -5170,17 +5334,15 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
 
 		expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
-			"org-preferred",
 			"token-first",
 		]);
-		expect(mockStorage.accounts[1]?.accountIdSource).toBe("token");
-		expect(mockStorage.accounts.map((account) => account.organizationId)).toEqual([
-			"org-preferred",
-			"org-token",
-		]);
+		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
+		// The preferred workspace still names the entry and supplies its org id.
+		expect(mockStorage.accounts[0]?.organizationId).toBe("org-preferred");
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("Org Preferred [id:-first]");
 	});
 
-	it("preserves duplicate organization candidates when accountId differs", async () => {
+	it("collapses duplicate organization candidates onto the single token account", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
@@ -5219,23 +5381,22 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
 
-		const organizationEntries = mockStorage.accounts.filter(
-			(account) => account.organizationId === "organization-shared",
-		);
-		expect(organizationEntries).toHaveLength(2);
-		const organizationAccountIds = organizationEntries.map((account) => account.accountId).sort();
-		expect(organizationAccountIds).toEqual(["org-variant-a", "org-variant-b"]);
-		expect(mockStorage.accounts).toHaveLength(3);
-		expect(mockStorage.accounts.some((account) => account.accountId === "token-personal")).toBe(true);
+		// Two org rows under one organization are two views of the same
+		// subscription, not two quotas.
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.accountId).toBe("token-personal");
+		expect(mockStorage.accounts[0]?.organizationId).toBe("organization-shared");
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("Org Shared A [id:rsonal]");
 	});
 
-	it("preserves org/no-org shared-refresh entries with different accountId values from a single login", async () => {
+	it("persists a single token-scoped entry when a login yields org and token candidates", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
-		// Simulate a single OAuth login that produces an org candidate + a token candidate.
-		// Both share the same refresh token (same human account).
-		// Since accountId values differ, both should be preserved.
+// Simulate a single OAuth login that produces an org candidate + a token
+		// candidate. They share one refresh token because they are one login, so
+		// they can only ever reach one quota pool - persisting both produced the
+		// duplicate rows with identical quota reported in #226.
 		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
 			type: "success",
 			access: "access-holly",
@@ -5271,13 +5432,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
 
-		// accountId values differ ("org-QA1bZCn6zb57FT6TXLZWMPO3" vs "e4692e53-2f30-42a0-b8df-3a685d3c2a4a")
-		// so both entries should be preserved despite sharing the same refreshToken.
-		expect(mockStorage.accounts).toHaveLength(2);
-		const accountIds = mockStorage.accounts.map((account) => account.accountId);
-		expect(accountIds).toContain("org-QA1bZCn6zb57FT6TXLZWMPO3");
-		expect(accountIds).toContain("e4692e53-2f30-42a0-b8df-3a685d3c2a4a");
-		expect(mockStorage.accounts.every((account) => account.refreshToken === "refresh-holly-shared")).toBe(true);
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.accountId).toBe(
+			"e4692e53-2f30-42a0-b8df-3a685d3c2a4a",
+		);
+		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
+		expect(mockStorage.accounts[0]?.organizationId).toBe(
+			"org-QA1bZCn6zb57FT6TXLZWMPO3",
+		);
+		expect(mockStorage.accounts[0]?.accountLabel).toBe(
+			"Personal (role:owner) [id:3c2a4a]",
+		);
+		expect(mockStorage.accounts[0]?.refreshToken).toBe("refresh-holly-shared");
 	});
 
 	it("updates a unique org-scoped entry when later login lacks organization metadata", async () => {
@@ -5968,7 +6134,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		);
 	});
 
-	it("removes only the deactivated org-scoped workspace during quota-check cleanup", async () => {
+	it("uses model-independent usage for free plans and removes only a deactivated workspace", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const cliModule = await import("../lib/cli.js");
 		const refreshQueueModule = await import("../lib/refresh-queue.js");
@@ -6049,18 +6215,23 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 					headers: { "content-type": "application/json" },
 				});
 			}
-			return new Response("", {
-				status: 200,
-				headers: {
-					"x-codex-primary-used-percent": "20",
-					"x-codex-primary-window-minutes": "180",
-					"x-codex-primary-reset-after-seconds": "900",
-					"x-codex-secondary-used-percent": "10",
-					"x-codex-secondary-window-minutes": "10080",
-					"x-codex-secondary-reset-after-seconds": "86400",
-					"x-codex-plan-type": "plus",
-					"x-codex-active-limit": "40",
+			return new Response(JSON.stringify({
+				plan_type: "free",
+				rate_limit: {
+					primary_window: {
+						used_percent: 20,
+						limit_window_seconds: 18_000,
+						reset_after_seconds: 900,
+					},
+					secondary_window: {
+						used_percent: 10,
+						limit_window_seconds: 604_800,
+						reset_after_seconds: 86_400,
+					},
 				},
+			}), {
+				status: 200,
+				headers: { "content-type": "application/json" },
 			});
 		});
 
@@ -6077,6 +6248,11 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(authResult.instructions).toBe("Authentication cancelled");
 
 		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		for (const [url, init] of vi.mocked(globalThis.fetch).mock.calls) {
+			expect(String(url)).toContain("/wham/usage");
+			expect(init?.method).toBe("GET");
+			expect(init?.body).toBeUndefined();
+		}
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts.some((account) => account.accountId === "workspace-dead")).toBe(false);
 		expect(mockStorage.accounts[0]?.accountId).toBe("workspace-live");

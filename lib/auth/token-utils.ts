@@ -502,6 +502,26 @@ export function getAccountIdCandidates(
 }
 
 /**
+ * Re-point a candidate label at the account id that actually routes requests.
+ *
+ * Candidate labels embed their own `[id:…]` suffix, and for an org candidate
+ * that suffix is the organization id - which the Codex backend ignores when it
+ * meters quota. Swapping in the routing account's suffix keeps the workspace
+ * name a user recognises while identifying the entry the same way every other
+ * surface does.
+ */
+export function relabelCandidateForAccountId(
+	label: string | undefined,
+	accountId: string,
+): string | undefined {
+	if (!label) return undefined;
+	const base = label.replace(/\s*\[id:[^\]]*\]\s*$/, "").trim();
+	return base
+		? `${base} [id:${formatAccountIdSuffix(accountId)}]`
+		: formatTokenCandidateLabel("Workspace", accountId);
+}
+
+/**
  * Determines if accountId should be updated from a token-derived value.
  * We keep org/manual selections stable across refreshes.
  */
@@ -524,6 +544,18 @@ export function resolveRequestAccountId(
 	tokenAccountId: string | undefined,
 ): string | undefined {
 	if (!storedAccountId) return tokenAccountId;
+	// Entries persisted before #226 carry an organization id as their accountId.
+	// The Codex backend meters quota by the `chatgpt-account-id` header and
+	// ignores organization ids outright, so sending one does not fail loudly -
+	// it silently bills the token's default subscription, which is how two
+	// workspace subscriptions collapsed onto a single pool. Prefer the token's
+	// ChatGPT account id, which does route. `manual` is left alone: a
+	// CODEX_AUTH_ACCOUNT_ID override is a deliberate user choice.
+	//
+	// This only redirects the request header. `shouldUpdateAccountIdFromToken`
+	// still reports `false` for org-sourced entries so the *stored* selection
+	// stays stable across refreshes.
+	if (source === "org") return tokenAccountId ?? storedAccountId;
 	if (!shouldUpdateAccountIdFromToken(source, storedAccountId)) {
 		return storedAccountId;
 	}

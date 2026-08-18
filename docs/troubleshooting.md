@@ -13,7 +13,7 @@ If you prefer guided recovery before manual debugging, run:
 ```text
 codex-setup
 codex-doctor
-codex-doctor --fix
+codex-doctor fix=true
 codex-next
 ```
 
@@ -140,6 +140,32 @@ Update your `~/.config/opencode/opencode.json`:
 
 ---
 
+## Concurrent Sessions & Storage
+
+<details>
+<summary><b><code>codex-pool</code> reports that plugin configuration is locked</b></summary>
+
+**Symptoms:**
+- A pool mutation reports `config_locked` with `retryable: true` in JSON output.
+- Text output says the plugin configuration is locked by another process and no change was made.
+
+**Cause:** Another OpenCode process is updating `~/.opencode/openai-codex-auth-config.json`. Pool dry-runs do not acquire this lock. Every non-dry mutation, including a possible no-op, waits for the bounded retry window and is revalidated under the lock so its result cannot rely on a stale preview.
+
+**Solution:** No partial change was applied. Retry the same `codex-pool` action shortly. If contention persists, finish or stop other processes that are actively changing plugin configuration, then retry.
+
+</details>
+
+<details>
+<summary><b><code>Multi-worktree collision detected on account storage</code> warning</b></summary>
+
+This advisory warning means another live process or host is using the same account-storage file. It includes the foreign and local PID, host, and working directory so you can identify the sessions. Reads and writes continue because the worktree lock is intentionally advisory; repeated warnings are throttled to once per minute for each storage path and foreign lock generation.
+
+If account rotation or rate-limit state appears stale, close the duplicate session or ensure each worktree resolves to the intended project storage, then restart OpenCode and inspect the account list. Do not delete a lock belonging to a live process.
+
+</details>
+
+---
+
 ## Authentication Issues
 
 <details open>
@@ -164,7 +190,7 @@ Failed to access Codex API
    opencode auth login
    ```
 
-   Re-auth is required for accounts created before `api.connectors.read` and `api.connectors.invoke` were requested; stale account records are marked inactive until they are refreshed through login.
+   Re-auth is required for accounts whose recorded OAuth scope is explicitly missing one of `openid`, `profile`, `email`, or `offline_access`; those records are marked inactive until they are refreshed through login. Accounts with no recorded scope stay active, and any account marked inactive by this check is restored automatically once a complete scope is known.
 
 2. **Check auth file exists:**
    ```bash
@@ -280,6 +306,47 @@ credentials cannot be reconstructed and require re-login.
 </details>
 
 <details>
+<summary><b>Two workspace subscriptions report the same plan and quota</b></summary>
+
+**Symptoms:**
+
+- One ChatGPT login (one email / Apple ID) holding **two workspace
+  subscriptions** - for example Team and Plus.
+- `codex-limits` reports the same plan and the same percentage for every entry.
+- `codex-switch` to the other account keeps draining the same pool.
+- Logging in again under the other workspace appears to overwrite every entry.
+
+**Cause:** The OAuth flow requests `id_token_add_organizations=true`, so the
+id_token lists every organization the login belongs to. Releases before this
+fix persisted one account entry per organization, but all of those entries
+shared the login's single OAuth token. The Codex backend meters quota by the
+`chatgpt-account-id` header and ignores organization ids, so an entry whose id
+was an organization id silently fell back to the token's default subscription -
+N entries, one pool.
+
+Each workspace subscription is a distinct ChatGPT account with its own
+`chatgpt_account_id` claim, so separate tokens are what produce separate quotas.
+
+**Solutions:**
+
+1. Upgrade to a release containing this fix. One `opencode auth login` now
+   persists exactly one account, bound to the token's ChatGPT account id and
+   labelled with the workspace you selected.
+2. Log in once per workspace: run `opencode auth login`, pick the first
+   workspace, then run it again and pick the second. Each login appends a
+   separate account carrying its own token, so `codex-limits` reports the two
+   subscriptions independently.
+3. **Existing entries are not rewritten.** Accounts persisted by an older
+   release keep their stored organization id. Requests for them are now
+   redirected to the token's ChatGPT account id so they reach a real pool
+   instead of being silently mis-billed, but duplicate rows left over from the
+   old one-entry-per-organization behaviour remain until you remove them. For a
+   clean pool, re-run `opencode auth login`, choose the fresh (not `add`) login
+mode, then add the second workspace.
+
+</details>
+
+<details>
 <summary><b>"All N account(s) failed (server errors or auth issues)"</b></summary>
 
 **Symptoms:**
@@ -309,12 +376,12 @@ credentials cannot be reconstructed and require re-login.
 6. Run guided diagnostics and safe auto-remediation:
    ```text
    codex-doctor
-   codex-doctor --fix
+   codex-doctor fix=true
    ```
 7. If you are onboarding or returning after a long gap, run:
    ```text
    codex-setup
-   codex-setup --wizard
+   codex-setup wizard=true
    codex-next
 ```
 
@@ -353,7 +420,7 @@ opencode run "test" --model=openai/gpt-5-codex-low  # Must match config key
 
 **Note:** `opencode models openai` currently shows only OpenCode's built-in provider catalog. If you add template-defined or custom models, use `opencode debug config` to confirm they were merged into the effective config.
 
-**Selector note:** the default compact install exposes base OAuth families. Prefer:
+**Selector note:** a compact modern (`--modern`) install exposes base OAuth families with the `--variant` presets. The default install writes no catalog, so if a selector below is missing, reinstall with `--modern`. Prefer:
 
 ```bash
 opencode run "test" --model=openai/gpt-5.5 --variant=medium

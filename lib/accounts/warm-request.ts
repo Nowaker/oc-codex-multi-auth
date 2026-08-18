@@ -15,7 +15,16 @@
  */
 
 import { CODEX_BASE_URL } from "../constants.js";
-import { createCodexHeaders } from "../request/fetch-helpers.js";
+import {
+	createCodexHeaders,
+	getUnsupportedCodexModelInfo,
+	resolveUnsupportedCodexFallbackModel,
+	DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN,
+} from "../request/fetch-helpers.js";
+import { getReasoningConfig } from "../request/request-transformer.js";
+import { shapeBodyForModel } from "../request/helpers/responses-lite.js";
+import { GPT_55_MODEL_ID } from "../request/helpers/model-map.js";
+import { sanitizeCodexApiErrorMessage } from "../codex-usage.js";
 import { getCodexInstructions } from "../prompts/codex.js";
 import { parseRateLimitReason } from "./rate-limits.js";
 import type { RequestBody } from "../types.js";
@@ -23,8 +32,59 @@ import { createLogger } from "../logger.js";
 
 const log = createLogger("warm-request");
 
-/** Model used for the warm ping. Mirrors the live quota-probe default. */
-const WARM_MODEL = "gpt-5.4";
+/**
+ * Model used for the warm ping.
+ *
+ * GPT-5.5 is the generally-available anchor the shared fallback chain degrades
+ * *toward* (every 5.6 preview tier lands on it), and it ships in the installer's
+ * model catalog. The previous entry point, `gpt-5.4`, was dropped from that
+ * catalog and is removed from user config as a stale key, so it is the weaker
+ * anchor to start from.
+ *
+ * Note this was *not* the cause of the `HTTP 400` in #210 — that was the missing
+ * request content type, fixed in `attemptWarm`. The error body which would have
+ * shown it was read but discarded, so warming reported a bare `HTTP 400` and the
+ * retired model looked like the likeliest explanation.
+ */
+const WARM_MODEL: string = GPT_55_MODEL_ID;
+
+/**
+ * Absolute ceiling on warm attempts, independent of the chain's shape.
+ *
+ * `warm.ts` fans out across every enabled account concurrently, so attempts
+ * multiply by the account count. This bounds the batch even if the shared
+ * chain later grows a long tail.
+ */
+export const WARM_ATTEMPT_HARD_CEILING = 6;
+
+let cachedMaxModelAttempts: number | undefined;
+
+/**
+ * How many models one warm ping will try before giving up (#210).
+ *
+ * Derived from the shared fallback chain rather than hardcoded, so extending
+ * `DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN` cannot silently leave warming
+ * unable to reach an entitled model at the end of the chain.
+ *
+ * Resolved on first call, not at module scope: `fetch-helpers` and this module
+ * are mutually reachable through `codex-warm.ts`, so the chain is still
+ * uninitialized while this module's top level runs.
+ */
+function getWarmMaxModelAttempts(): number {
+	if (cachedMaxModelAttempts !== undefined) return cachedMaxModelAttempts;
+	const seen = new Set<string>([WARM_MODEL]);
+	const queue: string[] = [WARM_MODEL];
+	while (queue.length > 0) {
+		const current = queue.shift() as string;
+		for (const target of DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[current] ?? []) {
+			if (seen.has(target)) continue;
+			seen.add(target);
+			queue.push(target);
+		}
+	}
+	cachedMaxModelAttempts = Math.min(seen.size, WARM_ATTEMPT_HARD_CEILING);
+	return cachedMaxModelAttempts;
+}
 
 /** Hard ceiling on a warm request so a hung upstream cannot wedge the batch. */
 const WARM_TIMEOUT_MS = 15_000;
@@ -72,7 +132,15 @@ export async function buildWarmRequestBody(model = WARM_MODEL): Promise<RequestB
 				content: [{ type: "input_text", text: "warm ping" }],
 			},
 		],
-		reasoning: { effort: "none", summary: "auto" },
+		// The warm body is built outside the request transformer, so it asks the
+		// transformer's canonical clamp what "none" resolves to on this model
+		// rather than keeping its own copy of the rule. Sending "none" to a model
+		// that rejects it is its own 400 — that would turn a fallback hop into a
+		// fresh failure.
+		reasoning: getReasoningConfig(model, {
+			reasoningEffort: "none",
+			reasoningSummary: "auto",
+		}),
 		text: { verbosity: "low" },
 	};
 }
@@ -93,23 +161,33 @@ export interface WarmRequestResult {
 }
 
 /**
- * Send one warm request to open the account's usage window.
- *
- * Resolves with `{ status: "opened" }` when the upstream started/confirmed the
- * window (2xx, or a non-quota 429 meaning the window is already active), or
- * `{ status: "exhausted" }` for a quota/usage-limit 429 (window already spent).
- * Any other non-2xx, or a network/timeout error, throws so the caller records
- * the account as failed.
+ * Result of a single model attempt. `unsupported-model` is the only outcome the
+ * caller retries; everything else is terminal for the account.
  */
-export async function warmAccountWindow(
+type WarmAttempt =
+	| { kind: "opened" }
+	| { kind: "exhausted"; detail: string }
+	| { kind: "unsupported-model"; errorBody: unknown; message: string };
+
+/** Send one warm ping for exactly one model. */
+async function attemptWarm(
 	params: WarmRequestParams,
-): Promise<WarmRequestResult> {
+	model: string,
+): Promise<WarmAttempt> {
 	const doFetch = params.fetchImpl ?? fetch;
-	const body = await buildWarmRequestBody();
+	const body = await buildWarmRequestBody(model);
 	const headers = createCodexHeaders(undefined, params.accountId, params.accessToken, {
-		model: WARM_MODEL,
+		model,
 		organizationId: params.organizationId,
 	});
+	// `createCodexHeaders` never sets a content type: on the live request path it
+	// wraps opencode's own `RequestInit`, which already carries one. Warming
+	// builds its headers from nothing, and `fetch` defaults a string body to
+	// `text/plain;charset=UTF-8`, which the backend rejects with
+	// `400 {"detail":"Unsupported content type"}` before it ever looks at the
+	// model (#210). Set it explicitly, as the other bodied POST caller
+	// (`codex-reset.ts`) already does.
+	headers.set("content-type", "application/json");
 
 	const controller = new AbortController();
 	const timeout = setTimeout(
@@ -120,7 +198,9 @@ export async function warmAccountWindow(
 		const response = await doFetch(`${CODEX_BASE_URL}/codex/responses`, {
 			method: "POST",
 			headers,
-			body: JSON.stringify(body),
+			// A fallback target may be a responses-lite model, which takes a
+			// materially different wire shape than the classic body built above.
+			body: JSON.stringify(shapeBodyForModel(body)),
 			signal: controller.signal,
 		});
 
@@ -131,7 +211,7 @@ export async function warmAccountWindow(
 			} catch {
 				// Ignore cancellation failures.
 			}
-			return { status: "opened" };
+			return { kind: "opened" };
 		}
 
 		// Read the error body (small) BEFORE classifying so a 429 quota-exhausted
@@ -149,19 +229,102 @@ export async function warmAccountWindow(
 				log.debug("Warm ping hit 429 quota limit — account window already spent", {
 					accountId: params.accountId,
 				});
-				return { status: "exhausted", detail: "quota/usage limit reached" };
+				return { kind: "exhausted", detail: "quota/usage limit reached" };
 			}
 			// token/concurrent/unknown → the window is active and ticking.
 			log.debug("Warm ping hit 429 — window already active", {
 				accountId: params.accountId,
 				reason,
 			});
-			return { status: "opened" };
+			return { kind: "opened" };
 		}
 
-		throw new Error(`Warm request failed: HTTP ${response.status}`);
+		// The account is not entitled to `model`. The live request path degrades
+		// down the shared fallback chain here rather than failing (#210); warming
+		// does the same so an entitlement gap does not read as a broken account.
+		//
+		// Only an *entitlement* 400 is retryable. Gate on the same predicate
+		// `resolveUnsupportedCodexFallbackModel` uses, so a transport-level 400
+		// (malformed body, bad content type) is terminal instead of being
+		// relabelled a model problem and burning a retry that cannot help.
+		const message = sanitizeCodexApiErrorMessage(response.status, bodyText);
+		if (response.status === 400) {
+			const errorBody = parseErrorBody(bodyText);
+			if (getUnsupportedCodexModelInfo(errorBody).isUnsupported) {
+				return { kind: "unsupported-model", errorBody, message };
+			}
+		}
+
+		throw new Error(`Warm request failed: ${message}`);
 	} finally {
 		clearTimeout(timeout);
+	}
+}
+
+/**
+ * Send a warm request to open the account's usage window.
+ *
+ * Resolves with `{ status: "opened" }` when the upstream started/confirmed the
+ * window (2xx, or a non-quota 429 meaning the window is already active), or
+ * `{ status: "exhausted" }` for a quota/usage-limit 429 (window already spent).
+ * Any other non-2xx, or a network/timeout error, throws so the caller records
+ * the account as failed.
+ *
+ * A 400 carrying `model_not_supported_with_chatgpt_account` is retried down the
+ * shared unsupported-model fallback chain (bounded by
+ * {@link getWarmMaxModelAttempts}) before the account is failed, mirroring the
+ * live request path.
+ */
+export async function warmAccountWindow(
+	params: WarmRequestParams,
+): Promise<WarmRequestResult> {
+	const attempted: string[] = [];
+	let model = WARM_MODEL;
+	let lastUnsupported: { kind: "unsupported-model"; errorBody: unknown; message: string } | undefined;
+
+	const maxAttempts = getWarmMaxModelAttempts();
+	for (let i = 0; i < maxAttempts; i += 1) {
+		const attempt = await attemptWarm(params, model);
+		if (attempt.kind === "opened") return { status: "opened" };
+		if (attempt.kind === "exhausted") {
+			return { status: "exhausted", detail: attempt.detail };
+		}
+
+		lastUnsupported = attempt;
+		attempted.push(model);
+		const next = resolveUnsupportedCodexFallbackModel({
+			requestedModel: model,
+			errorBody: attempt.errorBody,
+			attemptedModels: attempted,
+			// A warm ping picks its own model, so there is no user selection to
+			// respect — always take the chain when the backend rejects one.
+			fallbackOnUnsupportedCodexModel: true,
+			fallbackToGpt52OnUnsupportedGpt53: true,
+		});
+		if (!next) break;
+
+		log.debug("Warm ping model not entitled — falling back", {
+			accountId: params.accountId,
+			from: model,
+			to: next,
+		});
+		model = next;
+	}
+
+	const detail = attempted.length > 1 ? ` (tried ${attempted.join(", ")})` : "";
+	throw new Error(
+		`Warm request failed: ${lastUnsupported?.message ?? "HTTP 400"}${detail}`,
+	);
+}
+
+/** Parse an error body as JSON so the shared matchers can read its fields. */
+function parseErrorBody(bodyText: string): unknown {
+	if (!bodyText) return undefined;
+	try {
+		return JSON.parse(bodyText) as unknown;
+	} catch {
+		// Non-JSON bodies still match on the raw text.
+		return bodyText;
 	}
 }
 

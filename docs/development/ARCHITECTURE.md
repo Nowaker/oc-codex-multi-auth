@@ -2,7 +2,7 @@
 
 Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, ChatGPT Plus/Pro OAuth flow, Codex/GPT-5 request bridge (including GPT-5.6 responses-lite), multi-account rotation, `codex-*` tool registry, TUI quota status plugin, and local storage model.
 
-> Reflects the codebase as of the current `main` branch. Historical audit section markers are retained in the docs tree for traceability, but this file is the current maintainer architecture source.
+> Reflects the codebase as of the current `main` branch. This file is the maintainer architecture source of truth; `docs/architecture.md` is the shorter public-facing overview.
 
 ---
 
@@ -24,14 +24,16 @@ Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, C
 Install / refresh / standalone CLI
   |
   | npx -y oc-codex-multi-auth@latest
-  |   default compact modern | --full | --legacy
-  |   [--dry-run] [--no-cache-clear]
+  |   install: default plugin-only | --modern | --full | --legacy
+  |           [--dry-run] [--no-cache-clear]
+  |   update: managed package cache only
+  |           [--dry-run]
   | standalone: doctor | status | list | limits | dashboard | health | diag | warm
   v
 scripts/install-oc-codex-multi-auth.js
   |- delegates to scripts/install-oc-codex-multi-auth-core.js
-  |- writes ~/.config/opencode/opencode.json
-  |- writes ~/.config/opencode/tui.json
+  |- install writes changed ~/.config/opencode/opencode.json and tui.json
+  |- update never reads or writes OpenCode config
   |- merges config/opencode-modern.json and/or config/opencode-legacy.json
   |- normalizes old package/plugin entries
   |- clears OpenCode plugin cache (unless --no-cache-clear)
@@ -108,7 +110,7 @@ tui.ts
 
 ## Documentation Layout
 
-The current docs tree mirrors the codebase boundaries above: user docs cover setup and operations, maintainer docs cover internal architecture and validation, and the regenerated audit corpus records point-in-time architecture findings.
+The current docs tree mirrors the codebase boundaries above: user docs cover setup and operations, and maintainer docs cover internal architecture and validation.
 
 ```text
 docs/
@@ -117,24 +119,20 @@ docs/
 ├── DOCUMENTATION.md          # repository documentation map
 ├── architecture.md           # public architecture overview
 ├── getting-started.md        # install, auth, and first-run guide
+├── tools-and-cli.md          # codex-* tool catalog and standalone CLI
 ├── configuration.md          # public config reference
 ├── troubleshooting.md        # operational failure modes and fixes
 ├── faq.md                    # short common answers
 ├── privacy.md                # local data and upstream request notes
 ├── OPENCODE_PR_PROPOSAL.md   # upstream OpenCode proposal notes
 ├── _config.yml               # docs site config
-├── development/              # maintainer architecture and validation docs
-│   ├── ARCHITECTURE.md
-│   ├── GITHUB_DISCOVERABILITY.md
-│   ├── CONFIG_FIELDS.md
-│   ├── CONFIG_FLOW.md
-│   ├── TESTING.md
-│   └── TUI_PARITY_CHECKLIST.md
-└── audits/                   # current-structure audit corpus
-    ├── INDEX.md
-    ├── 01-executive-summary.md ... 16-verdict.md
-    ├── _findings/            # T01 through T16 detailed findings
-    └── _meta/                # audit rubric, ledger, environment, verification
+└── development/              # maintainer architecture and validation docs
+    ├── ARCHITECTURE.md
+    ├── GITHUB_DISCOVERABILITY.md
+    ├── CONFIG_FIELDS.md
+    ├── CONFIG_FLOW.md
+    ├── TESTING.md
+    └── TUI_PARITY_CHECKLIST.md
 ```
 
 ---
@@ -155,7 +153,7 @@ High-level provider fetch flow:
 5. Normalize model aliases and fallback candidates (including GPT-5.6 Sol/Terra/Luna tiers).
 6. For GPT-5.6 models, apply the responses-lite reshape (`lib/request/helpers/responses-lite.ts`): tools move into `input` as `additional_tools`, instructions become a developer message, top-level `tools`/`instructions` are cleared for lite shape, image `detail` is stripped, and `x-openai-internal-codex-responses-lite: true` is set.
 7. Resolve client identity (`lib/request/helpers/client-identity.ts`): GPT-5.6 defaults to `originator: opencode`; other models default to `codex_cli_rs`. Override with `CODEX_AUTH_CLIENT_IDENTITY`.
-8. Resolve preferred accounts from `modelAccountPools` for the effective model; fall back to the general pool when the preferred pool is empty or unavailable.
+8. Resolve accounts and `preferred`/`strict` policy from `modelAccountPools` and `modelAccountPoolModes`; only preferred pools fall back to the general pool when unavailable.
 9. Resolve account/workspace selection with the configured `rotationStrategy` (default `hybrid` health scoring), cooldown, token bucket, and explicit `CODEX_AUTH_ACCOUNT_ID` constraints.
 10. Refresh tokens through the queued refresh path when needed.
 11. Attach OAuth/Codex headers and forward the request.
@@ -260,7 +258,7 @@ The request path also writes quota snapshots from response headers, so the TUI c
 
 ## Model Catalog and Fallback Notes
 
-The default installer writes the modern OpenCode template (`config/opencode-modern.json`):
+The default installer preserves `provider.openai`. `--modern` writes the modern OpenCode template (`config/opencode-modern.json`):
 
 - 12 base model families in the picker:
   - `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`

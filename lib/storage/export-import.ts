@@ -32,7 +32,7 @@ const log = createLogger("storage");
  *
  * - `none`: do not create a pre-import backup (destructive; opt-in only).
  * - `timestamped`: create a timestamped pre-import backup, continue on failure.
- *   This is the default — see audit finding `docs/audits/04-high-priority.md`.
+ *   This is the default: an import must never destroy existing accounts.
  * - `best-effort`: legacy alias for `timestamped`, retained for callers that
  *   were written against the prior enum.
  * - `required`: backup must succeed or the import aborts.
@@ -147,7 +147,7 @@ export async function previewImportAccounts(
 /**
  * Exports current accounts to a JSON file for backup/migration.
  *
- * Safety default (audit `docs/audits/04-high-priority.md`):
+ * Safety default:
  * `force` defaults to `false` so an existing export file is never silently
  * overwritten. Callers that need the prior destructive behaviour must opt in
  * via `exportAccounts(path, true)`.
@@ -187,12 +187,15 @@ export async function exportAccounts(filePath: string, force = false): Promise<v
  * Deduplicates by identity key first (organizationId -> accountId -> refreshToken),
  * then applies legacy email dedupe only to entries without organizationId/accountId.
  *
- * Safety default (audit `docs/audits/04-high-priority.md`):
+ * Safety default:
  * `options.backupMode` defaults to `"timestamped"` so a pre-import snapshot of
  * the existing accounts file is always written before apply. Callers that need
  * the prior destructive default must pass `{ backupMode: "none" }` explicitly.
  *
  * @param filePath - Source file path
+ * @param options - Import options: `backupMode` (`timestamped` | `best-effort` | `none`)
+ *   and `preImportBackupPrefix` for the pre-import snapshot filename
+ * @returns An `ImportAccountsResult` summarizing imported, skipped, and merged accounts
  * @throws Error if file is invalid or would exceed MAX_ACCOUNTS
  */
 export async function importAccounts(

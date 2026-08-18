@@ -37,6 +37,11 @@ import {
 	DEACTIVATED_WORKSPACE_ERROR_CODE,
 	isInvalidatedAuthTokenMessage,
 } from "../error-sentinels.js";
+import {
+	getQuotaExhaustedResetAtMs,
+	isQuotaWindowDisabled,
+	parseCodexQuotaWindows,
+} from "../quota-windows.js";
 import { isRecord } from "../utils.js";
 import {
         CODEX_BASE_URL,
@@ -558,7 +563,8 @@ export function isDeactivatedWorkspaceError(errorBody: unknown, status?: number)
 /**
  * Determines if the current auth token needs to be refreshed
  * @param auth - Current authentication state
- * @returns True if token is expired or invalid
+ * @param skewMs - Refresh this many ms before actual expiry (clamped to >= 0)
+ * @returns True if token is expired, invalid, or expires within `skewMs`
  */
 export function shouldRefreshToken(auth: Auth, skewMs = 0): boolean {
 	if (auth.type !== "oauth") return true;
@@ -671,6 +677,8 @@ export function rewriteUrlForCodex(url: string): string {
  * @param userConfig - User configuration
  * @param codexMode - Enable CODEX_MODE (bridge prompt instead of tool remap)
  * @param parsedBody - Pre-parsed body to avoid double JSON.parse (optional)
+ * @param options - Transform overrides: `requestTransformMode` (`native` | `legacy`),
+ *   `fastSession`, `fastSessionStrategy`, and `fastSessionMaxInputItems`
  * @returns Transformed body and updated init, or undefined if no body
  */
 export async function transformRequestForCodex(
@@ -883,7 +891,9 @@ export function createCodexHeaders(
 /**
  * Handles error responses from the Codex API
  * @param response - Error response from API
- * @returns Original response or mapped retryable response
+ * @param options - Diagnostic-extraction options used to enrich the error
+ * @returns An `ErrorHandlingResult` bundling the (possibly remapped) response,
+ *   parsed rate-limit info, and the decoded error body
  */
 export async function handleErrorResponse(
         response: Response,
@@ -942,6 +952,7 @@ export async function handleErrorResponse(
  * Passes through SSE for streaming requests (streamText)
  * @param response - Success response from API
  * @param isStreaming - Whether this is a streaming request (stream=true in body)
+ * @param options - Optional `streamStallTimeoutMs` override for stall detection
  * @returns Processed response (SSE→JSON for non-streaming, stream for streaming)
  */
 export async function handleSuccessResponse(
@@ -1238,6 +1249,17 @@ function parseRetryAfterMs(
         response: Response,
         parsedBody?: { resetsAt?: number; retryAfterMs?: number },
 ): number | null {
+        // A window the backend reports as fully spent (`used-percent >= 100`)
+        // outranks every other signal, and is deliberately uncapped. Its reset
+        // is the earliest moment the account can serve again; a `retry-after`
+        // of 30s or the sooner 5h reset would just put the account back into
+        // rotation to fail again (issue #218).
+        const exhaustedResetAtMs = getQuotaExhaustedResetAtMs(response.headers);
+        if (exhaustedResetAtMs !== undefined) {
+                const delta = exhaustedResetAtMs - Date.now();
+                if (delta > 0) return delta;
+        }
+
         if (parsedBody?.retryAfterMs !== undefined) {
                 // Already normalized to milliseconds in parseRateLimitBody (ms field
                 // used verbatim, seconds field converted via *1000). Do NOT pass
@@ -1269,13 +1291,25 @@ function parseRetryAfterMs(
                 }
         }
 
-        const resetAtHeaders = [
-                "x-codex-primary-reset-at",
-                "x-codex-secondary-reset-at",
-                "x-ratelimit-reset",
-        ];
+        // No window claimed exhaustion, so this is an ordinary throttle rather
+        // than a spent quota: the soonest reset is the right one to wait for.
         const now = Date.now();
         const resetCandidates: number[] = [];
+
+        // Read the Codex windows through the shared parser rather than the
+        // reset-at header alone, so a 429 carrying only `-reset-after-seconds`
+        // or an ISO `-reset-at` produces a candidate instead of falling back to
+        // the 60s default. Windows the plan has switched off are skipped: their
+        // reset says nothing about when this request can go through.
+        for (const window of parseCodexQuotaWindows(response.headers, now)) {
+                if (isQuotaWindowDisabled(window)) continue;
+                const resetAtMs = window.resetAtMs;
+                if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs)) continue;
+                const delta = resetAtMs - now;
+                if (delta > 0) resetCandidates.push(delta);
+        }
+
+        const resetAtHeaders = ["x-ratelimit-reset"];
         for (const header of resetAtHeaders) {
                 const value = response.headers.get(header);
                 if (!value) continue;

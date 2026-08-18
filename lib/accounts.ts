@@ -30,6 +30,7 @@ import {
 } from "./accounts/state.js";
 import { formatWaitTime, type RateLimitReason } from "./accounts/rate-limits.js";
 import { nowMs } from "./utils.js";
+import { logWarn } from "./logger.js";
 import { resolveDisplayEmail } from "./account-display.js";
 
 export type { AccountSelectionExplainability, ManagedAccount } from "./accounts/state.js";
@@ -39,6 +40,7 @@ export {
 	extractAccountUserId,
 	extractAccountEmail,
 	getAccountIdCandidates,
+	relabelCandidateForAccountId,
 	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
 	resolveRequestAccountId,
@@ -94,6 +96,23 @@ export class AccountManager {
 		const stored = await loadAccounts();
 		const manager = new AccountManager(authFallback, stored);
 		await manager.recovery.hydrateFromCodexCli();
+		// `initializeFromStorage` repairs accounts an earlier build wrongly
+		// disabled for missing scopes, but only in memory. Flush it once so the
+		// TUI, the CLI, and any other direct storage reader stop reporting the
+		// stale disabled state and re-auth note (issue #213). A failed write is
+		// not fatal: the in-memory repair still holds for this process, and the
+		// next load repeats it.
+		if (manager.state.consumeScopeRepairs()) {
+			try {
+				await manager.persistence.saveToDisk();
+			} catch (error) {
+				logWarn(
+					`Failed to persist OAuth scope repair: ${
+						(error as Error)?.message ?? String(error)
+					}`,
+				);
+			}
+		}
 		return manager;
 	}
 
@@ -227,6 +246,8 @@ export class AccountManager {
 		model?: string | null,
 		options?: HybridSelectionOptions,
 		preferredAccountIds?: readonly string[],
+		poolMode: "preferred" | "strict" = "preferred",
+		excludedIndices?: ReadonlySet<number>,
 	): ManagedAccount | null {
 		switch (strategy) {
 			case "sticky":
@@ -234,12 +255,16 @@ export class AccountManager {
 					family,
 					model,
 					preferredAccountIds,
+					poolMode === "strict",
+					excludedIndices,
 				);
 			case "round-robin":
 				return this.rotation.getCurrentOrNextForFamily(
 					family,
 					model,
 					preferredAccountIds,
+					poolMode === "strict",
+					excludedIndices,
 				);
 			default:
 				return this.rotation.getCurrentOrNextForFamilyHybrid(
@@ -247,6 +272,8 @@ export class AccountManager {
 					model,
 					options,
 					preferredAccountIds,
+					poolMode === "strict",
+					excludedIndices,
 				);
 		}
 	}
@@ -310,6 +337,21 @@ export class AccountManager {
 		this.rotation.markRateLimitedWithReason(account, retryAfterMs, family, reason, model);
 	}
 
+	/**
+	 * Block an account until a fully-spent quota window resets. See
+	 * {@link AccountRotation.markQuotaExhausted}.
+	 *
+	 * @returns true when a new (or longer) block was written.
+	 */
+	markQuotaExhausted(
+		account: ManagedAccount,
+		resetAtMs: number,
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
+		return this.rotation.markQuotaExhausted(account, resetAtMs, family, model);
+	}
+
 	markAccountCoolingDown(
 		account: ManagedAccount,
 		cooldownMs: number,
@@ -334,8 +376,12 @@ export class AccountManager {
 		return this.rotation.getMinWaitTimeForFamily("codex");
 	}
 
-	getMinWaitTimeForFamily(family: ModelFamily, model?: string | null): number {
-		return this.rotation.getMinWaitTimeForFamily(family, model);
+	getMinWaitTimeForFamily(
+		family: ModelFamily,
+		model?: string | null,
+		accountIds?: readonly string[],
+	): number {
+		return this.rotation.getMinWaitTimeForFamily(family, model, accountIds);
 	}
 
 	// ----- persistence delegations -----

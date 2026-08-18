@@ -1,6 +1,6 @@
 # oc-codex-multi-auth Architecture
 
-Public overview of how `oc-codex-multi-auth` v6.9.1 installs config, handles ChatGPT Plus/Pro OAuth, routes Codex/GPT-5 requests, rotates local account pools, exposes diagnostics, and publishes TUI quota status.
+Public overview of how `oc-codex-multi-auth` installs config, handles ChatGPT Plus/Pro OAuth, routes Codex/GPT-5 requests, rotates local account pools, exposes diagnostics, and publishes TUI quota status.
 
 ---
 
@@ -33,7 +33,8 @@ Install modes:
 
 | Flag | Config written |
 | --- | --- |
-| (default) / `--modern` | Compact modern: 12 base model families + variant picker (53 variants total) |
+| (default) / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
+| `--modern` | Compact modern: 12 base model families + variant picker (53 variants total) |
 | `--full` | Compact modern bases **plus** explicit legacy selector IDs |
 | `--legacy` | Explicit-only catalog (53 model entries) |
 
@@ -96,7 +97,7 @@ ChatGPT-backed Codex endpoint
 | `sticky` | Drain one account until rate-limited/cooling, then move to the lowest-indexed available account |
 | `round-robin` | Advance through accounts in order |
 
-`modelAccountPools` maps effective model IDs to preferred stable account or Business-seat identities. While a preferred pool has a healthy selectable account, selection stays inside that pool (still applying quota, cooldown, and token-health rules). If the preferred pool is empty or exhausted, routing falls back to the general pool. Manage pools with `codex-pool` or edit `~/.opencode/openai-codex-auth-config.json`.
+`modelAccountPools` maps effective model IDs to stable account or Business-seat identities. `modelAccountPoolModes` selects `preferred` (the default, with general-pool fallback) or `strict` (never leave the configured pool). Strict exhaustion returns immediately without entering the global account wait loop. All modes still apply quota, cooldown, and token-health rules. Manage pools with `codex-pool` or edit `~/.opencode/openai-codex-auth-config.json`.
 
 ### 5. Tool registry
 

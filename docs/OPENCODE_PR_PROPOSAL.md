@@ -1,5 +1,15 @@
 # OpenCode PR: Merge Auth Methods from Multiple Plugins
 
+> **Status: upstream proposal, not this repository's code.**
+>
+> This is a design note aimed at the upstream OpenCode project, kept for
+> context on why this plugin registers its auth methods the way it does. The
+> file/line references below (`auth.ts:310`, lines 326-330) describe upstream
+> OpenCode as it stood when the proposal was written and will not match current
+> upstream source. Nothing in this document describes `oc-codex-multi-auth`
+> behavior — for that, see
+> [development/ARCHITECTURE.md](development/ARCHITECTURE.md).
+
 ## Problem
 
 When multiple plugins register for the same provider (e.g., `openai`), only the first plugin's auth methods are shown. This is because `auth.ts:310` uses `.find()` which returns the first match:
