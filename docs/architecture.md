@@ -97,7 +97,7 @@ ChatGPT-backed Codex endpoint
 | `sticky` | Drain one account until rate-limited/cooling, then move to the lowest-indexed available account |
 | `round-robin` | Advance through accounts in order |
 
-`modelAccountPools` maps effective model IDs to stable account IDs. `modelAccountPoolModes` selects `preferred` (the default, with general-pool fallback) or `strict` (never leave the configured pool). Strict exhaustion returns immediately without entering the global account wait loop. All modes still apply quota, cooldown, and token-health rules. Manage pools with `codex-pool` or edit `~/.opencode/openai-codex-auth-config.json`.
+`modelAccountPools` maps effective model IDs to stable account or Business-seat identities. `modelAccountPoolModes` selects `preferred` (the default, with general-pool fallback) or `strict` (never leave the configured pool). Strict exhaustion returns immediately without entering the global account wait loop. All modes still apply quota, cooldown, and token-health rules. Manage pools with `codex-pool` or edit `~/.opencode/openai-codex-auth-config.json`.
 
 ### 5. Tool registry
 

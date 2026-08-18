@@ -111,6 +111,28 @@ describe("model account pool config mutation", () => {
 		).rejects.toThrow("No model account pool configured");
 	});
 
+	it("atomically canonicalizes legacy IDs before removing a Business seat", async () => {
+		await fs.writeFile(
+			configPath,
+			JSON.stringify({
+				modelAccountPools: { model: ["business-account", "unresolved"] },
+			}),
+		);
+
+		await updateModelAccountPool("model", "remove", ["seat-invited"], {
+			normalizeExistingAccountIds: (ids) =>
+				ids.flatMap((id) =>
+					id === "business-account"
+						? ["seat-owner", "seat-invited"]
+						: [id],
+				),
+		});
+
+		expect((await readConfig()).modelAccountPools).toEqual({
+			model: ["seat-owner", "unresolved"],
+		});
+	});
+
 	it("serializes concurrent mutations so updates are not lost", async () => {
 		await fs.writeFile(
 			configPath,
@@ -229,5 +251,21 @@ describe("model account pool config mutation", () => {
 			updateModelAccountPool("model", "set", ["one"]),
 		).rejects.toThrow("Existing modelAccountPools configuration is invalid");
 		expect(await fs.readFile(configPath, "utf-8")).toBe(original);
+	});
+
+	it("reports the account ids that were on disk, not the expanded ones", async () => {
+		await updateModelAccountPool("gpt-5.6-sol", "set", ["legacy-workspace"]);
+
+		const result = await updateModelAccountPool(
+			"gpt-5.6-sol",
+			"add",
+			["seat-invited"],
+			{ normalizeExistingAccountIds: () => ["seat-owner"] },
+		);
+
+		// The expansion exists only to compute the next set. Surfacing it would
+		// make callers report a "previous" count the config file never contained.
+		expect(result.previousAccountIds).toEqual(["legacy-workspace"]);
+		expect(result.accountIds).toEqual(["seat-owner", "seat-invited"]);
 	});
 });

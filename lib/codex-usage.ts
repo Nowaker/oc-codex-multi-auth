@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { extractAccountId } from "./accounts.js";
+import { extractAccountUserId } from "./auth/token-utils.js";
 import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
 import { CODEX_BASE_URL, PLUGIN_NAME } from "./constants.js";
 import {
@@ -409,6 +410,7 @@ export async function fetchCodexUsage(params: {
 function applyRefreshedCredentials(
 	target: {
 		refreshToken: string;
+		accountUserId?: string;
 		accessToken?: string;
 		expiresAt?: number;
 	},
@@ -419,6 +421,7 @@ function applyRefreshedCredentials(
 	},
 ): void {
 	target.refreshToken = result.refresh;
+	target.accountUserId = extractAccountUserId(result.access) ?? target.accountUserId;
 	target.accessToken = result.access;
 	target.expiresAt = result.expires;
 }
@@ -426,6 +429,7 @@ function applyRefreshedCredentials(
 async function persistRefreshedCredentials(params: {
 	previousRefreshToken: string;
 	accountId?: string;
+	accountUserId?: string;
 	organizationId?: string;
 	email?: string;
 	refreshResult: {
@@ -446,11 +450,19 @@ async function persistRefreshedCredentials(params: {
 
 		const uniqueMatch = <Value>(matches: Value[]): Value | undefined =>
 			matches.length === 1 ? matches[0] : undefined;
+		const normalizedAccountUserId = params.accountUserId?.trim();
+		const storedAccountUserId = (storedAccount: AccountMetadataV3): string | undefined =>
+			storedAccount.accountUserId?.trim() ||
+			extractAccountUserId(storedAccount.accessToken);
 
 		let updated = false;
 		if (params.previousRefreshToken) {
 			for (const storedAccount of latestStorage.accounts) {
-				if (storedAccount.refreshToken === params.previousRefreshToken) {
+				const memberId = storedAccountUserId(storedAccount);
+				if (
+					storedAccount.refreshToken === params.previousRefreshToken &&
+					(!normalizedAccountUserId || !memberId || memberId === normalizedAccountUserId)
+				) {
 					applyRefreshedCredentials(storedAccount, params.refreshResult);
 					updated = true;
 				}
@@ -460,8 +472,18 @@ async function persistRefreshedCredentials(params: {
 		if (!updated) {
 			const normalizedOrganizationId = params.organizationId?.trim() ?? "";
 			const normalizedEmail = params.email?.trim().toLowerCase();
-			const orgScopedMatches = params.accountId
+			const memberMatches = normalizedAccountUserId
 				? latestStorage.accounts.filter(
+						(storedAccount) =>
+							storedAccountUserId(storedAccount) === normalizedAccountUserId &&
+							(!params.accountId || storedAccount.accountId === params.accountId),
+					)
+				: [];
+			const legacyAccounts = latestStorage.accounts.filter(
+				(storedAccount) => !storedAccountUserId(storedAccount),
+			);
+			const orgScopedMatches = params.accountId
+				? legacyAccounts.filter(
 						(storedAccount) =>
 							storedAccount.accountId === params.accountId &&
 							(storedAccount.organizationId?.trim() ?? "") ===
@@ -469,19 +491,20 @@ async function persistRefreshedCredentials(params: {
 					)
 				: [];
 			const accountIdMatches = params.accountId
-				? latestStorage.accounts.filter(
+				? legacyAccounts.filter(
 						(storedAccount) => storedAccount.accountId === params.accountId,
 					)
 				: [];
 			const emailMatches =
 				normalizedEmail && !params.accountId
-					? latestStorage.accounts.filter(
+					? legacyAccounts.filter(
 							(storedAccount) =>
 								storedAccount.email?.trim().toLowerCase() === normalizedEmail,
 						)
 					: [];
 
 			const fallbackTarget =
+				uniqueMatch(memberMatches) ??
 				uniqueMatch(orgScopedMatches) ??
 				uniqueMatch(accountIdMatches) ??
 				uniqueMatch(emailMatches);
@@ -531,6 +554,10 @@ export async function ensureCodexUsageAccessToken(params: {
 	if (refreshResult.type !== "success") {
 		throw new Error(refreshResult.message ?? refreshResult.reason);
 	}
+	const refreshedAccountUserId =
+		extractAccountUserId(refreshResult.access) ??
+		params.account.accountUserId?.trim() ??
+		extractAccountUserId(params.account.accessToken);
 
 	let refreshedCount = 0;
 	for (const storedAccount of params.storage.accounts) {
@@ -546,6 +573,7 @@ export async function ensureCodexUsageAccessToken(params: {
 	const persisted = await persistRefreshedCredentials({
 		previousRefreshToken,
 		accountId: params.account.accountId,
+		accountUserId: refreshedAccountUserId,
 		organizationId: params.account.organizationId,
 		email: params.account.email,
 		refreshResult,
@@ -568,14 +596,16 @@ function normalizeUsageIdentityPart(value: string | undefined): string {
 /**
  * Derive a stable usage-quota dedupe key for an account.
  *
- * A single OAuth credential can authorize multiple ChatGPT workspaces, each
- * exposing distinct `accountId` / `organizationId` values while sharing one
- * refresh token. Quota deduplication must therefore key on workspace identity
- * first so separate workspaces are not collapsed into one row, falling back to
- * the refresh token only when no workspace identity is available.
+ * Business members can share one `accountId` while each bearer token has a
+ * distinct `accountUserId` and quota, so the seat id disambiguates members
+ * WITHIN a workspace. It is APPENDED to the workspace identity rather than
+ * replacing it: one OAuth grant can back several workspace variants that all
+ * carry the same member id, and those still consume separate quotas. Older
+ * records without a member id keep workspace-level dedup, then the refresh
+ * token as a last resort.
  *
- * Keys are emitted as `JSON.stringify` arrays (tagged `"workspace"` or
- * `"refresh"`) so values containing delimiter characters cannot collide.
+ * Keys are emitted as `JSON.stringify` arrays (tagged `"seat"`, `"workspace"`,
+ * or `"refresh"`) so values containing delimiter characters cannot collide.
  *
  * @param account - Stored account metadata to derive the key from.
  * @returns A unique identity key, or `undefined` when the account carries no
@@ -585,7 +615,13 @@ export function getUsageAccountDedupeKey(
 	account: AccountMetadataV3,
 ): string | undefined {
 	const accountId = normalizeUsageIdentityPart(account.accountId);
+	const accountUserId = normalizeUsageIdentityPart(
+		account.accountUserId?.trim() || extractAccountUserId(account.accessToken),
+	);
 	const organizationId = normalizeUsageIdentityPart(account.organizationId);
+	if (accountUserId) {
+		return JSON.stringify(["seat", accountId, organizationId, accountUserId]);
+	}
 	if (accountId || organizationId) {
 		return JSON.stringify(["workspace", accountId, organizationId]);
 	}
@@ -705,6 +741,7 @@ export function createUsageAccountFingerprint(
 ): string {
 	const fingerprintSource = [
 		account.accountId ?? "",
+		account.accountUserId?.trim() || extractAccountUserId(account.accessToken) || "",
 		account.organizationId ?? "",
 		account.refreshToken ?? "",
 	].join("\0");

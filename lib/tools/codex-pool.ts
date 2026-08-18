@@ -13,6 +13,13 @@ import { ConfigLockContentionError, ErrorCode } from "../errors.js";
 import { logWarn } from "../logger.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
 import { loadAccounts, type AccountStorageV3 } from "../storage.js";
+import {
+	expandLegacyModelPoolKeys,
+	getModelPoolAccountKey,
+	isSeatPoolKey,
+	matchesModelPoolAccountKey,
+} from "../accounts/pool-identity.js";
+import { getCurrentProjectRoot, getCurrentStoragePath } from "../storage/state.js";
 import type { ToolContext } from "./index.js";
 
 type CodexPoolAction = "status" | ModelAccountPoolMutation;
@@ -80,7 +87,7 @@ function resolveAccountIds(
 			);
 		}
 		const account = storage.accounts[accountNumber - 1];
-		const accountId = account?.accountId?.trim();
+		const accountId = account ? getModelPoolAccountKey(account) : undefined;
 		if (!accountId) {
 			throw new Error(
 				`Account ${accountNumber} has no stable account ID and cannot be assigned to a model pool.`,
@@ -89,6 +96,32 @@ function resolveAccountIds(
 		ids.push(accountId);
 	}
 	return ids;
+}
+
+/**
+ * Migrate legacy workspace-wide pool entries to member-scoped seat keys.
+ *
+ * `modelAccountPools` lives in the GLOBAL plugin config, but account storage is
+ * per-project by default (`perProjectAccounts`). Expanding a legacy key against
+ * a project-scoped account list would rewrite the global pool using only the
+ * seats visible from THIS project and silently drop the routing every other
+ * project depends on, so the migration is skipped whenever project-scoped
+ * storage is active.
+ */
+function normalizeExistingPoolAccountIds(
+	ids: readonly string[],
+	storage: AccountStorageV3 | null | undefined,
+): readonly string[] {
+	const projectScoped = Boolean(getCurrentStoragePath() && getCurrentProjectRoot());
+	if (projectScoped) {
+		if (ids.some((id) => !isSeatPoolKey(id))) {
+			logWarn(
+				"Project-scoped account storage is active; leaving legacy workspace-wide model pool entries unmigrated so pools used by other projects are not rewritten.",
+			);
+		}
+		return ids;
+	}
+	return expandLegacyModelPoolKeys(ids, storage?.accounts ?? []);
 }
 
 function buildPoolSnapshot(
@@ -111,23 +144,31 @@ function buildPoolSnapshot(
 	const storedAccounts = storage?.accounts ?? [];
 	const maskEmail = ctx.resolveMaskEmail();
 
+	const includedIndices = new Set<number>();
 	for (const accountId of accountIds) {
-		const index = storedAccounts.findIndex(
-			(account) => account.accountId?.trim() === accountId,
-		);
-		const account = index >= 0 ? storedAccounts[index] : undefined;
-		if (!account) {
+		const matchingIndices = storedAccounts
+			.map((account, index) =>
+				matchesModelPoolAccountKey(account, accountId) ? index : -1,
+			)
+			.filter((index) => index >= 0);
+		if (matchingIndices.length === 0) {
 			unresolvedAccountIds.push(accountId);
 			continue;
 		}
-		accounts.push({
-			...ctx.buildJsonAccountIdentity(index, {
-				includeSensitive,
-				account,
-				label: ctx.formatCommandAccountLabel(account, index, { maskEmail }),
-			}),
-			enabled: account.enabled !== false,
-		});
+		for (const index of matchingIndices) {
+			if (includedIndices.has(index)) continue;
+			includedIndices.add(index);
+			const account = storedAccounts[index];
+			if (!account) continue;
+			accounts.push({
+				...ctx.buildJsonAccountIdentity(index, {
+					includeSensitive,
+					account,
+					label: ctx.formatCommandAccountLabel(account, index, { maskEmail }),
+				}),
+				enabled: account.enabled !== false,
+			});
+		}
 	}
 
 	return {
@@ -255,6 +296,12 @@ export function createCodexPoolTool(ctx: ToolContext): ToolDefinition {
 				result = await updateModelAccountPool(model, action, accountIds, {
 					dryRun: args.dryRun,
 					poolMode,
+					...(action === "add" || action === "remove"
+						? {
+								normalizeExistingAccountIds: (ids: readonly string[]) =>
+									normalizeExistingPoolAccountIds(ids, storage),
+							}
+						: {}),
 				});
 			} catch (error) {
 				if (!(error instanceof ConfigLockContentionError)) throw error;

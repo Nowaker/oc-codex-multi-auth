@@ -9,7 +9,10 @@ import {
 // barrel: it is a pure formatter with no reason to be stubbed, and routing it
 // through the barrel would force every suite that mocks accounts.js to
 // re-export it.
-import { relabelCandidateForAccountId } from "./token-utils.js";
+import {
+	extractAccountUserId,
+	relabelCandidateForAccountId,
+} from "./token-utils.js";
 import { logInfo } from "../logger.js";
 import { normalizeScope } from "./scopes.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
@@ -30,6 +33,7 @@ type MergeableAccountRecord = {
 	addedAt?: number;
 	enabled?: boolean;
 	accountId?: string;
+	accountUserId?: string;
 	organizationId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
@@ -117,6 +121,7 @@ export function mergeStoredAccountPair<T extends MergeableAccountRecord>(
 	return {
 		...target,
 		accountId: target.accountId ?? source.accountId,
+		accountUserId: target.accountUserId ?? source.accountUserId,
 		organizationId: target.organizationId ?? source.organizationId,
 		accountIdSource: target.accountIdSource ?? source.accountIdSource,
 		accountLabel: target.accountLabel ?? source.accountLabel,
@@ -425,6 +430,14 @@ export async function persistAccountPool(
 			return accountId && accountId.length > 0 ? accountId : undefined;
 		};
 
+		const normalizeStoredAccountUserId = (
+			account: { accountUserId?: string; accessToken?: string } | undefined,
+		): string | undefined => {
+			const accountUserId =
+				account?.accountUserId?.trim() || extractAccountUserId(account?.accessToken);
+			return accountUserId && accountUserId.length > 0 ? accountUserId : undefined;
+		};
+
 		const canCollapseWithCandidateAccountId = (
 			existing: { accountId?: string } | undefined,
 			candidateAccountId: string | undefined,
@@ -439,6 +452,7 @@ export async function persistAccountPool(
 
 		type IdentityIndexes = {
 			byOrganizationId: Map<string, number[]>;
+			byAccountUserId: Map<string, number[]>;
 			byAccountIdNoOrg: Map<string, number>;
 			byRefreshTokenNoOrg: Map<string, number[]>;
 			byEmailNoOrg: Map<string, number>;
@@ -451,9 +465,38 @@ export async function persistAccountPool(
 			indexes: IdentityIndexes,
 			organizationId: string,
 			candidateAccountId: string | undefined,
+			candidateAccountUserId: string | undefined,
+			candidateEmail: string | undefined,
 		): number | undefined => {
 			const matches = indexes.byOrganizationId.get(organizationId);
 			if (!matches || matches.length === 0) return undefined;
+
+			const candidateUserId = candidateAccountUserId?.trim() || undefined;
+			if (candidateUserId) {
+				let newestExactUserId: number | undefined;
+				const legacyMatches: number[] = [];
+				for (const index of matches) {
+					const existing = accounts[index];
+					if (!existing) continue;
+					const existingUserId = normalizeStoredAccountUserId(existing);
+					if (existingUserId === candidateUserId) {
+						newestExactUserId =
+							typeof newestExactUserId === "number"
+								? pickNewestAccountIndex(newestExactUserId, index)
+								: index;
+						continue;
+					}
+					if (
+						!existingUserId &&
+						canCollapseWithCandidateAccountId(existing, candidateAccountId) &&
+						!!candidateEmail &&
+						sanitizeEmail(existing.email) === candidateEmail
+					) {
+						legacyMatches.push(index);
+					}
+				}
+				return newestExactUserId ?? asUniqueIndex(legacyMatches);
+			}
 
 			const candidateId = candidateAccountId?.trim() || undefined;
 			let newestNoAccountId: number | undefined;
@@ -567,6 +610,7 @@ export async function persistAccountPool(
 
 		const buildIdentityIndexes = (): IdentityIndexes => {
 			const byOrganizationId = new Map<string, number[]>();
+			const byAccountUserId = new Map<string, number[]>();
 			const byAccountIdNoOrg = new Map<string, number>();
 			const byRefreshTokenNoOrg = new Map<string, number[]>();
 			const byEmailNoOrg = new Map<string, number>();
@@ -580,6 +624,7 @@ export async function persistAccountPool(
 
 				const organizationId = account.organizationId?.trim();
 				const accountId = account.accountId?.trim();
+				const accountUserId = normalizeStoredAccountUserId(account);
 				const refreshToken = account.refreshToken?.trim();
 				// Lowercase the email index key to match the lookup side
 				// (sanitizeEmail) and getExactIdentityKey; a trim-only key here let a
@@ -589,6 +634,9 @@ export async function persistAccountPool(
 
 				if (refreshToken) {
 					pushIndex(byRefreshTokenGlobal, refreshToken, i);
+				}
+				if (accountUserId) {
+					pushIndex(byAccountUserId, accountUserId, i);
 				}
 
 				if (organizationId) {
@@ -615,6 +663,7 @@ export async function persistAccountPool(
 
 			return {
 				byOrganizationId,
+				byAccountUserId,
 				byAccountIdNoOrg,
 				byRefreshTokenNoOrg,
 				byEmailNoOrg,
@@ -629,6 +678,7 @@ export async function persistAccountPool(
 		for (const result of results) {
 			const accountId = result.accountIdOverride ?? extractAccountId(result.access);
 			const normalizedAccountId = accountId?.trim() || undefined;
+			const normalizedAccountUserId = extractAccountUserId(result.access);
 			const organizationId = result.organizationIdOverride?.trim() || undefined;
 			const accountIdSource =
 				normalizedAccountId
@@ -645,14 +695,34 @@ export async function persistAccountPool(
 			const normalizedScope = normalizeScope(result.scope);
 
 			const existingIndex = (() => {
+				if (normalizedAccountUserId) {
+					const memberMatches = identityIndexes.byAccountUserId.get(
+						normalizedAccountUserId,
+					);
+					const byMember = asUniqueIndex(memberMatches);
+					if (byMember !== undefined) return byMember;
+					if (memberMatches && memberMatches.length > 1) {
+						let newestRefreshMatch: number | undefined;
+						for (const index of memberMatches) {
+							if (accounts[index]?.refreshToken !== result.refresh) continue;
+							newestRefreshMatch =
+								typeof newestRefreshMatch === "number"
+									? pickNewestAccountIndex(newestRefreshMatch, index)
+									: index;
+						}
+						if (newestRefreshMatch !== undefined) return newestRefreshMatch;
+					}
+				}
 				if (organizationId) {
 					return resolveOrganizationMatch(
 						identityIndexes,
 						organizationId,
 						normalizedAccountId,
+						normalizedAccountUserId,
+						accountEmail,
 					);
 				}
-				if (normalizedAccountId) {
+				if (normalizedAccountId && !normalizedAccountUserId) {
 					const byAccountId = identityIndexes.byAccountIdNoOrg.get(normalizedAccountId);
 					if (byAccountId !== undefined) {
 						return byAccountId;
@@ -668,12 +738,17 @@ export async function persistAccountPool(
 					return byRefreshToken;
 				}
 
-				if (accountEmail && !normalizedAccountId) {
+				if (accountEmail && (!normalizedAccountId || normalizedAccountUserId)) {
 					const byEmail = identityIndexes.byEmailNoOrg.get(accountEmail);
-					if (byEmail !== undefined) {
+					if (
+						byEmail !== undefined &&
+						(!normalizedAccountUserId || !normalizeStoredAccountUserId(accounts[byEmail]))
+					) {
 						return byEmail;
 					}
 				}
+
+				if (normalizedAccountUserId) return undefined;
 
 				const orgScoped = resolveUniqueOrgScopedMatch(
 					identityIndexes,
@@ -698,6 +773,7 @@ export async function persistAccountPool(
 			if (existingIndex === undefined) {
 				accounts.push({
 					accountId: normalizedAccountId,
+					accountUserId: normalizedAccountUserId,
 					organizationId,
 					accountIdSource,
 					accountLabel,
@@ -717,6 +793,7 @@ export async function persistAccountPool(
 			if (!existing) continue;
 
 			const nextEmail = accountEmail ?? existing.email;
+			const nextAccountUserId = normalizedAccountUserId ?? existing.accountUserId;
 			const nextOrganizationId = organizationId ?? existing.organizationId;
 			const preserveOrgIdentity =
 				typeof existing.organizationId === "string" &&
@@ -736,6 +813,7 @@ export async function persistAccountPool(
 			accounts[existingIndex] = {
 				...existing,
 				accountId: nextAccountId,
+				accountUserId: nextAccountUserId,
 				organizationId: nextOrganizationId,
 				accountIdSource: nextAccountIdSource,
 				accountLabel: nextAccountLabel,
@@ -757,16 +835,18 @@ export async function persistAccountPool(
 				account: {
 					organizationId?: string;
 					accountId?: string;
+					accountUserId?: string;
 					email?: string;
 					refreshToken?: string;
 				} | undefined,
 			): string => {
 				const organizationId = account?.organizationId?.trim() ?? "";
 				const accountId = normalizeStoredAccountId(account) ?? "";
+				const accountUserId = account?.accountUserId?.trim() ?? "";
 				const email = account?.email?.trim().toLowerCase() ?? "";
 				const refreshToken = account?.refreshToken?.trim() ?? "";
-				if (organizationId || accountId) {
-					return `org:${organizationId}|account:${accountId}|refresh:${refreshToken}`;
+				if (organizationId || accountId || accountUserId) {
+					return `org:${organizationId}|account:${accountId}|member:${accountUserId}|refresh:${refreshToken}`;
 				}
 				return `email:${email}|refresh:${refreshToken}`;
 			};
@@ -795,9 +875,17 @@ export async function persistAccountPool(
 		};
 
 		const collectIdentityKeys = (
-			account: { organizationId?: string; accountId?: string; refreshToken?: string } | undefined,
+			account: {
+				organizationId?: string;
+				accountId?: string;
+				accountUserId?: string;
+				accessToken?: string;
+				refreshToken?: string;
+			} | undefined,
 		): string[] => {
 			const keys: string[] = [];
+			const accountUserId = normalizeStoredAccountUserId(account);
+			if (accountUserId) keys.push(`member:${accountUserId}`);
 			const organizationId = account?.organizationId?.trim();
 			if (organizationId) keys.push(`org:${organizationId}`);
 			const accountId = account?.accountId?.trim();

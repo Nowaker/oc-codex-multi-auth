@@ -136,6 +136,8 @@ const SENSITIVE_LEAF_KEYS = new Set([
 	"access",
 	"apikey",
 	"authorization",
+	"accountid",
+	"accountuserid",
 	"cookie",
 	"setcookie",
 	"clientsecret",

@@ -52,6 +52,12 @@ export interface ModelAccountPoolMutationResult {
 	dryRun: boolean;
 }
 
+export interface ModelAccountPoolMutationOptions {
+	dryRun?: boolean;
+	poolMode?: ModelAccountPoolMode;
+	normalizeExistingAccountIds?: (accountIds: readonly string[]) => readonly string[];
+}
+
 let modelAccountPoolMutationQueue: Promise<void> = Promise.resolve();
 
 /**
@@ -242,7 +248,7 @@ export function updateModelAccountPool(
 	model: string,
 	mutation: ModelAccountPoolMutation,
 	accountIds: readonly string[] = [],
-	options: { dryRun?: boolean; poolMode?: ModelAccountPoolMode } = {},
+	options: ModelAccountPoolMutationOptions = {},
 ): Promise<ModelAccountPoolMutationResult> {
 	const pending = modelAccountPoolMutationQueue.then(async () => {
 		if (options.dryRun === true) {
@@ -354,7 +360,7 @@ async function performModelAccountPoolMutation(
 	model: string,
 	mutation: ModelAccountPoolMutation,
 	accountIds: readonly string[],
-	options: { dryRun?: boolean; poolMode?: ModelAccountPoolMode },
+	options: ModelAccountPoolMutationOptions,
 ): Promise<ModelAccountPoolMutationResult> {
 	const normalizedModel = model.trim().toLowerCase();
 	if (!normalizedModel) throw new Error("Model is required.");
@@ -392,8 +398,16 @@ async function performModelAccountPoolMutation(
 	const matchingModeKeys = Object.keys(poolModes).filter(
 		(key) => key.trim().toLowerCase() === normalizedModel,
 	);
-	const previousAccountIds = Array.from(
+	const storedPreviousAccountIds = Array.from(
 		new Set(matchingKeys.flatMap((key) => pools[key] ?? [])),
+	);
+	const previousAccountIds = Array.from(
+		new Set(
+			(options.normalizeExistingAccountIds?.(storedPreviousAccountIds) ??
+				storedPreviousAccountIds)
+				.map((id) => id.trim())
+				.filter(Boolean),
+		),
 	);
 	for (const key of matchingKeys) delete pools[key];
 	const previousPoolMode = matchingModeKeys
@@ -437,8 +451,8 @@ async function performModelAccountPoolMutation(
 	}
 	const changed =
 		matchingKeys.length !== (nextAccountIds.length > 0 ? 1 : 0) ||
-		previousAccountIds.length !== nextAccountIds.length ||
-		previousAccountIds.some((id, index) => id !== nextAccountIds[index]) ||
+		storedPreviousAccountIds.length !== nextAccountIds.length ||
+		storedPreviousAccountIds.some((id, index) => id !== nextAccountIds[index]) ||
 		(matchingKeys[0] !== undefined && matchingKeys[0] !== normalizedModel) ||
 		matchingModeKeys.length !== (nextPoolMode !== "preferred" && nextAccountIds.length > 0 ? 1 : 0) ||
 		previousPoolMode !== nextPoolMode ||
@@ -470,7 +484,11 @@ async function performModelAccountPoolMutation(
 
 	return {
 		model: normalizedModel,
-		previousAccountIds,
+		// Report what the config file actually held. `previousAccountIds` may have
+		// been expanded from legacy workspace keys purely to compute the next set;
+		// surfacing the expansion would make callers report a "previous" count the
+		// file never contained.
+		previousAccountIds: storedPreviousAccountIds,
 		accountIds: nextAccountIds,
 		previousPoolMode,
 		poolMode: nextPoolMode,

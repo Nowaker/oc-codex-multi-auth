@@ -47,6 +47,29 @@ const storage: AccountStorageV3 = {
 	],
 };
 
+const businessStorage: AccountStorageV3 = {
+	version: 3,
+	activeIndex: 0,
+	accounts: [
+		{
+			email: "owner@example.com",
+			accountId: "business-account",
+			accountUserId: "member-owner",
+			refreshToken: "refresh-owner",
+			addedAt: 1,
+			lastUsed: 1,
+		},
+		{
+			email: "member@example.com",
+			accountId: "business-account",
+			accountUserId: "member-invited",
+			refreshToken: "refresh-invited",
+			addedAt: 2,
+			lastUsed: 2,
+		},
+	],
+};
+
 function buildCtx(): ToolContext {
 	return {
 		resolveMaskEmail: () => true,
@@ -151,6 +174,52 @@ describe("codex-pool tool", () => {
 		expect(output).toContain("Restart OpenCode");
 	});
 
+	it("persists distinct keys for Business seats in one workspace", async () => {
+		vi.mocked(loadAccounts).mockResolvedValue(businessStorage);
+		vi.mocked(updateModelAccountPool).mockResolvedValue({
+			model: "gpt-5.6-sol",
+			previousAccountIds: [],
+			accountIds: [
+				'seat:["business-account","member-owner"]',
+				'seat:["business-account","member-invited"]',
+			],
+			changed: true,
+			dryRun: false,
+		});
+
+		await createCodexPoolTool(buildCtx()).execute(
+			{ action: "set", model: "gpt-5.6-sol", accounts: [1, 2] },
+			{} as never,
+		);
+
+		expect(updateModelAccountPool).toHaveBeenCalledWith(
+			"gpt-5.6-sol",
+			"set",
+			[
+				'seat:["business-account","member-owner"]',
+				'seat:["business-account","member-invited"]',
+			],
+			{ dryRun: undefined },
+		);
+	});
+
+	it("shows every Business seat matched by a legacy workspace ID", async () => {
+		vi.mocked(loadAccounts).mockResolvedValue(businessStorage);
+		vi.mocked(loadPluginConfig).mockReturnValue({
+			modelAccountPools: { "gpt-5.6-sol": ["business-account"] },
+		});
+
+		const output = await createCodexPoolTool(buildCtx()).execute(
+			{ action: "status", format: "json" },
+			{} as never,
+		);
+		const parsed = JSON.parse(output as string) as {
+			pools: Array<{ accounts: Array<{ index: number }> }>;
+		};
+
+		expect(parsed.pools[0]?.accounts.map((account) => account.index)).toEqual([1, 2]);
+	});
+
 	it("passes dry runs through without requesting a restart", async () => {
 		vi.mocked(updateModelAccountPool).mockResolvedValue({
 			model: "gpt-5.6-sol",
@@ -176,8 +245,12 @@ describe("codex-pool tool", () => {
 			"gpt-5.6-sol",
 			"add",
 			["account-two"],
-			{ dryRun: true, poolMode: undefined },
+			expect.objectContaining({ dryRun: true, poolMode: undefined }),
 		);
+		const options = vi.mocked(updateModelAccountPool).mock.calls[0]?.[3];
+		expect(options?.normalizeExistingAccountIds?.(["account-one"])).toEqual([
+			"account-one",
+		]);
 		expect(output).not.toContain("Restart OpenCode");
 	});
 

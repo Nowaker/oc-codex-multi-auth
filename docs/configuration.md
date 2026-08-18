@@ -233,7 +233,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `fastSessionStrategy` | `hybrid` | `hybrid` speeds simple turns and keeps full-depth for complex prompts; `always` forces fast mode every turn |
 | `fastSessionMaxInputItems` | `30` | max input items kept when fast mode is applied |
 | `rotationStrategy` | `hybrid` | account selection strategy: `hybrid` (stick while healthy, else score-select), `sticky` (drain one account first), or `round-robin` |
-| `modelAccountPools` | `{}` | optional map of effective model IDs to preferred stable account IDs; selection uses the configured pool while it has a healthy account, then falls back to the general account pool |
+| `modelAccountPools` | `{}` | optional map of effective model IDs to preferred stable account or Business-seat identities; selection uses the configured pool while it has a healthy account, then falls back to the general account pool |
 | `modelAccountPoolModes` | `{}` | optional per-model `preferred` or `strict` policy; omitted models default to `preferred` |
 | `retryProfile` | `balanced` | retry budget profile for request classes (`conservative`, `balanced`, `aggressive`) |
 | `retryBudgetOverrides` | `{}` | optional per-class budget overrides (`authRefresh`, `network`, `server`, `rateLimitShort`, `rateLimitGlobal`, `emptyResponse`) |

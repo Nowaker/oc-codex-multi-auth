@@ -2,8 +2,8 @@
  * Account identity + dedup helpers.
  *
  * Split out of `lib/storage.ts` in RC-2. This module is pure and synchronous:
- * it owns the identity-key hierarchy (`organizationId` -> `accountId` ->
- * `refreshToken`) and the dedup + merge rules used by `normalizeAccountStorage`
+ * it owns the identity-key hierarchy (`organizationId` + `accountId` +
+ * `accountUserId`, then `refreshToken`) and the dedup + merge rules used by `normalizeAccountStorage`
  * and the import transaction.
  *
  * The two public exports that were already re-exported from `lib/storage.ts`
@@ -13,10 +13,12 @@
  */
 
 import type { AccountMetadataV3 } from "./migrations.js";
+import { extractAccountUserId } from "../auth/token-utils.js";
 
 export type AccountLike = {
   organizationId?: string;
   accountId?: string;
+  accountUserId?: string;
   accountIdSource?: AccountMetadataV3["accountIdSource"];
   accountLabel?: string;
   email?: string;
@@ -32,16 +34,23 @@ const normalizeWorkspaceIdentityPart = (value: unknown): string | undefined =>
 export function getWorkspaceIdentityKey(account: {
   organizationId?: string;
   accountId?: string;
+  accountUserId?: string;
   refreshToken: string;
 }): string {
   const organizationId = normalizeWorkspaceIdentityPart(account.organizationId);
   const accountId = normalizeWorkspaceIdentityPart(account.accountId);
+  const accountUserId = normalizeWorkspaceIdentityPart(account.accountUserId);
   const refreshToken = normalizeWorkspaceIdentityPart(account.refreshToken) ?? "";
   if (organizationId) {
-    return accountId
-      ? `organizationId:${organizationId}|accountId:${accountId}`
-      : `organizationId:${organizationId}`;
+    const parts = [`organizationId:${organizationId}`];
+    if (accountId) parts.push(`accountId:${accountId}`);
+    if (accountUserId) parts.push(`accountUserId:${accountUserId}`);
+    return parts.join("|");
   }
+  if (accountId && accountUserId) {
+    return `accountId:${accountId}|accountUserId:${accountUserId}`;
+  }
+  if (accountUserId) return `accountUserId:${accountUserId}`;
   if (accountId) {
     return `accountId:${accountId}`;
   }
@@ -58,9 +67,17 @@ export function clampIndex(index: number, length: number): number {
 }
 
 export function toAccountIdentityKeys(
-  account: Pick<AccountMetadataV3, "organizationId" | "accountId" | "refreshToken">,
+  account: Pick<AccountMetadataV3, "organizationId" | "accountId" | "accountUserId" | "refreshToken">,
 ): string[] {
   const keys: string[] = [];
+  const accountUserId =
+    typeof account.accountUserId === "string" ? account.accountUserId.trim() : "";
+  if (accountUserId) {
+    const accountId = typeof account.accountId === "string" ? account.accountId.trim() : "";
+    const organizationId =
+      typeof account.organizationId === "string" ? account.organizationId.trim() : "";
+    keys.push(`seat:${organizationId}|${accountId}|${accountUserId}`);
+  }
   const organizationId = typeof account.organizationId === "string" ? account.organizationId.trim() : "";
   if (organizationId) {
     keys.push(`organizationId:${organizationId}`);
@@ -69,6 +86,14 @@ export function toAccountIdentityKeys(
   const accountId = typeof account.accountId === "string" ? account.accountId.trim() : "";
   if (accountId) {
     keys.push(`accountId:${accountId}`);
+  }
+
+  // Ranked BELOW organizationId/accountId on purpose. One OAuth grant can back
+  // several workspace variants that all carry the same member id, so a bare
+  // member key must never outrank a workspace key when resolving the target of
+  // a single-use refresh-token write.
+  if (accountUserId) {
+    keys.push(`accountUserId:${accountUserId}`);
   }
 
   const refreshToken = typeof account.refreshToken === "string" ? account.refreshToken.trim() : "";
@@ -80,7 +105,7 @@ export function toAccountIdentityKeys(
 }
 
 export function toAccountIdentityKey(
-  account: Pick<AccountMetadataV3, "organizationId" | "accountId" | "refreshToken">,
+  account: Pick<AccountMetadataV3, "organizationId" | "accountId" | "accountUserId" | "refreshToken">,
 ): string | undefined {
   return toAccountIdentityKeys(account)[0];
 }
@@ -92,12 +117,18 @@ export function extractActiveKeys(accounts: unknown[], activeIndex: number): str
   return toAccountIdentityKeys({
     organizationId: typeof candidate.organizationId === "string" ? candidate.organizationId : undefined,
     accountId: typeof candidate.accountId === "string" ? candidate.accountId : undefined,
+    accountUserId:
+      typeof candidate.accountUserId === "string"
+        ? candidate.accountUserId
+        : extractAccountUserId(
+            typeof candidate.accessToken === "string" ? candidate.accessToken : undefined,
+          ),
     refreshToken: typeof candidate.refreshToken === "string" ? candidate.refreshToken : "",
   });
 }
 
 export function findAccountIndexByIdentityKeys(
-  accounts: Pick<AccountMetadataV3, "organizationId" | "accountId" | "refreshToken">[],
+  accounts: Pick<AccountMetadataV3, "organizationId" | "accountId" | "accountUserId" | "refreshToken">[],
   identityKeys: string[],
 ): number {
   if (identityKeys.length === 0) return -1;
@@ -176,6 +207,7 @@ function mergeAccountRecords<T extends AccountLike>(target: T, source: T): T {
     ...newest,
     organizationId: target.organizationId ?? source.organizationId,
     accountId: target.accountId ?? source.accountId,
+    accountUserId: target.accountUserId ?? source.accountUserId,
     accountIdSource: target.accountIdSource ?? source.accountIdSource,
     accountLabel: target.accountLabel ?? source.accountLabel,
     email: target.email ?? source.email,
@@ -206,6 +238,11 @@ function sameEmailIdentity(left: string | undefined, right: string | undefined):
 
 function isLegacyRefreshTokenDuplicate<T extends AccountLike>(left: T, right: T): boolean {
   const refreshToken = normalizeWorkspaceIdentityPart(left.refreshToken);
+  const leftAccountUserId = normalizeWorkspaceIdentityPart(left.accountUserId);
+  const rightAccountUserId = normalizeWorkspaceIdentityPart(right.accountUserId);
+  if (leftAccountUserId && rightAccountUserId && leftAccountUserId !== rightAccountUserId) {
+    return false;
+  }
   const leftOrganizationId = normalizeWorkspaceIdentityPart(left.organizationId);
   const rightOrganizationId = normalizeWorkspaceIdentityPart(right.organizationId);
   if (leftOrganizationId && rightOrganizationId && leftOrganizationId !== rightOrganizationId) {
@@ -274,8 +311,46 @@ function deduplicateLegacyRefreshTokenDuplicates<T extends AccountLike>(accounts
   return working.filter((account, index) => !!account && !indicesToRemove.has(index));
 }
 
+/**
+ * Backfill the member id onto records that predate it, but only when the
+ * workspace has exactly ONE seat to attribute them to.
+ *
+ * `toAccountIdentityKey` returns a `seat:` key for member-bearing records, so a
+ * legacy twin whose access token no longer decodes would keep the older
+ * `organizationId:`/`accountId:` key and stop deduplicating against its own
+ * newer record, surviving as a rotation slot with a dead refresh token. Merging
+ * is only safe when attribution is unambiguous: with two or more seats in the
+ * workspace there is no way to tell which one the memberless record belongs to,
+ * so it is left alone.
+ */
+function backfillUniqueSeatIdentity<T extends AccountLike>(accounts: T[]): T[] {
+  const seatsByWorkspace = new Map<string, Set<string>>();
+  for (const account of accounts) {
+    const accountUserId = account?.accountUserId?.trim();
+    if (!account || !accountUserId) continue;
+    const workspaceKey = JSON.stringify([
+      account.organizationId?.trim() ?? "",
+      account.accountId?.trim() ?? "",
+    ]);
+    const seats = seatsByWorkspace.get(workspaceKey);
+    if (seats) seats.add(accountUserId);
+    else seatsByWorkspace.set(workspaceKey, new Set([accountUserId]));
+  }
+
+  return accounts.map((account) => {
+    if (!account || account.accountUserId?.trim()) return account;
+    const organizationId = account.organizationId?.trim() ?? "";
+    const accountId = account.accountId?.trim() ?? "";
+    if (!organizationId && !accountId) return account;
+    const seats = seatsByWorkspace.get(JSON.stringify([organizationId, accountId]));
+    if (!seats || seats.size !== 1) return account;
+    const [accountUserId] = [...seats];
+    return accountUserId ? ({ ...account, accountUserId } as T) : account;
+  });
+}
+
 function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
-  const working = [...accounts];
+  const working = backfillUniqueSeatIdentity(accounts);
   const keyToIndex = new Map<string, number>();
   const indicesToRemove = new Set<number>();
 
@@ -313,11 +388,11 @@ function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
 
 /**
  * Removes duplicate accounts, keeping the most recently used entry for each unique key.
- * Deduplication identity hierarchy: organizationId -> accountId -> refreshToken.
+ * Deduplication identity hierarchy: workspace + member identity, then refreshToken.
  * @param accounts - Array of accounts to deduplicate
  * @returns New array with duplicates removed
  */
-export function deduplicateAccounts<T extends { organizationId?: string; accountId?: string; refreshToken: string; lastUsed?: number; addedAt?: number }>(
+export function deduplicateAccounts<T extends { organizationId?: string; accountId?: string; accountUserId?: string; refreshToken: string; lastUsed?: number; addedAt?: number }>(
   accounts: T[],
 ): T[] {
   return deduplicateAccountsByKey(accounts);
@@ -401,7 +476,7 @@ export function deduplicateAccountsByEmail<T extends { organizationId?: string; 
 
 /**
  * Applies storage deduplication semantics used by normalize/import paths.
- * 1) Dedupe only exact identity duplicates (organizationId -> accountId -> refreshToken),
+ * 1) Dedupe only exact workspace/member identity duplicates, then refreshToken,
  *    preserving distinct workspace variants that share a refresh token.
  * 2) Then apply legacy email dedupe only for entries that still do not have organizationId/accountId.
  */

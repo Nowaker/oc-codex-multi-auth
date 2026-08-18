@@ -48,6 +48,7 @@ export class AccountPersistence {
 			version: 3,
 			accounts: this.state.accounts.map((account) => ({
 				accountId: account.accountId,
+				accountUserId: account.accountUserId,
 				organizationId: account.organizationId,
 				accountIdSource: account.accountIdSource,
 				accountLabel: account.accountLabel,

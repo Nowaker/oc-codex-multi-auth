@@ -12,6 +12,7 @@ import {
 	type AccountSelectionResult,
 	type TokenSuccessWithAccount,
 } from "../lib/auth/login-runner.js";
+import { JWT_CLAIM_PATH } from "../lib/constants.js";
 import { loadAccounts, setStoragePathDirect } from "../lib/storage.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
 
@@ -469,14 +470,14 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 	});
 });
 
-describe("login-runner per-workspace quota binding (#226)", () => {
+describe("login-runner account and quota identities", () => {
 	let testDir: string;
 	let storagePath: string;
 
 	beforeEach(async () => {
 		testDir = join(
 			tmpdir(),
-			`login-runner-226-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+			`login-runner-identity-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
 		storagePath = join(testDir, "oc-codex-multi-auth-accounts.json");
 		await fs.mkdir(testDir, { recursive: true });
@@ -494,6 +495,65 @@ describe("login-runner per-workspace quota binding (#226)", () => {
 			Buffer.from(JSON.stringify(value)).toString("base64url");
 		return `${b64({ alg: "none" })}.${b64(payload)}.sig`;
 	};
+
+	const businessAccessTokenFor = (
+		chatgptAccountId: string,
+		accountUserId: string,
+		email: string,
+	): string =>
+		encodeJwt({
+			[JWT_CLAIM_PATH]: {
+				chatgpt_account_id: chatgptAccountId,
+				chatgpt_account_user_id: accountUserId,
+				email,
+			},
+		});
+
+	it("keeps two Business members with the same workspace account id separate", async () => {
+		const persistMember = async (
+			memberId: string,
+			email: string,
+			refresh: string,
+		): Promise<void> => {
+			await persistAccountPool(
+				[
+					{
+						type: "success",
+						access: businessAccessTokenFor("business-account", memberId, email),
+						refresh,
+						expires: Date.now() + 60_000,
+					},
+				],
+				false,
+			);
+		};
+
+		await persistMember("member-owner", "owner@example.com", "refresh-owner");
+		await persistMember("member-invited", "invited@example.com", "refresh-invited");
+
+		let stored = await loadAccounts();
+		expect(stored?.accounts).toHaveLength(2);
+		expect(stored?.accounts.map((account) => account.accountId)).toEqual([
+			"business-account",
+			"business-account",
+		]);
+		expect(stored?.accounts.map((account) => account.accountUserId)).toEqual([
+			"member-owner",
+			"member-invited",
+		]);
+		expect(stored?.accounts.map((account) => account.refreshToken)).toEqual([
+			"refresh-owner",
+			"refresh-invited",
+		]);
+
+		await persistMember("member-owner", "owner@example.com", "refresh-owner-new");
+		stored = await loadAccounts();
+		expect(stored?.accounts).toHaveLength(2);
+		expect(stored?.accounts.map((account) => account.refreshToken)).toEqual([
+			"refresh-owner-new",
+			"refresh-invited",
+		]);
+	});
 
 	/** An access token that names one ChatGPT account, the unit the backend meters. */
 	const accessTokenFor = (chatgptAccountId: string): string =>

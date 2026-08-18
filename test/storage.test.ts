@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { toAccountIdentityKeys } from "../lib/storage/identity.js";
 import { promises as fs, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -46,6 +47,19 @@ describe("storage", () => {
       ).toBe("accountId:workspace-only");
     });
 
+    it("includes the Business member id in workspace identity", () => {
+      expect(
+        getWorkspaceIdentityKey({
+          organizationId: "org-business",
+          accountId: "business-account",
+          accountUserId: "member-invited",
+          refreshToken: "member-refresh",
+        }),
+      ).toBe(
+        "organizationId:org-business|accountId:business-account|accountUserId:member-invited",
+      );
+    });
+
     it("falls back to refreshToken when workspace ids are missing", () => {
       expect(
         getWorkspaceIdentityKey({
@@ -58,6 +72,134 @@ describe("storage", () => {
   });
 
   describe("deduplication", () => {
+    it("preserves separate members of the same Business workspace", () => {
+      const accounts = deduplicateAccounts([
+        {
+          organizationId: "org-business",
+          accountId: "business-account",
+          accountUserId: "member-owner",
+          refreshToken: "owner-refresh",
+          addedAt: 1,
+          lastUsed: 1,
+        },
+        {
+          organizationId: "org-business",
+          accountId: "business-account",
+          accountUserId: "member-invited",
+          refreshToken: "invited-refresh",
+          addedAt: 2,
+          lastUsed: 2,
+        },
+      ]);
+
+      expect(accounts).toHaveLength(2);
+      expect(accounts.map((account) => account.accountUserId)).toEqual([
+        "member-owner",
+        "member-invited",
+      ]);
+    });
+
+    it("does not collapse distinct Business members that share a legacy refresh token", () => {
+      const normalized = normalizeAccountStorage({
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accountUserId: "member-owner",
+            refreshToken: "shared-refresh",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accountUserId: "member-invited",
+            refreshToken: "shared-refresh",
+            addedAt: 2,
+            lastUsed: 2,
+          },
+        ],
+      });
+
+      expect(normalized?.accounts.map((account) => account.accountUserId)).toEqual([
+        "member-owner",
+        "member-invited",
+      ]);
+    });
+
+    it("preserves the active Business member while normalizing storage", () => {
+      const normalized = normalizeAccountStorage({
+        version: 3,
+        activeIndex: 1,
+        accounts: [
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accountUserId: "member-owner",
+            refreshToken: "owner-refresh",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accountUserId: "member-invited",
+            refreshToken: "invited-refresh",
+            addedAt: 2,
+            lastUsed: 2,
+          },
+        ],
+      });
+
+      expect(normalized?.accounts).toHaveLength(2);
+      expect(normalized?.activeIndex).toBe(1);
+      expect(normalized?.accounts[normalized.activeIndex]?.accountUserId).toBe(
+        "member-invited",
+      );
+    });
+
+    it("backfills member identity from cached tokens before deduplication", () => {
+      const accessToken = (memberId: string) => {
+        const payload = {
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "business-account",
+            chatgpt_account_user_id: memberId,
+          },
+        };
+        return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+      };
+      const normalized = normalizeAccountStorage({
+        version: 3,
+        activeIndex: 1,
+        accounts: [
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accessToken: accessToken("member-owner"),
+            refreshToken: "owner-refresh",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+          {
+            organizationId: "org-business",
+            accountId: "business-account",
+            accessToken: accessToken("member-invited"),
+            refreshToken: "invited-refresh",
+            addedAt: 2,
+            lastUsed: 2,
+          },
+        ],
+      });
+
+      expect(normalized?.accounts.map((account) => account.accountUserId)).toEqual([
+        "member-owner",
+        "member-invited",
+      ]);
+      expect(normalized?.activeIndex).toBe(1);
+    });
+
     it("remaps activeIndex after deduplication using active account key", () => {
       const now = Date.now();
 
@@ -1736,6 +1878,47 @@ describe("storage", () => {
       );
     });
 
+    it("backfills member identity before flagged-account deduplication", async () => {
+      const accessToken = (memberId: string) => {
+        const payload = {
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "business-account",
+            chatgpt_account_user_id: memberId,
+          },
+        };
+        return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+      };
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [
+          {
+            refreshToken: "owner-refresh",
+            accessToken: accessToken("member-owner"),
+            organizationId: "org-business",
+            accountId: "business-account",
+            flaggedAt: 100,
+            addedAt: 100,
+            lastUsed: 100,
+          },
+          {
+            refreshToken: "invited-refresh",
+            accessToken: accessToken("member-invited"),
+            organizationId: "org-business",
+            accountId: "business-account",
+            flaggedAt: 200,
+            addedAt: 200,
+            lastUsed: 200,
+          },
+        ],
+      });
+
+      const loaded = await loadFlaggedAccounts();
+      expect(loaded.accounts.map((account) => account.accountUserId)).toEqual([
+        "member-owner",
+        "member-invited",
+      ]);
+    });
+
     it("serializes flagged account read-modify-write updates", async () => {
       const writeWorkspace = async (
         refreshToken: string,
@@ -2582,5 +2765,82 @@ describe("storage", () => {
       const onDisk = await fs.readFile(testStoragePath, "utf-8");
       expect(onDisk).toBe(originalContent);
     });
+  });
+});
+
+describe("Business seat identity keys", () => {
+  it("ranks the bare member key below the workspace keys", () => {
+    const keys = toAccountIdentityKeys({
+      organizationId: "org-one",
+      accountId: "business-account",
+      accountUserId: "member-owner",
+      refreshToken: "refresh-token",
+    });
+
+    // The first matching key decides where a single-use refresh token is
+    // written. One grant can back several workspace variants that all carry the
+    // same member id, so a bare member key must never outrank a workspace key.
+    expect(keys[0]).toBe("seat:org-one|business-account|member-owner");
+    expect(keys.indexOf("accountUserId:member-owner")).toBeGreaterThan(
+      keys.indexOf("organizationId:org-one"),
+    );
+    expect(keys.indexOf("accountUserId:member-owner")).toBeGreaterThan(
+      keys.indexOf("accountId:business-account"),
+    );
+  });
+
+  it("merges a memberless legacy twin into the only seat of its workspace", () => {
+    const deduped = deduplicateAccounts([
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        refreshToken: "stale-refresh",
+        addedAt: 1,
+        lastUsed: 1,
+      },
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        accountUserId: "member-owner",
+        refreshToken: "current-refresh",
+        addedAt: 2,
+        lastUsed: 2,
+      },
+    ]);
+
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0]?.refreshToken).toBe("current-refresh");
+  });
+
+  it("leaves a memberless record alone when the workspace has two seats", () => {
+    // With more than one seat there is no way to tell which member the legacy
+    // record belongs to, so merging it would corrupt one of them.
+    const deduped = deduplicateAccounts([
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        refreshToken: "legacy-refresh",
+        addedAt: 1,
+        lastUsed: 1,
+      },
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        accountUserId: "member-owner",
+        refreshToken: "owner-refresh",
+        addedAt: 2,
+        lastUsed: 2,
+      },
+      {
+        organizationId: "org-one",
+        accountId: "business-account",
+        accountUserId: "member-invited",
+        refreshToken: "invited-refresh",
+        addedAt: 3,
+        lastUsed: 3,
+      },
+    ]);
+
+    expect(deduped).toHaveLength(3);
   });
 });

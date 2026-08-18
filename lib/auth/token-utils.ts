@@ -415,6 +415,22 @@ export function extractAccountId(accessToken?: string): string | undefined {
 }
 
 /**
+ * Extracts the account-scoped ChatGPT user id from an access token.
+ *
+ * Business workspace members share `chatgpt_account_id`, but each seat has a
+ * distinct `chatgpt_account_user_id`. Keeping both values prevents the last
+ * OAuth login for a workspace from replacing every member's credential.
+ */
+export function extractAccountUserId(accessToken?: string): string | undefined {
+	if (!accessToken) return undefined;
+	const decoded = decodeJWT(accessToken);
+	const accountUserId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_user_id;
+	return typeof accountUserId === "string" && accountUserId.trim()
+		? accountUserId.trim()
+		: undefined;
+}
+
+/**
  * Extracts the email address from OAuth tokens.
  * Checks id_token first (where OpenAI puts email), then falls back to access_token.
  */

@@ -82,6 +82,8 @@ const SENSITIVE_KEYS = new Set([
 	"email",
 	"accountid",
 	"account_id",
+	"accountuserid",
+	"account_user_id",
 	// Cookie-family headers carry session/opaque credentials that are not
 	// token-SHAPED, so the shape-based maskString would emit them verbatim.
 	"cookie",

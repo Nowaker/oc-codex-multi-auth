@@ -15,6 +15,7 @@ import {
 	type AccountWithMetrics,
 	type HybridSelectionOptions,
 } from "../rotation.js";
+import { matchesModelPoolAccountKey } from "./pool-identity.js";
 import type { CooldownReason } from "../storage.js";
 import { nowMs } from "../utils.js";
 import {
@@ -61,15 +62,13 @@ export class AccountRotation {
 		excludedIndices?: ReadonlySet<number>,
 	): ReadonlySet<number> | null {
 		if (!accountIds?.length) return null;
-		const preferredIds = new Set(accountIds);
 		const indices = this.state.accounts
 			.filter(
 				(account) =>
-				account &&
-				account.accountId !== undefined &&
-				preferredIds.has(account.accountId) &&
-				!excludedIndices?.has(account.index) &&
-				this.isSelectable(account, family, model),
+					account &&
+					accountIds.some((key) => matchesModelPoolAccountKey(account, key)) &&
+					!excludedIndices?.has(account.index) &&
+					this.isSelectable(account, family, model),
 			)
 			.map((account) => account.index);
 		return indices.length > 0

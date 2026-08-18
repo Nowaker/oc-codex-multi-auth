@@ -24,6 +24,7 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
@@ -124,6 +125,7 @@ import {
         parseRateLimitReason,
 	lookupCodexCliTokensByEmail,
 } from "./lib/accounts.js";
+import { matchesModelPoolAccountKey } from "./lib/accounts/pool-identity.js";
 import { resolveDisplayEmail } from "./lib/account-display.js";
 import { CodexAuthError } from "./lib/errors.js";
 import {
@@ -137,12 +139,12 @@ import {
 	saveFlaggedAccounts,
 	withFlaggedAccountStorageTransaction,
 	clearFlaggedAccounts,
-	getWorkspaceIdentityKey,
 	StorageError,
 	formatStorageErrorHint,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
 } from "./lib/storage.js";
+import { getWorkspaceIdentityKey } from "./lib/storage/identity.js";
 import {
 	createCodexHeaders,
 	extractRequestUrl,
@@ -2098,8 +2100,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							? "strict"
 							: preferredAccountIds.length === 0
 							? "general"
-							: account.accountId !== undefined &&
-								preferredAccountIds.includes(account.accountId)
+							: preferredAccountIds.some((key) =>
+									matchesModelPoolAccountKey(account, key),
+								)
 								? "preferred"
 								: "general-fallback",
 					configuredAccountPoolSize: preferredAccountIds.length,
@@ -2311,7 +2314,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							// RC-8: per-(account, family) circuit-breaker key. The breaker gates
 							// upstream calls so that repeated failures short-circuit to the
 							// rotation path instead of hammering a degraded endpoint.
-							const circuitBreakerKey = `${accountId}:${modelFamily}`;
+							const stableWorkspaceIdentity =
+								account.accountId || account.accountUserId || account.organizationId
+									? getWorkspaceIdentityKey(account)
+									: undefined;
+							const breakerOwner = stableWorkspaceIdentity
+								? `identity-${createHash("sha256")
+										.update(stableWorkspaceIdentity)
+										.digest("hex")
+										.slice(0, 16)}`
+								: `index-${account.index}`;
+							const circuitBreakerKey = `${accountId}:${breakerOwner}:${modelFamily}`;
 							const circuitBreaker = getCircuitBreaker(circuitBreakerKey);
 
 							while (true) {

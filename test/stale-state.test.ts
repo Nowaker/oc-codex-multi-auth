@@ -4,6 +4,7 @@ import {
 	clearRefreshedAccountsStaleState,
 	findDisabledTokenSourceDuplicates,
 	findDisabledAccountsWithFreshCredential,
+	findConflictingBusinessMemberCredentials,
 	findStaleRecoverableAccounts,
 	type StaleStateAccount,
 } from "../lib/accounts/stale-state.js";
@@ -126,6 +127,58 @@ describe("findDisabledTokenSourceDuplicates", () => {
 	});
 });
 
+describe("findConflictingBusinessMemberCredentials", () => {
+	it("flags different emails backed by the same Business member credential", () => {
+		const accounts = [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				email: "owner@example.com",
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				email: "invited@example.com",
+			},
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([[0, 1]]);
+	});
+
+	it("derives the member id from cached access tokens for existing records", () => {
+		const payload = {
+			"https://api.openai.com/auth": {
+				chatgpt_account_id: "business-account",
+				chatgpt_account_user_id: "member-owner",
+			},
+		};
+		const accessToken = `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+		const accounts = [
+			{ accountId: "business-account", email: "owner@example.com", accessToken },
+			{ accountId: "business-account", email: "invited@example.com", accessToken },
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([[0, 1]]);
+	});
+
+	it("keeps two member ids in one Business workspace separate", () => {
+		const accounts = [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				email: "owner@example.com",
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-invited",
+				email: "invited@example.com",
+			},
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([]);
+	});
+});
+
 describe("findStaleRecoverableAccounts", () => {
 	const NOW = 1_700_000_000_000;
 	const FUTURE = NOW + 3_600_000;
@@ -206,5 +259,65 @@ describe("findDisabledAccountsWithFreshCredential (issue #171)", () => {
 			{ enabled: false, accessToken: "c", expiresAt: FUTURE },
 		];
 		expect(findDisabledAccountsWithFreshCredential(accounts, NOW)).toEqual([0, 2]);
+	});
+});
+
+describe("findConflictingBusinessMemberCredentials (#230 symptom)", () => {
+	it("flags records that were all overwritten with the last login's email", () => {
+		// Issue #230 reports that every affected record ends up carrying the SAME
+		// email, so requiring differing emails would stay silent on exactly the
+		// corruption this scan exists to surface.
+		const accounts = [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				email: "b@example.com",
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				email: "b@example.com",
+			},
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([[0, 1]]);
+	});
+
+	it("ignores distinct workspace variants of a single OAuth grant", () => {
+		const accounts = [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				organizationId: "org-one",
+				email: "owner@example.com",
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				organizationId: "org-two",
+				email: "owner@example.com",
+			},
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([]);
+	});
+
+	it("still flags duplicates that share one organizationId", () => {
+		const accounts = [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				organizationId: "org-one",
+				email: "owner@example.com",
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				organizationId: "org-one",
+				email: "owner@example.com",
+			},
+		];
+
+		expect(findConflictingBusinessMemberCredentials(accounts)).toEqual([[0, 1]]);
 	});
 });

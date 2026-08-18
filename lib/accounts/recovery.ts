@@ -11,6 +11,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+	extractAccountUserId,
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "../auth/token-utils.js";
@@ -166,6 +167,23 @@ export class AccountRecovery {
 				!account.access || account.expires === undefined || account.expires <= now;
 			if (missingOrExpired) {
 				account.access = cached.accessToken;
+				// The Codex CLI cache is keyed by EMAIL, so one person's Business seat
+				// and their personal account both resolve here. Only adopt the cached
+				// member id when the cached token belongs to the same workspace and the
+				// record is not pinned to a different identity.
+				const cachedMemberId = extractAccountUserId(cached.accessToken);
+				const cacheMatchesWorkspace =
+					!account.accountId ||
+					!cached.accountId ||
+					cached.accountId === account.accountId;
+				if (
+					cachedMemberId &&
+					cacheMatchesWorkspace &&
+					(!account.accountUserId ||
+						shouldUpdateAccountIdFromToken(account.accountIdSource, account.accountId))
+				) {
+					account.accountUserId = cachedMemberId;
+				}
 				if (typeof cached.expiresAt === "number") {
 					account.expires = cached.expiresAt;
 				}

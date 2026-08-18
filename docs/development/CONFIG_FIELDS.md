@@ -256,7 +256,8 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 
 ### `modelAccountPools`
 
-The plugin runtime config can map effective model IDs to preferred stable account IDs:
+The plugin runtime config can map effective model IDs to preferred stable account or
+Business-seat identities:
 
 ```json
 {
@@ -279,7 +280,10 @@ Empty lists and unmapped models use the general pool directly.
 
 `codex-pool` is the supported mutation surface. It accepts 1-based account
 numbers for `set`, `add`, and `remove`, but resolves and atomically persists
-only stable account IDs. `set-mode` switches between `preferred` and `strict`,
+stable identities. Business members that share one workspace are persisted as
+distinct seat keys derived from `accountId` and `accountUserId`. Legacy raw
+`accountId` entries remain supported and match every seat in that workspace;
+the next mutation canonicalizes known entries. `set-mode` switches between `preferred` and `strict`,
 `clear` removes a model mapping and its mode, and every mutation
 supports a dry-run preview. Writes preserve unrelated raw config fields and
 refuse to replace malformed JSON or an invalid existing pool.

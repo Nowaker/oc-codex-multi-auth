@@ -22,6 +22,7 @@
  */
 
 import { nowMs } from "../utils.js";
+import { extractAccountUserId } from "../auth/token-utils.js";
 
 /**
  * Subset of a stored account record this module mutates. Kept permissive so the
@@ -167,6 +168,54 @@ export function findDisabledTokenSourceDuplicates(
 	return duplicates;
 }
 
+export interface BusinessMemberCredentialScanAccount {
+	accountId?: string;
+	accountUserId?: string;
+	organizationId?: string;
+	accessToken?: string;
+	email?: string;
+}
+
+/**
+ * Find records whose OAuth tokens resolve to the same member of the same
+ * Business workspace. Such records cannot consume separate quotas and must be
+ * re-authenticated independently. Records that differ only by organizationId
+ * are legitimate workspace variants of a single grant and are not reported.
+ */
+export function findConflictingBusinessMemberCredentials(
+	accounts: BusinessMemberCredentialScanAccount[],
+): number[][] {
+	const groups = new Map<string, number[]>();
+	for (let index = 0; index < accounts.length; index += 1) {
+		const account = accounts[index];
+		if (!account) continue;
+		const accountId = account.accountId?.trim();
+		const accountUserId =
+			account.accountUserId?.trim() || extractAccountUserId(account.accessToken);
+		if (!accountId || !accountUserId) continue;
+		const key = JSON.stringify([accountId, accountUserId]);
+		const group = groups.get(key);
+		if (group) group.push(index);
+		else groups.set(key, [index]);
+	}
+
+	return [...groups.values()].filter((indices) => {
+		if (indices.length < 2) return false;
+		// Issue #230's primary symptom is that EVERY affected record ends up with
+		// the LAST login's email, so requiring differing emails would stay silent on
+		// exactly the corruption this scan exists to surface. Instead, excuse only
+		// the one legitimate shape: distinct workspace variants of a single grant,
+		// which are separated by organizationId.
+		const organizationIds = indices.map(
+			(index) => accounts[index]?.organizationId?.trim() ?? "",
+		);
+		const isDistinctWorkspaceVariants =
+			organizationIds.every((id) => !!id) &&
+			new Set(organizationIds).size === organizationIds.length;
+		return !isDistinctWorkspaceVariants;
+	});
+}
+
 /**
  * Subset of a stored account used for the read-only stale-state diagnostic.
  */
@@ -264,4 +313,3 @@ export function findDisabledAccountsWithFreshCredential(
 	}
 	return flagged;
 }
-

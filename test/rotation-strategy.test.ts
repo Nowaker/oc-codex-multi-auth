@@ -9,6 +9,7 @@ import {
 import type { PluginConfig } from "../lib/types.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import type { ModelFamily } from "../lib/prompts/codex.js";
+import { getModelPoolAccountKey } from "../lib/accounts/pool-identity.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
@@ -110,6 +111,57 @@ describe("model account pool config", () => {
 		} as PluginConfig;
 		expect(getModelAccountPoolMode(config, "gpt-5.6-sol")).toBe("strict");
 		expect(getModelAccountPoolMode(config, "gpt-5.6-terra")).toBe("preferred");
+	});
+});
+
+describe("Business seat model pools", () => {
+	const businessStorage: AccountStorageV3 = {
+		version: 3,
+		activeIndex: 0,
+		accounts: [
+			{
+				accountId: "business-account",
+				accountUserId: "member-owner",
+				refreshToken: "owner-refresh",
+				addedAt: 1,
+				lastUsed: 1,
+			},
+			{
+				accountId: "business-account",
+				accountUserId: "member-invited",
+				refreshToken: "invited-refresh",
+				addedAt: 2,
+				lastUsed: 2,
+			},
+		],
+	};
+
+	it.each(["hybrid", "sticky", "round-robin"] as const)(
+		"selects only the configured Business seat with %s rotation",
+		(strategy) => {
+			const manager = new AccountManager(undefined, businessStorage);
+			const invitedKey = getModelPoolAccountKey(businessStorage.accounts[1]);
+			const selected = manager.getAccountForStrategy(
+				strategy,
+				FAMILY,
+				"gpt-5.6-sol",
+				{},
+				invitedKey ? [invitedKey] : [],
+			);
+			expect(selected?.index).toBe(1);
+		},
+	);
+
+	it("keeps legacy workspace IDs compatible with every Business seat", () => {
+		const manager = new AccountManager(undefined, businessStorage);
+		const selected = manager.getAccountForStrategy(
+			"round-robin",
+			FAMILY,
+			"gpt-5.6-sol",
+			{},
+			["business-account"],
+		);
+		expect(selected?.index).toBe(0);
 	});
 });
 
@@ -291,5 +343,56 @@ describe("strategy dispatcher (#183)", () => {
 			["unknown-account-id"],
 		);
 		expect(selected?.index).toBe(0);
+	});
+});
+
+describe("Business seat pool keys derived from bearer tokens", () => {
+	const seatToken = (memberId: string) => {
+		const payload = {
+			"https://api.openai.com/auth": {
+				chatgpt_account_id: "business-account",
+				chatgpt_account_user_id: memberId,
+			},
+		};
+		return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
+	};
+
+	it("derives the member id from a stored accessToken", () => {
+		expect(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				accessToken: seatToken("member-invited"),
+			}),
+		).toBe(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				accountUserId: "member-invited",
+			}),
+		);
+	});
+
+	it("derives the member id from a live account's access token", () => {
+		expect(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				access: seatToken("member-owner"),
+			}),
+		).toBe(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				accountUserId: "member-owner",
+			}),
+		);
+	});
+
+	it("never falls back to the workspace-wide key when a token carries a member id", () => {
+		// The workspace-wide key matches EVERY seat, so falling back to it would
+		// silently widen a pool the operator scoped to one member.
+		expect(
+			getModelPoolAccountKey({
+				accountId: "business-account",
+				accessToken: seatToken("member-owner"),
+			}),
+		).not.toBe("business-account");
 	});
 });

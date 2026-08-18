@@ -42,6 +42,19 @@ vi.mock("../lib/auth/auth.js", () => ({
 			state: stateMatch?.[1],
 		};
 	}),
+	decodeJWT: vi.fn((token: string) => {
+		try {
+			const payload = token.split(".")[1];
+			return payload
+				? (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
+						string,
+						unknown
+					>)
+				: null;
+		} catch {
+			return null;
+		}
+	}),
 	REDIRECT_URI: "http://localhost:1455/auth/callback",
 }));
 
@@ -526,6 +539,7 @@ vi.mock("../lib/accounts.js", () => {
 		),
 		extractAccountEmail: vi.fn(() => "user@example.com"),
 		extractAccountId: vi.fn(() => "account-1"),
+		extractAccountUserId: vi.fn(() => undefined),
 		resolveRequestAccountId: vi.fn(
 			(_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) =>
 				tokenId,
