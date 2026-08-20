@@ -9,14 +9,13 @@ import {
 	createUsageRequestTimeoutError,
 } from "./error-sentinels.js";
 import { logWarn } from "./logger.js";
-import { queuedRefresh } from "./refresh-queue.js";
+import { coordinatePersistedRefresh } from "./storage/coordinated-refresh.js";
 import {
 	createCodexHeaders,
 	isDeactivatedWorkspaceError,
 	isInvalidatedAuthTokenError,
 } from "./request/fetch-helpers.js";
 import {
-	withAccountStorageTransaction,
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "./storage.js";
@@ -426,112 +425,6 @@ function applyRefreshedCredentials(
 	target.expiresAt = result.expires;
 }
 
-async function persistRefreshedCredentials(params: {
-	previousRefreshToken: string;
-	accountId?: string;
-	accountUserId?: string;
-	organizationId?: string;
-	email?: string;
-	refreshResult: {
-		refresh: string;
-		access: string;
-		expires: number;
-	};
-}): Promise<boolean> {
-	return await withAccountStorageTransaction(async (current, persist) => {
-		const latestStorage: AccountStorageV3 =
-			current ??
-			({
-				version: 3,
-				accounts: [],
-				activeIndex: 0,
-				activeIndexByFamily: {},
-			} satisfies AccountStorageV3);
-
-		const uniqueMatch = <Value>(matches: Value[]): Value | undefined =>
-			matches.length === 1 ? matches[0] : undefined;
-		const normalizedAccountUserId = params.accountUserId?.trim();
-		const storedAccountUserId = (storedAccount: AccountMetadataV3): string | undefined =>
-			storedAccount.accountUserId?.trim() ||
-			extractAccountUserId(storedAccount.accessToken);
-
-		let updated = false;
-		if (params.previousRefreshToken) {
-			for (const storedAccount of latestStorage.accounts) {
-				const memberId = storedAccountUserId(storedAccount);
-				if (
-					storedAccount.refreshToken === params.previousRefreshToken &&
-					(!normalizedAccountUserId || !memberId || memberId === normalizedAccountUserId)
-				) {
-					applyRefreshedCredentials(storedAccount, params.refreshResult);
-					updated = true;
-				}
-			}
-		}
-
-		if (!updated) {
-			const normalizedOrganizationId = params.organizationId?.trim() ?? "";
-			const normalizedEmail = params.email?.trim().toLowerCase();
-			const memberMatches = normalizedAccountUserId
-				? latestStorage.accounts.filter(
-						(storedAccount) =>
-							storedAccountUserId(storedAccount) === normalizedAccountUserId &&
-							(!params.accountId || storedAccount.accountId === params.accountId),
-					)
-				: [];
-			const legacyAccounts = latestStorage.accounts.filter(
-				(storedAccount) => !storedAccountUserId(storedAccount),
-			);
-			const orgScopedMatches = params.accountId
-				? legacyAccounts.filter(
-						(storedAccount) =>
-							storedAccount.accountId === params.accountId &&
-							(storedAccount.organizationId?.trim() ?? "") ===
-								normalizedOrganizationId,
-					)
-				: [];
-			const accountIdMatches = params.accountId
-				? legacyAccounts.filter(
-						(storedAccount) => storedAccount.accountId === params.accountId,
-					)
-				: [];
-			const emailMatches =
-				normalizedEmail && !params.accountId
-					? legacyAccounts.filter(
-							(storedAccount) =>
-								storedAccount.email?.trim().toLowerCase() === normalizedEmail,
-						)
-					: [];
-
-			const fallbackTarget =
-				uniqueMatch(memberMatches) ??
-				uniqueMatch(orgScopedMatches) ??
-				uniqueMatch(accountIdMatches) ??
-				uniqueMatch(emailMatches);
-
-			if (fallbackTarget) {
-				applyRefreshedCredentials(fallbackTarget, params.refreshResult);
-				updated = true;
-			}
-		}
-
-		if (updated) {
-			await persist(latestStorage);
-		}
-		if (!updated) {
-			logWarn(
-				`[${PLUGIN_NAME}] persistRefreshedCredentials could not find a matching stored account. Refreshed credentials remain in-memory for this invocation only.`,
-				{
-					accountId: params.accountId,
-					organizationId: params.organizationId,
-				},
-			);
-		}
-
-		return updated;
-	});
-}
-
 export async function ensureCodexUsageAccessToken(params: {
 	storage: AccountStorageV3;
 	account: AccountMetadataV3;
@@ -550,15 +443,10 @@ export async function ensureCodexUsageAccessToken(params: {
 	if (!previousRefreshToken) {
 		throw new Error("Cannot refresh: account has no refresh token");
 	}
-	const refreshResult = await queuedRefresh(previousRefreshToken);
+	const refreshResult = await coordinatePersistedRefresh(params.account);
 	if (refreshResult.type !== "success") {
 		throw new Error(refreshResult.message ?? refreshResult.reason);
 	}
-	const refreshedAccountUserId =
-		extractAccountUserId(refreshResult.access) ??
-		params.account.accountUserId?.trim() ??
-		extractAccountUserId(params.account.accessToken);
-
 	let refreshedCount = 0;
 	for (const storedAccount of params.storage.accounts) {
 		if (storedAccount.refreshToken === previousRefreshToken) {
@@ -567,20 +455,25 @@ export async function ensureCodexUsageAccessToken(params: {
 		}
 	}
 	if (refreshedCount === 0) {
+		// `params.storage` is a caller-supplied snapshot, so its copy of this
+		// account can already carry a rotated token and match nothing. The durable
+		// commit still happened inside the coordinator; only this in-memory
+		// snapshot missed it, which is worth saying out loud because it means the
+		// caller's other views of the account stay stale for this invocation.
+		logWarn(
+			`[${PLUGIN_NAME}] No account in the supplied storage snapshot matched the refreshed token; the rotation is durable on disk but this snapshot was not updated.`,
+			{
+				accountId: params.account.accountId,
+				organizationId: params.account.organizationId,
+			},
+		);
 		applyRefreshedCredentials(params.account, refreshResult);
 	}
 
-	const persisted = await persistRefreshedCredentials({
-		previousRefreshToken,
-		accountId: params.account.accountId,
-		accountUserId: refreshedAccountUserId,
-		organizationId: params.account.organizationId,
-		email: params.account.email,
-		refreshResult,
-	});
-
 	accessToken = refreshResult.access;
-	return { accessToken, refreshed: true, persisted };
+	// The coordinator either adopted a rotation another process had already
+	// committed or committed this one itself; both leave the credential durable.
+	return { accessToken, refreshed: true, persisted: true };
 }
 
 /**

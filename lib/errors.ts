@@ -39,6 +39,7 @@ export const ErrorCode = {
 	REQUEST_ERROR: "CODEX_REQUEST_ERROR",
 	CONFIG_ERROR: "CODEX_CONFIG_ERROR",
 	CONFIG_LOCK_CONTENTION: "CODEX_CONFIG_LOCK_CONTENTION",
+	STORAGE_TRANSACTION_CONTENTION: "CODEX_STORAGE_TRANSACTION_CONTENTION",
 } as const;
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -338,6 +339,21 @@ export class ConfigLockContentionError extends CodexError {
 	constructor(path: string, cause?: unknown) {
 		super(`Plugin configuration at ${path} is locked by another process.`, {
 			code: ErrorCode.CONFIG_LOCK_CONTENTION,
+			cause,
+			context: { path },
+		});
+		this.path = path;
+	}
+}
+
+export class StorageTransactionContentionError extends CodexError {
+	override readonly name = "StorageTransactionContentionError";
+	readonly path: string;
+	readonly retryable = true;
+
+	constructor(path: string, cause?: unknown) {
+		super(`Account storage transaction at ${path} is locked by another process.`, {
+			code: ErrorCode.STORAGE_TRANSACTION_CONTENTION,
 			cause,
 			context: { path },
 		});

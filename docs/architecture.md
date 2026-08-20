@@ -123,7 +123,11 @@ Full catalog: [tools-and-cli.md](tools-and-cli.md).
 
 ### 7. Storage and sync
 
-The storage layer uses V3 account files with migrations from older formats, atomic writes, keychain opt-in, import/export previews, flagged-account recovery, and per-project path resolution.
+The storage layer uses V3 account files with migrations from older formats, atomic writes, keychain opt-in, import/export previews, flagged-account recovery, and per-project path resolution. Mutations flow through one transaction primitive that combines the process-local mutex with a distinct `proper-lockfile` lease on `<storage>.transaction.lock`. The existing `<storage>.lock` JSON sidecar remains advisory collision diagnostics.
+
+OAuth refresh uses a **second, independent** lease on `<storage>.refresh.lock`. That split is deliberate: the refresh lease serializes the provider exchange across processes — refresh tokens are single-use, so two concurrent exchanges of the same token would leave one process with `refresh_token_reused` — while the storage lease is only ever held for a local read or write. A refresh therefore opens two short storage transactions (an authoritative reload that either adopts a rotation another process already committed or reports the current token, then a durable commit) with the multi-second network round trip sitting *between* them rather than inside either. Unrelated writers (`codex-note`, `codex-tag`, account toggles, rotation stamps, TUI quota writes) never queue behind a network call. The two leases use distinct lock targets, because `proper-lockfile` keys its in-process registry by target path and would otherwise corrupt that registry when one lease nests inside the other.
+
+This guarantee is intentionally local-filesystem/same-host. A process that exits after the provider accepts a refresh token but before the replacement token is committed still requires reauthentication, and cross-host or unreliable network filesystems require an external coordinator.
 
 | State | Default path |
 | --- | --- |

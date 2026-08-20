@@ -21,11 +21,24 @@ import {
 import * as codexPrompts from '../lib/prompts/codex.js';
 import * as loggerModule from '../lib/logger.js';
 import type { Auth } from '../lib/types.js';
-import { URL_PATHS, OPENAI_HEADERS, OPENAI_HEADER_VALUES, CODEX_BASE_URL } from '../lib/constants.js';
+import { OPENAI_HEADERS, OPENAI_HEADER_VALUES, CODEX_BASE_URL } from '../lib/constants.js';
+import { StorageTransactionContentionError } from '../lib/errors.js';
+
+const { coordinatePersistedRefreshMock } = vi.hoisted(() => ({
+	coordinatePersistedRefreshMock: vi.fn(async (identity: { refreshToken: string }) => {
+		const { refreshAccessToken } = await import('../lib/auth/auth.js');
+		return refreshAccessToken(identity.refreshToken);
+	}),
+}));
+
+vi.mock('../lib/storage/coordinated-refresh.js', () => ({
+	coordinatePersistedRefresh: coordinatePersistedRefreshMock,
+}));
 
 describe('Fetch Helpers Module', () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.clearAllMocks();
 	});
 
 	describe('shouldRefreshToken', () => {
@@ -107,6 +120,44 @@ describe('Fetch Helpers Module', () => {
 			expect(updated.access).toBe('new');
 			expect(updated.refresh).toBe('newr');
 			expect(updated.expires).toBe(123);
+		});
+
+		it('passes stable account identity to coordinated refresh', async () => {
+			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
+			const client = { auth: { set: vi.fn() } } as any;
+			vi.spyOn(authModule, 'refreshAccessToken').mockResolvedValue({
+				type: 'success',
+				access: 'new',
+				refresh: 'newr',
+				expires: 123,
+			} as any);
+
+			await refreshAndUpdateToken(auth, client, {
+				organizationId: 'organization-1',
+				accountId: 'account-1',
+				accountUserId: 'member-1',
+			});
+
+			expect(coordinatePersistedRefreshMock).toHaveBeenCalledWith({
+				organizationId: 'organization-1',
+				accountId: 'account-1',
+				accountUserId: 'member-1',
+				refreshToken: 'oldr',
+			});
+		});
+
+		it('maps storage contention to a retryable auth refresh error', async () => {
+			const auth: Auth = { type: 'oauth', access: 'old', refresh: 'oldr', expires: 0 };
+			const client = { auth: { set: vi.fn() } } as any;
+			coordinatePersistedRefreshMock.mockRejectedValueOnce(
+				new StorageTransactionContentionError('/tmp/accounts.json'),
+			);
+
+			await expect(refreshAndUpdateToken(auth, client)).rejects.toMatchObject({
+				name: 'CodexAuthError',
+				retryable: true,
+				refreshFailureReason: 'storage_contention',
+			});
 		});
 	});
 

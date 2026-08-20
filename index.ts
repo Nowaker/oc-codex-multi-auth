@@ -49,7 +49,10 @@ import {
 	type AccountSelectionResult,
 	type TokenSuccessWithAccount,
 } from "./lib/auth/login-runner.js";
-import { queuedRefresh } from "./lib/refresh-queue.js";
+import {
+	coordinateFlaggedPersistedRefresh,
+	coordinatePersistedRefresh,
+} from "./lib/storage/coordinated-refresh.js";
 import { openBrowserUrl } from "./lib/auth/browser.js";
 import { startLocalOAuthServer } from "./lib/auth/server.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
@@ -131,12 +134,10 @@ import { CodexAuthError } from "./lib/errors.js";
 import {
 	getStoragePath,
 	loadAccounts,
-	saveAccounts,
 	withAccountStorageTransaction,
 	clearAccounts,
 	setStoragePath,
 	loadFlaggedAccounts,
-	saveFlaggedAccounts,
 	withFlaggedAccountStorageTransaction,
 	clearFlaggedAccounts,
 	StorageError,
@@ -917,7 +918,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         process.env.OPENCODE_SKIP_EMAIL_HYDRATE === "1";
                 if (skipHydrate) return storage;
 
-                const accountsCopy = storage.accounts.map((account) =>
+                let accountsCopy = storage.accounts.map((account) =>
                         account ? { ...account } : account,
                 );
                 const accountsToHydrate = accountsCopy.filter(
@@ -930,9 +931,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 // refresh token (captured before the network call) so we can
                 // re-apply them onto a freshly-loaded snapshot inside a storage
                 // transaction — avoiding a lost-update race with concurrent saves.
-                const hydrationUpdates = new Map<
-                        string,
-                        {
+                type HydrationUpdate = {
                                 accountId?: string;
                                 accountIdSource?: "token";
                                 email?: string;
@@ -940,8 +939,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 expiresAt?: number;
                                 oauthScope?: string;
                                 refreshToken?: string;
-                        }
-                >();
+                                // Carried so the deferred merge below can tell this rotation
+                                // apart from one a concurrent process committed later.
+                                tokenRotatedAt?: number;
+                };
+                const hydrationUpdates = new Map<string, HydrationUpdate>();
+                // Keyed by stable workspace identity rather than by refresh token, for
+                // accounts whose token the coordinator rotated on disk mid-loop.
+                const hydrationUpdatesByIdentity = new Map<string, HydrationUpdate>();
                 // process in chunks of 3 to avoid auth0 rate limits (429) on startup
                 const chunkSize = 3;
                 for (let i = 0; i < accountsToHydrate.length; i += chunkSize) {
@@ -950,7 +955,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 chunk.map(async (account) => {
                                 const originalRefreshToken = account.refreshToken;
                                 try {
-                                        const refreshed = await queuedRefresh(account.refreshToken);
+										const refreshed = await coordinatePersistedRefresh(account);
                                         if (refreshed.type !== "success") return;
                                         const update = hydrationUpdates.get(originalRefreshToken) ?? {};
                                         const id = extractAccountId(refreshed.access);
@@ -991,9 +996,26 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                                 update.refreshToken = refreshed.refresh;
                                                 changed = true;
                                         }
-                                        if (Object.keys(update).length > 0) {
-                                                hydrationUpdates.set(originalRefreshToken, update);
+                                        const rotatedAt = refreshed.rotatedAt ?? account.tokenRotatedAt;
+                                        if (typeof rotatedAt === "number") {
+                                                account.tokenRotatedAt = rotatedAt;
+                                                update.tokenRotatedAt = rotatedAt;
                                         }
+										if (Object.keys(update).length > 0) {
+											hydrationUpdates.set(originalRefreshToken, update);
+											// The coordinator has already committed the rotated token to
+											// disk, so matching this update by refresh token alone would
+											// miss this account and — worse — hit any SIBLING whose token
+											// was rotated in place to the same value. Siblings can belong
+											// to distinct orgs, so that would hand one workspace another
+											// workspace's access token. Register the update under this
+											// account's stable workspace identity instead; that key is
+											// built from org/account/member ids and does not rotate.
+											const identityKey = getWorkspaceIdentityKey(account);
+											if (!identityKey.startsWith("refreshToken:")) {
+												hydrationUpdatesByIdentity.set(identityKey, update);
+											}
+										}
 				} catch {
 					logWarn(`[${PLUGIN_NAME}] Failed to hydrate email for account`);
 				}
@@ -1009,19 +1031,40 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         await withAccountStorageTransaction(async (current, persist) => {
                                 if (!current) return;
                                 for (const acc of current.accounts) {
-                                        const update = hydrationUpdates.get(acc.refreshToken);
+                                        // Identity first: it survives a rotation the coordinator already
+                                        // committed. The refresh-token key is the fallback for records
+                                        // that carry no org/account/member id at all.
+                                        const identityKey = getWorkspaceIdentityKey(acc);
+                                        const update =
+                                                (identityKey.startsWith("refreshToken:")
+                                                        ? undefined
+                                                        : hydrationUpdatesByIdentity.get(identityKey)) ??
+                                                hydrationUpdates.get(acc.refreshToken);
                                         if (!update) continue;
                                         if (update.accountId !== undefined) acc.accountId = update.accountId;
                                         if (update.accountIdSource !== undefined) acc.accountIdSource = update.accountIdSource;
                                         if (update.email !== undefined) acc.email = update.email;
-                                        if (update.accessToken !== undefined) acc.accessToken = update.accessToken;
-                                        if (update.expiresAt !== undefined) acc.expiresAt = update.expiresAt;
                                         if (update.oauthScope !== undefined) acc.oauthScope = update.oauthScope;
-                                        // Apply the rotated refresh token LAST so the map key
-                                        // (original token) still matches above.
-                                        if (update.refreshToken !== undefined) acc.refreshToken = update.refreshToken;
+                                        // The credential triple is single-use. This transaction runs after
+                                        // the whole (multi-second) hydration loop, so a concurrent process
+                                        // may have rotated the account in the meantime; writing our older
+                                        // tuple back would restore a consumed token and cost a re-login.
+                                        const updateRotatedAt = update.tokenRotatedAt ?? 0;
+                                        const diskRotatedAt = acc.tokenRotatedAt ?? 0;
+                                        if (updateRotatedAt >= diskRotatedAt) {
+                                                if (update.accessToken !== undefined) acc.accessToken = update.accessToken;
+                                                if (update.expiresAt !== undefined) acc.expiresAt = update.expiresAt;
+                                                // Apply the rotated refresh token LAST so the map key
+                                                // (original token) still matches above.
+                                                if (update.refreshToken !== undefined) acc.refreshToken = update.refreshToken;
+                                                if (update.tokenRotatedAt !== undefined) acc.tokenRotatedAt = update.tokenRotatedAt;
+                                        }
                                 }
                                 await persist(current);
+                                // Return what actually landed on disk, not the in-memory copy: a
+                                // credential we declined to write above must not resurface through
+                                // the returned storage either.
+                                accountsCopy = current.accounts.map((acc) => ({ ...acc }));
                         });
                         storage.accounts = accountsCopy;
                 }
@@ -1598,17 +1641,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
                                 const now = Date.now();
                                 const account = storage.accounts[index];
-                                if (account) {
-                                        account.lastUsed = now;
-                                        account.lastSwitchReason = "rotation";
-                                }
-                                storage.activeIndex = index;
-                                storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-                                for (const family of MODEL_FAMILIES) {
-                                        storage.activeIndexByFamily[family] = index;
-                                }
-
-                                await saveAccounts(storage);
+								if (!account) return;
+								const identityKey = getWorkspaceIdentityKey(account);
+								await withAccountStorageTransaction(async (current, persist) => {
+									if (!current) return;
+									const currentIndex = current.accounts.findIndex(
+										(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
+									);
+									const currentAccount = current.accounts[currentIndex];
+									if (!currentAccount || currentIndex < 0) return;
+									currentAccount.lastUsed = now;
+									currentAccount.lastSwitchReason = "rotation";
+									current.activeIndex = currentIndex;
+									current.activeIndexByFamily = current.activeIndexByFamily ?? {};
+									for (const family of MODEL_FAMILIES) {
+										current.activeIndexByFamily[family] = currentIndex;
+									}
+									await persist(current);
+								});
 								await clearPromptQuotaCache();
 
 								// Reload manager from disk so we don't overwrite newer rotated
@@ -2226,6 +2276,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							accountAuth = (await refreshAndUpdateToken(
 								accountAuth,
 								client,
+								{
+									organizationId: account.organizationId,
+									accountId: account.accountId,
+									accountUserId: account.accountUserId,
+								},
 							)) as OAuthAuthDetails;
 							accountManager.updateFromAuth(account, accountAuth);
 							accountManager.clearAuthFailures(account);
@@ -3476,7 +3531,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										}
 
 										if (!accessToken) {
-											const refreshResult = await queuedRefresh(account.refreshToken);
+											const refreshResult = await coordinatePersistedRefresh(account);
 											if (refreshResult.type !== "success") {
 												errors += 1;
 												const message =
@@ -3503,6 +3558,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											authDetail = "OK";
 											if (refreshResult.refresh !== account.refreshToken) {
 												account.refreshToken = refreshResult.refresh;
+												storageChanged = true;
+											}
+											// Carry the coordinator's rotation stamp onto the working
+											// copy so the merge below can tell this snapshot's token
+											// apart from one a concurrent process rotated later.
+											if (
+												typeof refreshResult.rotatedAt === "number" &&
+												refreshResult.rotatedAt !== account.tokenRotatedAt
+											) {
+												account.tokenRotatedAt = refreshResult.rotatedAt;
 												storageChanged = true;
 											}
 											if (refreshResult.access && refreshResult.access !== account.accessToken) {
@@ -3660,11 +3725,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												// concurrent edit during the network loop is not reverted.
 												acc.accountId = updated.accountId;
 												acc.accountIdSource = updated.accountIdSource;
-												acc.refreshToken = updated.refreshToken;
-												acc.accessToken = updated.accessToken;
-												acc.expiresAt = updated.expiresAt;
 												acc.oauthScope = updated.oauthScope;
 												acc.email = updated.email;
+												// The credential triple is single-use and must only move
+												// backwards-in-time never. `workingStorage` was snapshotted
+												// before the (multi-second) network loop, so its token can
+												// already be consumed: a sibling's refresh rotates every
+												// record sharing that token *on disk*, and a concurrent
+												// process can rotate it too. Writing the stale token back
+												// would resurrect a dead credential and cost the user a
+												// re-login with `refresh_token_reused`.
+												const workingRotatedAt = updated.tokenRotatedAt ?? 0;
+												const diskRotatedAt = acc.tokenRotatedAt ?? 0;
+												if (workingRotatedAt >= diskRotatedAt) {
+													acc.refreshToken = updated.refreshToken;
+													acc.accessToken = updated.accessToken;
+													acc.expiresAt = updated.expiresAt;
+													acc.tokenRotatedAt = updated.tokenRotatedAt;
+												}
 											}
 											merged.push(acc);
 										}
@@ -3706,8 +3784,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								console.log("\nVerifying flagged accounts...\n");
 								const maskEmailEnabled = getCodexTuiMaskEmail(loadPluginConfig());
-								const remaining: FlaggedAccountMetadataV1[] = [];
-								const restored: TokenSuccessWithAccount[] = [];
+							const remaining: FlaggedAccountMetadataV1[] = [];
+							const restored: TokenSuccessWithAccount[] = [];
+							const processedIdentityKeys = new Set(
+								flaggedStorage.accounts.map((account) => getWorkspaceIdentityKey(account)),
+							);
+							const processedRefreshTokens = new Set(
+								flaggedStorage.accounts.map((account) => account.refreshToken),
+							);
+							// Only a record we positively restored may be deleted below. A record
+							// can *look* processed without having been restored — its token can be
+							// rotated in place by a sibling's refresh, so neither replacement
+							// lookup finds it — and dropping that record would erase the account
+							// from flagged-accounts.json with no trace anywhere.
+							const restoredIdentityKeys = new Set<string>();
+							const restoredRefreshTokens = new Set<string>();
 
 								for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
 									const flagged = flaggedStorage.accounts[i];
@@ -3752,13 +3843,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											},
 										);
 										restored.push(...resolved.variantsForPersistence);
+										restoredIdentityKeys.add(getWorkspaceIdentityKey(flagged));
+										restoredRefreshTokens.add(flagged.refreshToken);
 										console.log(
 												`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED (Codex CLI cache)`,
 										);
 											continue;
 										}
 
-										const refreshResult = await queuedRefresh(flagged.refreshToken);
+										const refreshResult = await coordinateFlaggedPersistedRefresh(flagged);
 										if (refreshResult.type !== "success") {
 											console.log(
 												`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: STILL FLAGGED (${refreshResult.message ?? refreshResult.reason ?? "refresh failed"})`,
@@ -3777,6 +3870,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										},
 									);
 									restored.push(...resolved.variantsForPersistence);
+									processedRefreshTokens.add(refreshResult.refresh);
+									restoredIdentityKeys.add(getWorkspaceIdentityKey(flagged));
+									restoredRefreshTokens.add(flagged.refreshToken);
 									console.log(`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: RESTORED`);
 									} catch (error) {
 										const message = error instanceof Error ? error.message : String(error);
@@ -3795,10 +3891,35 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									invalidateAccountManagerCache();
 								}
 
-								await saveFlaggedAccounts({
-									version: 1,
-									accounts: remaining,
+							const remainingByIdentity = new Map(
+								remaining.map((account) => [getWorkspaceIdentityKey(account), account]),
+							);
+							const remainingByRefreshToken = new Map(
+								remaining.map((account) => [account.refreshToken, account]),
+							);
+							await withFlaggedAccountStorageTransaction(async (current, persist) => {
+								current.accounts = current.accounts.flatMap((account) => {
+									const identityKey = getWorkspaceIdentityKey(account);
+									const processed =
+										processedIdentityKeys.has(identityKey) ||
+										processedRefreshTokens.has(account.refreshToken);
+									if (!processed) return [account];
+									const replacement =
+										remainingByIdentity.get(identityKey) ??
+										remainingByRefreshToken.get(account.refreshToken);
+									if (replacement) {
+										return [{ ...account, lastError: replacement.lastError }];
+									}
+									// Drop only what was positively restored. Anything else that
+									// merely looks processed is kept: a stale flagged entry is
+									// recoverable, a silently deleted account is not.
+									const wasRestored =
+										restoredIdentityKeys.has(identityKey) ||
+										restoredRefreshTokens.has(account.refreshToken);
+									return wasRestored ? [] : [account];
 								});
+								await persist(current);
+							});
 
 								console.log("");
 								console.log(`Results: ${restored.length} restored, ${remaining.length} still flagged`);
@@ -3887,21 +4008,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 									if (menuResult.mode === "manage") {
 										if (typeof menuResult.deleteAccountIndex === "number") {
-											const target = workingStorage.accounts[menuResult.deleteAccountIndex];
-											if (target) {
-												workingStorage.accounts.splice(menuResult.deleteAccountIndex, 1);
-												clampActiveIndices(workingStorage);
-												await saveAccounts(workingStorage);
-												await saveFlaggedAccounts({
-													version: 1,
-													accounts: flaggedStorage.accounts.filter(
-														(flagged) =>
-															!matchesWorkspaceIdentity(
-																flagged,
-																getWorkspaceIdentityKey(target),
-															),
-													),
-												});
+										const target = workingStorage.accounts[menuResult.deleteAccountIndex];
+										if (target) {
+											const identityKey = getWorkspaceIdentityKey(target);
+											await withAccountStorageTransaction(async (current, persist) => {
+												if (!current) return;
+												const currentIndex = current.accounts.findIndex(
+													(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
+												);
+												if (currentIndex < 0) return;
+												current.accounts.splice(currentIndex, 1);
+												clampActiveIndices(current);
+												await persist(current);
+											});
+											await withFlaggedAccountStorageTransaction(async (current, persist) => {
+												current.accounts = current.accounts.filter(
+													(flagged) => !matchesWorkspaceIdentity(flagged, identityKey),
+												);
+												await persist(current);
+											});
 												invalidateAccountManagerCache();
 												console.log(`\nDeleted ${resolveDisplayEmail(target.email, maskEmailEnabled) ?? `Account ${menuResult.deleteAccountIndex + 1}`}.\n`);
 											}
@@ -3909,13 +4034,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										}
 
 										if (typeof menuResult.toggleAccountIndex === "number") {
-											const target = workingStorage.accounts[menuResult.toggleAccountIndex];
-											if (target) {
-												target.enabled = target.enabled === false ? true : false;
-												await saveAccounts(workingStorage);
-												invalidateAccountManagerCache();
-												console.log(
-													`\n${resolveDisplayEmail(target.email, maskEmailEnabled) ?? `Account ${menuResult.toggleAccountIndex + 1}`} ${target.enabled === false ? "disabled" : "enabled"}.\n`,
+										const target = workingStorage.accounts[menuResult.toggleAccountIndex];
+										if (target) {
+											const identityKey = getWorkspaceIdentityKey(target);
+											let enabled = target.enabled !== false;
+											await withAccountStorageTransaction(async (current, persist) => {
+												const currentTarget = current?.accounts.find(
+													(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
+												);
+												if (!current || !currentTarget) return;
+												currentTarget.enabled = currentTarget.enabled === false;
+												enabled = currentTarget.enabled;
+												await persist(current);
+											});
+											invalidateAccountManagerCache();
+											console.log(
+												`\n${resolveDisplayEmail(target.email, maskEmailEnabled) ?? `Account ${menuResult.toggleAccountIndex + 1}`} ${enabled ? "enabled" : "disabled"}.\n`,
 												);
 											}
 											continue;

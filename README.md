@@ -257,6 +257,7 @@ Most of these also run as a **direct CLI** with no agent/model involvement (no t
 - `reasoning.encrypted_content` is preserved for multi-turn continuity
 - GPT-5.6 tiers use the responses-lite request shape and default client identity `opencode`; other models default to `codex_cli_rs`
 - account rotation is health-aware (`rotationStrategy` default `hybrid`) and avoids repeatedly selecting cooling accounts
+- same-host OpenCode processes sharing an account file serialize refresh-token exchange and commit so one current single-use token is exchanged once
 - 5xx bursts, network failures, and quota responses penalize account health
 - token refresh is queued to avoid refresh races
 - unsupported-model handling is strict by default, with opt-in fallback controls

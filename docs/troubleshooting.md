@@ -158,9 +158,9 @@ Update your `~/.config/opencode/opencode.json`:
 <details>
 <summary><b><code>Multi-worktree collision detected on account storage</code> warning</b></summary>
 
-This advisory warning means another live process or host is using the same account-storage file. It includes the foreign and local PID, host, and working directory so you can identify the sessions. Reads and writes continue because the worktree lock is intentionally advisory; repeated warnings are throttled to once per minute for each storage path and foreign lock generation.
+This advisory warning means another live process or host is using the same account-storage file. It includes the foreign and local PID, host, and working directory so you can identify the sessions. The JSON worktree lock remains advisory, while account mutations and OAuth refreshes use a separate enforced transaction lease. On one host with a local filesystem, parallel sessions serialize refresh exchange and commit instead of reusing or clobbering a single-use token. Repeated warnings are throttled to once per minute for each storage path and foreign lock generation.
 
-If account rotation or rate-limit state appears stale, close the duplicate session or ensure each worktree resolves to the intended project storage, then restart OpenCode and inspect the account list. Do not delete a lock belonging to a live process.
+If account rotation or rate-limit state appears stale, ensure each worktree resolves to the intended project storage, then restart OpenCode and inspect the account list. Do not delete a lock belonging to a live process. Cross-host and network-filesystem coordination are not provided by the local transaction lease.
 
 </details>
 

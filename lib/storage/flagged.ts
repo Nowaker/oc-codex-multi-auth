@@ -26,6 +26,7 @@ import {
   writeFlaggedToKeychain,
 } from "./keychain.js";
 import type { AccountMetadataV3 } from "./migrations.js";
+import { withStorageTransaction } from "./transaction-lock.js";
 
 const log = createLogger("storage");
 
@@ -140,6 +141,14 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
       flaggedAt,
       flaggedReason: typeof rawAccount.flaggedReason === "string" ? rawAccount.flaggedReason : undefined,
       lastError: typeof rawAccount.lastError === "string" ? rawAccount.lastError : undefined,
+      // Rotation ordering has to survive a round trip through this file, or a
+      // rotated refresh token committed by `coordinateFlaggedPersistedRefresh`
+      // looks older than a stale in-memory snapshot and gets clobbered.
+      // `accessToken`/`expiresAt` are deliberately NOT carried: quarantined
+      // records stay credential-light, so a live OAuth access token is never
+      // written to flagged-accounts.json.
+      tokenRotatedAt:
+        typeof rawAccount.tokenRotatedAt === "number" ? rawAccount.tokenRotatedAt : undefined,
     };
     // Keep flagged dedup aligned with active cleanup so sibling workspaces only
     // collapse when they resolve to the same shared workspace identity.
@@ -286,10 +295,12 @@ export async function withFlaggedAccountStorageTransaction<T>(
     persist: (storage: FlaggedAccountStorageV1) => Promise<void>,
   ) => Promise<T>,
 ): Promise<T> {
-  return withStorageLock(async () => {
-    const current = await loadFlaggedAccountsUnlocked(saveFlaggedAccountsUnlocked);
-    return handler(current, saveFlaggedAccountsUnlocked);
-  });
+	return withStorageTransaction({
+		storagePath: getFlaggedAccountsPath(),
+		load: () => loadFlaggedAccountsUnlocked(saveFlaggedAccountsUnlocked),
+		persist: saveFlaggedAccountsUnlocked,
+		handler,
+	});
 }
 
 export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Promise<void> {

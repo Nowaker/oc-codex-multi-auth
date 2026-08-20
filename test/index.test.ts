@@ -62,6 +62,24 @@ vi.mock("../lib/auth/auth.js", () => ({
 	REDIRECT_URI: "http://localhost:1455/auth/callback",
 }));
 
+// Only the refresh lease is stubbed: `getStoragePath()` is mocked to a path that
+// does not exist, and acquiring a real cross-process lockfile there would create
+// directories outside the test sandbox. Everything else stays real.
+vi.mock("../lib/storage/transaction-lock.js", async () => {
+	const actual = await vi.importActual<typeof import("../lib/storage/transaction-lock.js")>(
+		"../lib/storage/transaction-lock.js",
+	);
+	return {
+		...actual,
+		withRefreshLease: vi.fn(
+			async (
+				_storagePath: string,
+				operation: (lease: { assertValid: () => void }) => Promise<unknown>,
+			) => operation({ assertValid: () => {} }),
+		),
+	};
+});
+
 vi.mock("../lib/refresh-queue.js", () => ({
 	queuedRefresh: vi.fn(async () => ({
 		type: "success" as const,
@@ -1647,11 +1665,11 @@ describe("OpenAIOAuthPlugin", () => {
 			]);
 			expect(reloadedStorage?.accounts.map((account) => account.accessToken)).toEqual([
 				"rotated-access",
-				"rotated-access",
+				"expired-access-2",
 			]);
 			expect(reloadedStorage?.accounts.map((account) => account.expiresAt)).toEqual([
 				rotatedExpires,
-				rotatedExpires,
+				0,
 			]);
 		});
 
@@ -1716,7 +1734,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 			await plugin.tool["codex-limits"].execute();
 
-			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledWith("stale-refresh");
+			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledWith("different-refresh");
 			const reloadedStorage = await vi.mocked(loadAccounts)();
 			expect(reloadedStorage?.accounts[0]?.refreshToken).toBe("single-refresh");
 			expect(reloadedStorage?.accounts[0]?.accessToken).toBe("single-access");
@@ -1772,10 +1790,9 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(reloadedStorage?.accounts[1]?.accessToken).toBe("still-valid");
 		});
 
-		it("warns when refreshed credentials would otherwise fall back to a different account with the same email", async () => {
+		it("fails closed when stable identity no longer exists in authoritative storage", async () => {
 			const { queuedRefresh } = await import("../lib/refresh-queue.js");
 			const { loadAccounts, withAccountStorageTransaction } = await import("../lib/storage.js");
-			const loggerModule = await import("../lib/logger.js");
 			const transactionStorage = {
 				version: 3 as const,
 				accounts: [
@@ -1845,19 +1862,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 			await plugin.tool["codex-limits"].execute();
 
-			const warningCall = vi
-				.mocked(loggerModule.logWarn)
-				.mock.calls.find(([message]) =>
-					typeof message === "string" &&
-					message.includes("persistRefreshedCredentials could not find a matching stored account"),
-				);
-			expect(warningCall).toBeDefined();
-			expect(warningCall?.[1]).toEqual(
-				expect.objectContaining({
-					accountId: "acc-1",
-				}),
-			);
-			expect(warningCall?.[1]).not.toHaveProperty("email");
+			expect(queuedRefresh).not.toHaveBeenCalled();
 			expect(transactionStorage.accounts[0]).toMatchObject({
 				accountId: "acc-other",
 				refreshToken: "different-refresh",
@@ -2304,23 +2309,27 @@ describe("OpenAIOAuthPlugin", () => {
 
 			const { withAccountStorageTransaction } = await import("../lib/storage.js");
 			const originalTransaction = vi.mocked(withAccountStorageTransaction).getMockImplementation();
-			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
-				async <T>(
-					callback: (
-						loadedStorage: typeof mockStorage,
-						persist: (nextStorage: typeof mockStorage) => Promise<void>,
-					) => Promise<T>,
-				) => {
-					const loadedStorage = cloneMockStorage();
-					const persist = async (nextStorage: typeof mockStorage) => {
-						mockStorage.version = nextStorage.version;
-						mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
-						mockStorage.activeIndex = nextStorage.activeIndex;
-						mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
-					};
-					return callback(loadedStorage, persist);
-				},
-			);
+			const committingTransaction = async <T>(
+				callback: (
+					loadedStorage: typeof mockStorage,
+					persist: (nextStorage: typeof mockStorage) => Promise<void>,
+				) => Promise<T>,
+			) => {
+				const loadedStorage = cloneMockStorage();
+				const persist = async (nextStorage: typeof mockStorage) => {
+					mockStorage.version = nextStorage.version;
+					mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+					mockStorage.activeIndex = nextStorage.activeIndex;
+					mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+				};
+				return callback(loadedStorage, persist);
+			};
+			// A coordinated refresh opens TWO storage transactions: a short probe
+			// that reads the authoritative token, then the durable commit. The probe
+			// never persists, so the same implementation serves both.
+			vi.mocked(withAccountStorageTransaction)
+				.mockImplementationOnce(committingTransaction)
+				.mockImplementationOnce(committingTransaction);
 			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
 				async <T>(
 					callback: (
@@ -2495,10 +2504,10 @@ describe("OpenAIOAuthPlugin", () => {
 			vi.mocked(withAccountStorageTransaction).mockImplementation(
 				async (callback) => {
 					transactionCount += 1;
-					// Two refresh persists and one stale-state clear precede the
-					// auto-switch persist, so transaction 4 must resolve identity
-					// against the reordered storage snapshot.
-					if (transactionCount !== 4) {
+					// Two coordinated refreshes (a probe plus a commit each) and one
+					// stale-state clear precede the auto-switch persist, so transaction
+					// 6 must resolve identity against the reordered storage snapshot.
+					if (transactionCount !== 6) {
 						return originalTransaction!(callback);
 					}
 					const reorderedStorage = {
@@ -2520,7 +2529,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 			expect(mockStorage.accounts[mockStorage.activeIndex]?.accountId).toBe("best");
 			expect(mockStorage.activeIndex).toBe(2);
-			expect(transactionCount).toBe(4);
+			expect(transactionCount).toBe(6);
 			vi.mocked(withAccountStorageTransaction).mockImplementation(originalTransaction);
 		});
 
@@ -2549,25 +2558,27 @@ describe("OpenAIOAuthPlugin", () => {
 				mockStorage.activeIndex = nextStorage.activeIndex;
 				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 			};
+			// Credential probe + credential commit: a coordinated refresh reads the
+			// authoritative token in a short transaction before exchanging, then
+			// commits in a second one. Both see a fresh snapshot carrying a
+			// concurrent rate-limit update, but no concurrent cooldown.
+			const concurrentTransaction = async <T>(
+				callback: (
+					loadedStorage: typeof mockStorage,
+					persist: (nextStorage: typeof mockStorage) => Promise<void>,
+				) => Promise<T>,
+			) => {
+				const loadedStorage = cloneMockStorage();
+				loadedStorage.accounts[0]!.rateLimitResetTimes = {
+					"gpt-5.4-mini": Date.now() + 1_800_000,
+				};
+				delete loadedStorage.accounts[0]!.coolingDownUntil;
+				delete loadedStorage.accounts[0]!.cooldownReason;
+				return callback(loadedStorage, persistSnapshot);
+			};
 			vi.mocked(withAccountStorageTransaction)
-				// Credential transaction: the fresh snapshot carries a concurrent
-				// rate-limit update, but no concurrent cooldown.
-				.mockImplementationOnce(
-					async <T>(
-						callback: (
-							loadedStorage: typeof mockStorage,
-							persist: (nextStorage: typeof mockStorage) => Promise<void>,
-						) => Promise<T>,
-					) => {
-						const loadedStorage = cloneMockStorage();
-						loadedStorage.accounts[0]!.rateLimitResetTimes = {
-							"gpt-5.4-mini": Date.now() + 1_800_000,
-						};
-						delete loadedStorage.accounts[0]!.coolingDownUntil;
-						delete loadedStorage.accounts[0]!.cooldownReason;
-						return callback(loadedStorage, persistSnapshot);
-					},
-				);
+				.mockImplementationOnce(concurrentTransaction)
+				.mockImplementationOnce(concurrentTransaction);
 			vi.mocked(withAccountStorageTransaction).mockImplementation(
 				originalTransaction,
 			);
@@ -2896,20 +2907,23 @@ describe("OpenAIOAuthPlugin", () => {
 				{ refreshToken: "old-r1", email: "one@example.com" },
 			];
 			const { withAccountStorageTransaction } = await import("../lib/storage.js");
-			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
-				async <T>(
-					callback: (
-						loadedStorage: typeof mockStorage,
-						persist: (nextStorage: typeof mockStorage) => Promise<void>,
-					) => Promise<T>,
-				) => {
-					const loadedStorage = cloneMockStorage();
-					const persist = async () => {
-						throw new Error("disk full");
-					};
-					return callback(loadedStorage, persist);
-				},
-			);
+			// Probe + commit: only the commit persists, so the failing persist has to
+			// be in place for both calls of the coordinated refresh.
+			const failingTransaction = async <T>(
+				callback: (
+					loadedStorage: typeof mockStorage,
+					persist: (nextStorage: typeof mockStorage) => Promise<void>,
+				) => Promise<T>,
+			) => {
+				const loadedStorage = cloneMockStorage();
+				const persist = async () => {
+					throw new Error("disk full");
+				};
+				return callback(loadedStorage, persist);
+			};
+			vi.mocked(withAccountStorageTransaction)
+				.mockImplementationOnce(failingTransaction)
+				.mockImplementationOnce(failingTransaction);
 
 			const result = parseJsonOutput<{
 				healthyCount: number;
@@ -6093,7 +6107,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				refreshToken: "flagged-refresh-cache",
 				organizationId: "org-cache",
 				accountId: "flagged-cache",
-				accountIdSource: "manual",
+				accountIdSource: "manual" as const,
 				accountLabel: "Cache Workspace",
 				email: "cache@example.com",
 				flaggedAt: Date.now() - 1000,
@@ -6104,7 +6118,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				refreshToken: "flagged-refresh-live",
 				organizationId: "org-refresh",
 				accountId: "flagged-live",
-				accountIdSource: "manual",
+				accountIdSource: "manual" as const,
 				accountLabel: "Refresh Workspace",
 				email: "refresh@example.com",
 				flaggedAt: Date.now() - 500,
@@ -6112,6 +6126,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				lastUsed: Date.now() - 500,
 			},
 		];
+		mockFlaggedStorage.accounts = flaggedAccounts.map(cloneFlaggedAccount);
 
 		vi.mocked(cliModule.promptLoginMode)
 			.mockResolvedValueOnce({ mode: "verify-flagged" })
