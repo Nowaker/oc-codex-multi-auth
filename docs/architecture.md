@@ -65,7 +65,8 @@ OpenCode provider system
   | custom fetch()
   v
 oc-codex-multi-auth index.ts
-  |- rewrite OpenAI SDK URL to chatgpt.com/backend-api/codex/responses
+  |- rewrite OpenAI SDK URL to chatgpt.com/backend-api/codex/responses by default
+  |- preserve OPENAI_BASE_URL when CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1 explicitly trusts a compatible gateway
   |- shape body for native or legacy transform mode
   |- for GPT-5.6: apply responses-lite reshape (per attempt)
   |- force stream:true, store:false, reasoning.encrypted_content
@@ -73,8 +74,10 @@ oc-codex-multi-auth index.ts
   |- attach OAuth headers + client identity (originator / User-Agent)
   |- handle SSE, errors, retries, fallback, and metrics
   v
-ChatGPT-backed Codex endpoint
+ChatGPT-backed Codex endpoint or configured OpenAI-compatible gateway
 ```
+
+The gateway override is fail-closed: remote gateways require HTTPS, literal loopback IPs are the only accepted HTTP targets, embedded credentials/query strings/fragments are rejected, and redirects are not followed. Any address in `127.0.0.0/8` and the IPv6 loopback `::1` count as loopback, so several local services can each hold their own address. Hostnames such as `localhost` are not trusted for cleartext OAuth transport because name resolution can be redirected. A rejected value fails the auth loader with a `[oc-codex-multi-auth]`-prefixed reason and an error toast rather than silently falling back to the default endpoint, and a gateway that answers with a 3xx yields a `502` naming the redirect origin instead of being retried as a malformed response. The gateway receives the same short-lived ChatGPT OAuth access token and account header as the default Codex endpoint, so setting `OPENAI_BASE_URL` alone does not activate the override.
 
 **Native mode** keeps the host payload shape whenever possible. **Legacy mode** applies compatibility rewrites for older OpenCode/AI SDK behavior, including filtering unsupported `item_reference` payloads and stripping IDs that cannot be used with `store: false`.
 

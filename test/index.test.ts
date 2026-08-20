@@ -4,6 +4,10 @@ import { join } from "node:path";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+const { rewriteUrlForCodexMock } = vi.hoisted(() => ({
+	rewriteUrlForCodexMock: vi.fn((url: string) => url),
+}));
+
 vi.mock("@opencode-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -233,7 +237,7 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 
 	vi.mock("../lib/request/fetch-helpers.js", () => ({
 		extractRequestUrl: (input: unknown) => (typeof input === "string" ? input : String(input)),
-		rewriteUrlForCodex: (url: string) => url,
+		rewriteUrlForCodex: rewriteUrlForCodexMock,
 		transformRequestForCodex: vi.fn(async (init: unknown) => ({
 		updatedInit: init,
 		body: { model: "gpt-5.1" },
@@ -625,6 +629,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
 	});
 
 	describe("plugin structure", () => {
@@ -858,6 +863,233 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.apiKey).toBeDefined();
 			expect(result.baseURL).toBeDefined();
 			expect(result.fetch).toBeDefined();
+		});
+
+		it("uses OPENAI_BASE_URL for multiAccount OAuth requests", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "https://gateway.example/v1");
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			mockStorage.accounts = [
+				{
+					accountId: "account-1",
+					refreshToken: "refresh-token",
+					accessToken: "access-token",
+					expiresAt: Date.now() + 60_000,
+				},
+			];
+			const fetchSpy = vi
+				.spyOn(globalThis, "fetch")
+				.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(result.baseURL).toBe("https://gateway.example/v1");
+			const logger = await import("../lib/logger.js");
+			expect(vi.mocked(logger.logWarn)).toHaveBeenCalledWith(
+				"Routing ChatGPT OAuth inference through OPENAI_BASE_URL",
+				{ origin: "https://gateway.example" },
+			);
+			const warningCount = vi.mocked(logger.logWarn).mock.calls.length;
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			expect(vi.mocked(logger.logWarn)).toHaveBeenCalledTimes(warningCount);
+			if (!result.fetch) throw new Error("Expected SDK fetch implementation");
+			await result.fetch("https://gateway.example/v1/responses", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+			});
+			expect(rewriteUrlForCodexMock).not.toHaveBeenCalled();
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://gateway.example/v1/responses",
+				expect.objectContaining({ redirect: "manual" }),
+			);
+		});
+
+		it("ignores OPENAI_BASE_URL without explicit OAuth gateway consent", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "https://gateway.example/v1");
+			mockStorage.accounts = [
+				{
+					accountId: "account-1",
+					refreshToken: "refresh-token",
+					accessToken: "access-token",
+					expiresAt: Date.now() + 60_000,
+				},
+			];
+			const fetchSpy = vi
+				.spyOn(globalThis, "fetch")
+				.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(result.baseURL).toBe("https://chatgpt.com/backend-api");
+			if (!result.fetch) throw new Error("Expected SDK fetch implementation");
+			await result.fetch("https://api.openai.com/v1/responses", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+			});
+			expect(rewriteUrlForCodexMock).toHaveBeenCalledWith("https://api.openai.com/v1/responses");
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://api.openai.com/v1/responses",
+				expect.not.objectContaining({ redirect: "manual" }),
+			);
+		});
+
+		it("allows a loopback HTTP OAuth gateway", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "http://127.0.0.1:8080/v1/");
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(result.baseURL).toBe("http://127.0.0.1:8080/v1");
+		});
+
+		it.each([
+			"http://127.0.0.2:8080/v1/",
+			"http://127.0.1.1:8080/v1/",
+			"http://127.255.255.254:8080/v1/",
+			"http://[::1]:8080/v1/",
+			// IPv4-mapped spellings normalize to hex (`::ffff:7f00:2`), and are
+			// just as unroutable as the dotted form.
+			"http://[::ffff:127.0.0.1]:8080/v1/",
+			"http://[::ffff:127.0.0.2]:8080/v1/",
+			"http://[::ffff:127.1.1.1]:8080/v1/",
+		])("allows any literal loopback HTTP OAuth gateway: %s", async (baseURL) => {
+			vi.stubEnv("OPENAI_BASE_URL", baseURL);
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			// WHATWG normalizes IPv6 literals (`::ffff:127.0.0.1` -> `::ffff:7f00:1`),
+			// so compare against the normalized form rather than the raw input.
+			expect(result.baseURL).toBe(new URL(baseURL).toString().replace(/\/+$/, ""));
+		});
+
+		it.each([
+			"http://gateway.example/v1",
+			"http://localhost:8080/v1",
+			// Resolves to a loopback address on most hosts, but a resolver can point
+			// it anywhere, so only literal addresses are trusted.
+			"http://loopback.example/v1",
+			// 126/8 and 128/8 bracket the loopback block; neither is loopback.
+			"http://126.255.255.255:8080/v1",
+			"http://128.0.0.1:8080/v1",
+			// Same brackets in IPv4-mapped form (`::ffff:7eff:ffff` / `::ffff:8000:1`).
+			"http://[::ffff:126.255.255.255]:8080/v1",
+			"http://[::ffff:128.0.0.1]:8080/v1",
+			"https://user:password@gateway.example/v1",
+			"https://gateway.example/v1?tenant=one",
+			"https://gateway.example/v1?",
+			"https://gateway.example/v1#",
+			"file:///tmp/gateway",
+		])("rejects an unsafe OAuth gateway URL: %s", async (baseURL) => {
+			vi.stubEnv("OPENAI_BASE_URL", baseURL);
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			await expect(plugin.auth.loader(getAuth, { options: {}, models: {} })).rejects.toThrow();
+		});
+
+		it("reports a scheme-less OPENAI_BASE_URL without echoing the value", async () => {
+			// A scheme-less value can carry a token in its query string, and this
+			// message reaches a toast, so the value itself must not appear in it.
+			vi.stubEnv("OPENAI_BASE_URL", "gateway.example/v1?access_token=secret-value");
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			await expect(plugin.auth.loader(getAuth, { options: {}, models: {} })).rejects.toThrow(
+				/\[oc-codex-multi-auth\] OPENAI_BASE_URL is invalid.*not a valid absolute URL/s,
+			);
+			const toastMessage = vi.mocked(mockClient.tui.showToast).mock.calls
+				.map((call) => String((call[0] as { body?: { message?: string } })?.body?.message ?? ""))
+				.join("\n");
+			expect(toastMessage).toContain("[oc-codex-multi-auth] OPENAI_BASE_URL is invalid");
+			expect(toastMessage).not.toContain("secret-value");
+			expect(toastMessage).not.toContain("gateway.example");
+		});
+
+		it("rejects a redirect from the OAuth gateway instead of following it", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "https://gateway.example/v1");
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			mockStorage.accounts = [
+				{
+					accountId: "account-1",
+					refreshToken: "refresh-token",
+					accessToken: "access-token",
+					expiresAt: Date.now() + 60_000,
+				},
+			];
+			const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+				new Response(null, {
+					status: 302,
+					headers: { location: "https://evil.example/v1/responses?token=leaked" },
+				}),
+			);
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			if (!result.fetch) throw new Error("Expected SDK fetch implementation");
+			const response = await result.fetch("https://gateway.example/v1/responses", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+			});
+
+			// The mocked fetch returns a raw 302 regardless of RequestInit, so assert
+			// the flag explicitly: without it undici would silently FOLLOW the
+			// redirect and replay the OAuth token to the new origin.
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://gateway.example/v1/responses",
+				expect.objectContaining({ redirect: "manual" }),
+			);
+			expect(response.status).toBe(502);
+			const payload = await response.json();
+			expect(payload.error.message).toContain("302 redirect");
+			// Origin only: the full location can carry credentials in its query string.
+			expect(payload.error.message).toContain("https://evil.example");
+			expect(payload.error.message).not.toContain("token=leaked");
 		});
 	});
 
