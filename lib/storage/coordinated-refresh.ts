@@ -231,19 +231,20 @@ function commitRotation(
  * Refresh a persisted credential without holding a storage lease across the
  * provider round trip.
  *
- * Phases:
- *  1. short storage transaction — adopt a rotation another process already
- *     committed, and otherwise read the current token;
- *  2. refresh lease — serializes the exchange itself across processes, because
- *     refresh tokens are single-use;
- *  3. short storage transaction — re-check (the winner of the lease may have
- *     just done the work), then exchange with no storage lease held, then
- *     commit in a final short transaction.
+ * Under the refresh lease, which serializes the exchange across processes
+ * because refresh tokens are single-use:
+ *  1. a short storage transaction adopts a rotation another process already
+ *     committed, or else reports the authoritative current token;
+ *  2. the provider exchange runs with NO storage lease held;
+ *  3. a short storage transaction commits the rotation.
  *
- * Only phases 1 and 3 touch the storage lease, and each holds it for a local
- * read/write. Unrelated writers (`codex-note`, `codex-tag`, account toggles,
- * rotation stamps, TUI quota writes) therefore never queue behind a network
- * call.
+ * Steps 1 and 3 hold the storage lease only for a local read/write, so
+ * unrelated writers (`codex-note`, `codex-tag`, account toggles, rotation
+ * stamps, TUI quota writes) never queue behind the network call.
+ *
+ * The refresh lease is keyed on the *accounts* storage path even for flagged
+ * storage. That is deliberate: a quarantined record and an active one can share
+ * a refresh token, and one lease over both keeps them from exchanging it twice.
  */
 async function coordinateRefresh<T extends StorageShape>(
 	identity: PersistedRefreshIdentity,
@@ -278,10 +279,10 @@ async function coordinateRefresh<T extends StorageShape>(
 		// just committed a rotation, and reading first would race with them. The
 		// lease is a local file operation, so paying for it up front is cheaper
 		// than an avoidable second exchange of a single-use token.
-		const current = await probe();
-		if (current.kind === "adopt") return current.result;
+		const probed = await probe();
+		if (probed.kind === "adopt") return probed.result;
 
-		const exchangedToken = current.token;
+		const exchangedToken = probed.token;
 		const refreshResult = await queuedRefresh(exchangedToken);
 		if (refreshResult.type !== "success") {
 			return refreshResult;
