@@ -57,6 +57,44 @@ describe("storage transaction leases", () => {
 		} finally {
 			await release();
 		}
+		// The acquisition budget deliberately sums to several seconds, so this
+		// test has to outlast it rather than the default 5s.
+	}, 20_000);
+
+	it("waits out a burst of contention instead of failing fast", async () => {
+		// given a holder that keeps the lease for longer than the old ~0.5s budget
+		const release = await lock(storagePath, {
+			realpath: false,
+			lockfilePath: `${storagePath}.transaction.lock`,
+			stale: 10_000,
+			update: 2_000,
+		});
+		setTimeout(() => {
+			void release();
+		}, 1_500);
+
+		// when
+		const observed = await withAccountStorageTransaction(async () => "committed");
+
+		// then
+		expect(observed).toBe("committed");
+	}, 20_000);
+
+	it("creates the storage directory when acquiring a lease for the first time", async () => {
+		// given a project-scoped storage path whose directory does not exist yet
+		const freshPath = join(directory, "nested", "project", "accounts.json");
+		setStoragePathDirect(freshPath);
+
+		// when
+		const observed = await withAccountStorageTransaction(async () => {
+			// `proper-lockfile` mkdirs the lockfile non-recursively, so acquiring the
+			// lease used to fail with a raw ENOENT before the directory existed.
+			await access(`${freshPath}.transaction.lock`);
+			return "lease-acquired";
+		});
+
+		// then
+		expect(observed).toBe("lease-acquired");
 	});
 
 	it("uses a distinct lease while an advisory storage lock file exists", async () => {

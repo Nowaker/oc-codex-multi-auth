@@ -2059,23 +2059,27 @@ describe("OpenAIOAuthPlugin", () => {
 
 			const { withAccountStorageTransaction } = await import("../lib/storage.js");
 			const originalTransaction = vi.mocked(withAccountStorageTransaction).getMockImplementation();
-			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
-				async <T>(
-					callback: (
-						loadedStorage: typeof mockStorage,
-						persist: (nextStorage: typeof mockStorage) => Promise<void>,
-					) => Promise<T>,
-				) => {
-					const loadedStorage = cloneMockStorage();
-					const persist = async (nextStorage: typeof mockStorage) => {
-						mockStorage.version = nextStorage.version;
-						mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
-						mockStorage.activeIndex = nextStorage.activeIndex;
-						mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
-					};
-					return callback(loadedStorage, persist);
-				},
-			);
+			const committingTransaction = async <T>(
+				callback: (
+					loadedStorage: typeof mockStorage,
+					persist: (nextStorage: typeof mockStorage) => Promise<void>,
+				) => Promise<T>,
+			) => {
+				const loadedStorage = cloneMockStorage();
+				const persist = async (nextStorage: typeof mockStorage) => {
+					mockStorage.version = nextStorage.version;
+					mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+					mockStorage.activeIndex = nextStorage.activeIndex;
+					mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+				};
+				return callback(loadedStorage, persist);
+			};
+			// A coordinated refresh opens TWO storage transactions: a short probe
+			// that reads the authoritative token, then the durable commit. The probe
+			// never persists, so the same implementation serves both.
+			vi.mocked(withAccountStorageTransaction)
+				.mockImplementationOnce(committingTransaction)
+				.mockImplementationOnce(committingTransaction);
 			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
 				async <T>(
 					callback: (
@@ -2250,10 +2254,10 @@ describe("OpenAIOAuthPlugin", () => {
 			vi.mocked(withAccountStorageTransaction).mockImplementation(
 				async (callback) => {
 					transactionCount += 1;
-					// Two refresh persists and one stale-state clear precede the
-					// auto-switch persist, so transaction 4 must resolve identity
-					// against the reordered storage snapshot.
-					if (transactionCount !== 4) {
+					// Two coordinated refreshes (a probe plus a commit each) and one
+					// stale-state clear precede the auto-switch persist, so transaction
+					// 6 must resolve identity against the reordered storage snapshot.
+					if (transactionCount !== 6) {
 						return originalTransaction!(callback);
 					}
 					const reorderedStorage = {
@@ -2275,7 +2279,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 			expect(mockStorage.accounts[mockStorage.activeIndex]?.accountId).toBe("best");
 			expect(mockStorage.activeIndex).toBe(2);
-			expect(transactionCount).toBe(4);
+			expect(transactionCount).toBe(6);
 			vi.mocked(withAccountStorageTransaction).mockImplementation(originalTransaction);
 		});
 
@@ -2304,25 +2308,27 @@ describe("OpenAIOAuthPlugin", () => {
 				mockStorage.activeIndex = nextStorage.activeIndex;
 				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 			};
+			// Credential probe + credential commit: a coordinated refresh reads the
+			// authoritative token in a short transaction before exchanging, then
+			// commits in a second one. Both see a fresh snapshot carrying a
+			// concurrent rate-limit update, but no concurrent cooldown.
+			const concurrentTransaction = async <T>(
+				callback: (
+					loadedStorage: typeof mockStorage,
+					persist: (nextStorage: typeof mockStorage) => Promise<void>,
+				) => Promise<T>,
+			) => {
+				const loadedStorage = cloneMockStorage();
+				loadedStorage.accounts[0]!.rateLimitResetTimes = {
+					"gpt-5.4-mini": Date.now() + 1_800_000,
+				};
+				delete loadedStorage.accounts[0]!.coolingDownUntil;
+				delete loadedStorage.accounts[0]!.cooldownReason;
+				return callback(loadedStorage, persistSnapshot);
+			};
 			vi.mocked(withAccountStorageTransaction)
-				// Credential transaction: the fresh snapshot carries a concurrent
-				// rate-limit update, but no concurrent cooldown.
-				.mockImplementationOnce(
-					async <T>(
-						callback: (
-							loadedStorage: typeof mockStorage,
-							persist: (nextStorage: typeof mockStorage) => Promise<void>,
-						) => Promise<T>,
-					) => {
-						const loadedStorage = cloneMockStorage();
-						loadedStorage.accounts[0]!.rateLimitResetTimes = {
-							"gpt-5.4-mini": Date.now() + 1_800_000,
-						};
-						delete loadedStorage.accounts[0]!.coolingDownUntil;
-						delete loadedStorage.accounts[0]!.cooldownReason;
-						return callback(loadedStorage, persistSnapshot);
-					},
-				);
+				.mockImplementationOnce(concurrentTransaction)
+				.mockImplementationOnce(concurrentTransaction);
 			vi.mocked(withAccountStorageTransaction).mockImplementation(
 				originalTransaction,
 			);
@@ -2651,20 +2657,23 @@ describe("OpenAIOAuthPlugin", () => {
 				{ refreshToken: "old-r1", email: "one@example.com" },
 			];
 			const { withAccountStorageTransaction } = await import("../lib/storage.js");
-			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
-				async <T>(
-					callback: (
-						loadedStorage: typeof mockStorage,
-						persist: (nextStorage: typeof mockStorage) => Promise<void>,
-					) => Promise<T>,
-				) => {
-					const loadedStorage = cloneMockStorage();
-					const persist = async () => {
-						throw new Error("disk full");
-					};
-					return callback(loadedStorage, persist);
-				},
-			);
+			// Probe + commit: only the commit persists, so the failing persist has to
+			// be in place for both calls of the coordinated refresh.
+			const failingTransaction = async <T>(
+				callback: (
+					loadedStorage: typeof mockStorage,
+					persist: (nextStorage: typeof mockStorage) => Promise<void>,
+				) => Promise<T>,
+			) => {
+				const loadedStorage = cloneMockStorage();
+				const persist = async () => {
+					throw new Error("disk full");
+				};
+				return callback(loadedStorage, persist);
+			};
+			vi.mocked(withAccountStorageTransaction)
+				.mockImplementationOnce(failingTransaction)
+				.mockImplementationOnce(failingTransaction);
 
 			const result = parseJsonOutput<{
 				healthyCount: number;

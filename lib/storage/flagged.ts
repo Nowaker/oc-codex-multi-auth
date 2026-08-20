@@ -141,6 +141,14 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
       flaggedAt,
       flaggedReason: typeof rawAccount.flaggedReason === "string" ? rawAccount.flaggedReason : undefined,
       lastError: typeof rawAccount.lastError === "string" ? rawAccount.lastError : undefined,
+      // Rotation ordering has to survive a round trip through this file, or a
+      // rotated refresh token committed by `coordinateFlaggedPersistedRefresh`
+      // looks older than a stale in-memory snapshot and gets clobbered.
+      // `accessToken`/`expiresAt` are deliberately NOT carried: quarantined
+      // records stay credential-light, so a live OAuth access token is never
+      // written to flagged-accounts.json.
+      tokenRotatedAt:
+        typeof rawAccount.tokenRotatedAt === "number" ? rawAccount.tokenRotatedAt : undefined,
     };
     // Keep flagged dedup aligned with active cleanup so sibling workspaces only
     // collapse when they resolve to the same shared workspace identity.

@@ -3,11 +3,12 @@ import { createHash } from "node:crypto";
 import { extractAccountId } from "./accounts.js";
 import { extractAccountUserId } from "./auth/token-utils.js";
 import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
-import { CODEX_BASE_URL } from "./constants.js";
+import { CODEX_BASE_URL, PLUGIN_NAME } from "./constants.js";
 import {
 	createDeactivatedWorkspaceError,
 	createUsageRequestTimeoutError,
 } from "./error-sentinels.js";
+import { logWarn } from "./logger.js";
 import { coordinatePersistedRefresh } from "./storage/coordinated-refresh.js";
 import {
 	createCodexHeaders,
@@ -454,10 +455,24 @@ export async function ensureCodexUsageAccessToken(params: {
 		}
 	}
 	if (refreshedCount === 0) {
+		// `params.storage` is a caller-supplied snapshot, so its copy of this
+		// account can already carry a rotated token and match nothing. The durable
+		// commit still happened inside the coordinator; only this in-memory
+		// snapshot missed it, which is worth saying out loud because it means the
+		// caller's other views of the account stay stale for this invocation.
+		logWarn(
+			`[${PLUGIN_NAME}] No account in the supplied storage snapshot matched the refreshed token; the rotation is durable on disk but this snapshot was not updated.`,
+			{
+				accountId: params.account.accountId,
+				organizationId: params.account.organizationId,
+			},
+		);
 		applyRefreshedCredentials(params.account, refreshResult);
 	}
 
 	accessToken = refreshResult.access;
+	// The coordinator either adopted a rotation another process had already
+	// committed or committed this one itself; both leave the credential durable.
 	return { accessToken, refreshed: true, persisted: true };
 }
 

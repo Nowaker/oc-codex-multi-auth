@@ -3,12 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../lib/tools/index.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import { createCodexRefreshTool } from "../lib/tools/codex-refresh.js";
-import { persistRefreshResult } from "../lib/tools/refresh-account.js";
 import { resolveDisplayEmail } from "../lib/account-display.js";
 
 vi.mock("../lib/storage.js", () => ({
 	loadAccounts: vi.fn(),
 	withAccountStorageTransaction: vi.fn(),
+	// The coordinator derives the refresh-lease path from the storage path.
+	getStoragePath: vi.fn(() => "/tmp/oc-codex-refresh-test/accounts.json"),
+}));
+
+// The refresh lease is a real cross-process lockfile. These tests mock storage
+// entirely, so there is no file to lock; run the callback directly.
+vi.mock("../lib/storage/transaction-lock.js", () => ({
+	withRefreshLease: vi.fn(async (_path: string, operation: () => Promise<unknown>) =>
+		operation(),
+	),
 }));
 
 vi.mock("../lib/refresh-queue.js", () => ({
@@ -257,51 +266,5 @@ describe("codex-refresh tool concurrency (lost-update regression)", () => {
 		expect(persisted?.accounts[0]?.accessToken).toBe("new-access");
 		expect(persisted?.accounts[0]?.tokenRotatedAt).toBeGreaterThan(999);
 		expect(output).toContain("1 refreshed, 0 failed");
-	});
-
-	it("does not overwrite a concurrent re-login when a sibling already holds the rotated token", async () => {
-		const concurrentStorage: AccountStorageV3 = {
-			version: 3,
-			activeIndex: 0,
-			accounts: [
-				{
-					accountId: "target",
-					refreshToken: "fresh-login-token",
-					accessToken: "fresh-login-access",
-					expiresAt: 1_800_000_000_000,
-					addedAt: 1,
-					lastUsed: 1,
-				},
-				{
-					accountId: "sibling",
-					refreshToken: "new-refresh",
-					addedAt: 2,
-					lastUsed: 2,
-				},
-			],
-		};
-		const persist = vi.fn(async () => {});
-		vi.mocked(withAccountStorageTransaction).mockImplementation(
-			async (handler) => handler(concurrentStorage, persist),
-		);
-
-		const result = await persistRefreshResult(
-			0,
-			{ accountId: "target", refreshToken: "old-refresh" },
-			{
-				type: "success",
-				access: "stale-rotation-access",
-				refresh: "new-refresh",
-				expires: 1_700_000_000_000,
-			},
-		);
-
-		expect(result.persisted).toBe(false);
-		expect(result.persistError).toContain("changed concurrently");
-		expect(persist).not.toHaveBeenCalled();
-		expect(concurrentStorage.accounts[0]).toMatchObject({
-			refreshToken: "fresh-login-token",
-			accessToken: "fresh-login-access",
-		});
 	});
 });

@@ -182,4 +182,61 @@ describe("persisted refresh coordination", () => {
 			refreshToken: "refresh-1",
 		});
 	});
+
+	it("does not hold the storage lease across the provider exchange", async () => {
+		// given a provider exchange that outlasts the lease acquisition budget
+		await seedAccount();
+		let finishRefresh: ((value: {
+			type: "success";
+			access: string;
+			refresh: string;
+			expires: number;
+		}) => void) | undefined;
+		let notifyRefreshStarted: (() => void) | undefined;
+		const refreshStarted = new Promise<void>((resolve) => {
+			notifyRefreshStarted = resolve;
+		});
+		vi.mocked(queuedRefresh).mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finishRefresh = resolve;
+					notifyRefreshStarted?.();
+				}),
+		);
+		const refresh = refreshAndPersistAccount({ index: 0, identity });
+		await refreshStarted;
+
+		// when an unrelated storage write runs while the exchange is still open
+		const noteCommitted = await Promise.race([
+			withAccountStorageTransaction(async (current, persist) => {
+				if (!current?.accounts[0]) throw new Error("Expected account fixture");
+				current.accounts[0].accountNote = "written-mid-exchange";
+				await persist(current);
+				return true;
+			}),
+			// If the exchange still held the lease, acquisition would burn its whole
+			// retry budget and then throw, so a bounded timer is enough to prove the
+			// write is not queued behind the network call.
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 3_000)),
+		]);
+
+		// then it completes without waiting for the exchange to finish
+		expect(noteCommitted).toBe(true);
+
+		if (!finishRefresh) throw new Error("Expected refresh to start");
+		finishRefresh({
+			type: "success",
+			access: "access-1",
+			refresh: "refresh-1",
+			expires: 2_000_000_000_000,
+		});
+		await refresh;
+
+		// and the rotated credential still commits on top of it
+		const stored = await loadAccounts();
+		expect(stored?.accounts[0]).toMatchObject({
+			accountNote: "written-mid-exchange",
+			refreshToken: "refresh-1",
+		});
+	}, 20_000);
 });
