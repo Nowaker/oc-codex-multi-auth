@@ -138,9 +138,10 @@ function adoptPersistedRotation(
 		refresh: target.refreshToken,
 		expires: target.expiresAt,
 		// Carried so consumers that read these off a refresh result behave the same
-		// on the adopt path as on the exchange path: `index.ts` hydration derives
-		// the account email from `idToken` and the stored scope from `scope`, and
-		// `proactive-refresh.ts` rebuilds a TokenResult from all three.
+		// on the adopt path as on the exchange path. There is no `idToken` to carry
+		// — nothing persists one — but `extractAccountEmail` falls back to the
+		// access token, so email hydration still resolves; `scope` has no such
+		// fallback, and `proactive-refresh.ts` rebuilds a TokenResult from both.
 		...(target.oauthScope ? { scope: target.oauthScope } : {}),
 		multiAccount: true,
 		adopted: true,
@@ -274,7 +275,7 @@ async function coordinateRefresh<T extends StorageShape>(
 			});
 		});
 
-	return withRefreshLease(getStoragePath(), async () => {
+	return withRefreshLease(getStoragePath(), async (lease) => {
 		// Probed INSIDE the lease, not before it: whoever held the lease may have
 		// just committed a rotation, and reading first would race with them. The
 		// lease is a local file operation, so paying for it up front is cheaper
@@ -283,6 +284,13 @@ async function coordinateRefresh<T extends StorageShape>(
 		if (probed.kind === "adopt") return probed.result;
 
 		const exchangedToken = probed.token;
+		// The probe reads from disk, which on a starved event loop or a slow
+		// network volume can outlast the lease heartbeat. If the lease was
+		// reclaimed in that window another process may be exchanging this exact
+		// token right now, and going ahead would leave one of us with
+		// `refresh_token_reused` and a dead account. Bail out instead: the error
+		// is classified retryable, so the caller retries with a fresh lease.
+		lease.assertValid();
 		const refreshResult = await queuedRefresh(exchangedToken);
 		if (refreshResult.type !== "success") {
 			return refreshResult;

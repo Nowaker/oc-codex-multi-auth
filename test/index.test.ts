@@ -58,6 +58,24 @@ vi.mock("../lib/auth/auth.js", () => ({
 	REDIRECT_URI: "http://localhost:1455/auth/callback",
 }));
 
+// Only the refresh lease is stubbed: `getStoragePath()` is mocked to a path that
+// does not exist, and acquiring a real cross-process lockfile there would create
+// directories outside the test sandbox. Everything else stays real.
+vi.mock("../lib/storage/transaction-lock.js", async () => {
+	const actual = await vi.importActual<typeof import("../lib/storage/transaction-lock.js")>(
+		"../lib/storage/transaction-lock.js",
+	);
+	return {
+		...actual,
+		withRefreshLease: vi.fn(
+			async (
+				_storagePath: string,
+				operation: (lease: { assertValid: () => void }) => Promise<unknown>,
+			) => operation({ assertValid: () => {} }),
+		),
+	};
+});
+
 vi.mock("../lib/refresh-queue.js", () => ({
 	queuedRefresh: vi.fn(async () => ({
 		type: "success" as const,

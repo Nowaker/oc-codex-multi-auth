@@ -183,6 +183,35 @@ describe("persisted refresh coordination", () => {
 		});
 	});
 
+	it("refuses to spend the token when the refresh lease was compromised", async () => {
+		// given a lease that is reclaimed by another process before the exchange
+		await seedAccount();
+		const { withRefreshLease } = await import("../lib/storage/transaction-lock.js");
+		const { StorageTransactionContentionError } = await import("../lib/errors.js");
+		const realLease = vi.mocked(withRefreshLease).getMockImplementation?.();
+		const leaseSpy = vi
+			.spyOn(await import("../lib/storage/transaction-lock.js"), "withRefreshLease")
+			.mockImplementation(async (storagePath, operation) =>
+				operation({
+					assertValid() {
+						throw new StorageTransactionContentionError(storagePath);
+					},
+				}),
+			);
+
+		// when
+		const outcome = await refreshAndPersistAccount({ index: 0, identity });
+
+		// then the single-use token is never exchanged
+		expect(queuedRefresh).not.toHaveBeenCalled();
+		expect(outcome.status).toBe("failed");
+		const stored = await loadAccounts();
+		expect(stored?.accounts[0]?.refreshToken).toBe("refresh-0");
+
+		leaseSpy.mockRestore();
+		if (realLease) vi.mocked(withRefreshLease).mockImplementation(realLease);
+	});
+
 	it("does not hold the storage lease across the provider exchange", async () => {
 		// given a provider exchange that outlasts the lease acquisition budget
 		await seedAccount();

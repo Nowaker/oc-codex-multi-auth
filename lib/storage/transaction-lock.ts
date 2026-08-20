@@ -55,7 +55,7 @@ const REFRESH_LEASE_RETRIES = {
 	randomize: true,
 } as const;
 
-interface StorageTransactionLease {
+export interface StorageTransactionLease {
 	assertValid(): void;
 }
 
@@ -203,19 +203,17 @@ async function withStorageTransactionLease<T>(
  */
 export async function withRefreshLease<T>(
 	storagePath: string,
-	operation: () => Promise<T>,
+	operation: (lease: StorageTransactionLease) => Promise<T>,
 ): Promise<T> {
 	const lockPath = getRefreshLeasePath(storagePath);
+	let compromised: Error | undefined;
 	const release = await acquireLease(getRefreshLeaseTargetPath(storagePath), lockPath, {
 		stale: REFRESH_LEASE_STALE_MS,
 		update: REFRESH_LEASE_UPDATE_MS,
 		retries: REFRESH_LEASE_RETRIES,
 		reportPath: storagePath,
 		onCompromised: (error: Error) => {
-			// Losing the refresh lease is not fatal on its own: the exchange either
-			// already happened or has not started, and the commit runs under its own
-			// storage lease with a last-writer-wins-by-`tokenRotatedAt` merge. Log it
-			// so an operator can spot a pathologically starved event loop.
+			compromised = error;
 			logWarn(
 				`Account refresh lease at ${lockPath} was compromised: ${error.message}`,
 			);
@@ -223,7 +221,18 @@ export async function withRefreshLease<T>(
 	});
 
 	try {
-		return await operation();
+		return await operation({
+			// Callers MUST call this immediately before spending the single-use
+			// refresh token. A compromised lease means another process can reclaim
+			// it and exchange the same token, and the loser of that race gets
+			// `refresh_token_reused` — an unrecoverable state that forces the user
+			// to log in again. Aborting before the exchange is always cheaper.
+			assertValid() {
+				if (compromised) {
+					throw new StorageTransactionContentionError(storagePath, compromised);
+				}
+			},
+		});
 	} finally {
 		await releaseQuietly(release, lockPath);
 	}

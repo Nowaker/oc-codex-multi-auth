@@ -13,10 +13,14 @@ vi.mock("../lib/storage.js", () => ({
 }));
 
 // The refresh lease is a real cross-process lockfile. These tests mock storage
-// entirely, so there is no file to lock; run the callback directly.
+// entirely, so there is no file to lock; run the callback with an always-valid
+// lease.
 vi.mock("../lib/storage/transaction-lock.js", () => ({
-	withRefreshLease: vi.fn(async (_path: string, operation: () => Promise<unknown>) =>
-		operation(),
+	withRefreshLease: vi.fn(
+		async (
+			_path: string,
+			operation: (lease: { assertValid: () => void }) => Promise<unknown>,
+		) => operation({ assertValid: () => {} }),
 	),
 }));
 

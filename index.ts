@@ -832,7 +832,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         process.env.OPENCODE_SKIP_EMAIL_HYDRATE === "1";
                 if (skipHydrate) return storage;
 
-                const accountsCopy = storage.accounts.map((account) =>
+                let accountsCopy = storage.accounts.map((account) =>
                         account ? { ...account } : account,
                 );
                 const accountsToHydrate = accountsCopy.filter(
@@ -853,6 +853,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 expiresAt?: number;
                                 oauthScope?: string;
                                 refreshToken?: string;
+                                // Carried so the deferred merge below can tell this rotation
+                                // apart from one a concurrent process committed later.
+                                tokenRotatedAt?: number;
                 };
                 const hydrationUpdates = new Map<string, HydrationUpdate>();
                 // Keyed by stable workspace identity rather than by refresh token, for
@@ -907,6 +910,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                                 update.refreshToken = refreshed.refresh;
                                                 changed = true;
                                         }
+                                        const rotatedAt = refreshed.rotatedAt ?? account.tokenRotatedAt;
+                                        if (typeof rotatedAt === "number") {
+                                                account.tokenRotatedAt = rotatedAt;
+                                                update.tokenRotatedAt = rotatedAt;
+                                        }
 										if (Object.keys(update).length > 0) {
 											hydrationUpdates.set(originalRefreshToken, update);
 											// The coordinator has already committed the rotated token to
@@ -950,14 +958,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         if (update.accountId !== undefined) acc.accountId = update.accountId;
                                         if (update.accountIdSource !== undefined) acc.accountIdSource = update.accountIdSource;
                                         if (update.email !== undefined) acc.email = update.email;
-                                        if (update.accessToken !== undefined) acc.accessToken = update.accessToken;
-                                        if (update.expiresAt !== undefined) acc.expiresAt = update.expiresAt;
                                         if (update.oauthScope !== undefined) acc.oauthScope = update.oauthScope;
-                                        // Apply the rotated refresh token LAST so the map key
-                                        // (original token) still matches above.
-                                        if (update.refreshToken !== undefined) acc.refreshToken = update.refreshToken;
+                                        // The credential triple is single-use. This transaction runs after
+                                        // the whole (multi-second) hydration loop, so a concurrent process
+                                        // may have rotated the account in the meantime; writing our older
+                                        // tuple back would restore a consumed token and cost a re-login.
+                                        const updateRotatedAt = update.tokenRotatedAt ?? 0;
+                                        const diskRotatedAt = acc.tokenRotatedAt ?? 0;
+                                        if (updateRotatedAt >= diskRotatedAt) {
+                                                if (update.accessToken !== undefined) acc.accessToken = update.accessToken;
+                                                if (update.expiresAt !== undefined) acc.expiresAt = update.expiresAt;
+                                                // Apply the rotated refresh token LAST so the map key
+                                                // (original token) still matches above.
+                                                if (update.refreshToken !== undefined) acc.refreshToken = update.refreshToken;
+                                                if (update.tokenRotatedAt !== undefined) acc.tokenRotatedAt = update.tokenRotatedAt;
+                                        }
                                 }
                                 await persist(current);
+                                // Return what actually landed on disk, not the in-memory copy: a
+                                // credential we declined to write above must not resurface through
+                                // the returned storage either.
+                                accountsCopy = current.accounts.map((acc) => ({ ...acc }));
                         });
                         storage.accounts = accountsCopy;
                 }
