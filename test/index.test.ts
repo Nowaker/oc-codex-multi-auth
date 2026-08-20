@@ -967,6 +967,11 @@ describe("OpenAIOAuthPlugin", () => {
 			"http://127.0.1.1:8080/v1/",
 			"http://127.255.255.254:8080/v1/",
 			"http://[::1]:8080/v1/",
+			// IPv4-mapped spellings normalize to hex (`::ffff:7f00:2`), and are
+			// just as unroutable as the dotted form.
+			"http://[::ffff:127.0.0.1]:8080/v1/",
+			"http://[::ffff:127.0.0.2]:8080/v1/",
+			"http://[::ffff:127.1.1.1]:8080/v1/",
 		])("allows any literal loopback HTTP OAuth gateway: %s", async (baseURL) => {
 			vi.stubEnv("OPENAI_BASE_URL", baseURL);
 			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
@@ -980,7 +985,9 @@ describe("OpenAIOAuthPlugin", () => {
 
 			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
 
-			expect(result.baseURL).toBe(baseURL.replace(/\/+$/, ""));
+			// WHATWG normalizes IPv6 literals (`::ffff:127.0.0.1` -> `::ffff:7f00:1`),
+			// so compare against the normalized form rather than the raw input.
+			expect(result.baseURL).toBe(new URL(baseURL).toString().replace(/\/+$/, ""));
 		});
 
 		it.each([
@@ -992,6 +999,9 @@ describe("OpenAIOAuthPlugin", () => {
 			// 126/8 and 128/8 bracket the loopback block; neither is loopback.
 			"http://126.255.255.255:8080/v1",
 			"http://128.0.0.1:8080/v1",
+			// Same brackets in IPv4-mapped form (`::ffff:7eff:ffff` / `::ffff:8000:1`).
+			"http://[::ffff:126.255.255.255]:8080/v1",
+			"http://[::ffff:128.0.0.1]:8080/v1",
 			"https://user:password@gateway.example/v1",
 			"https://gateway.example/v1?tenant=one",
 			"https://gateway.example/v1?",
@@ -1011,8 +1021,10 @@ describe("OpenAIOAuthPlugin", () => {
 			await expect(plugin.auth.loader(getAuth, { options: {}, models: {} })).rejects.toThrow();
 		});
 
-		it("reports a scheme-less OPENAI_BASE_URL with an actionable message", async () => {
-			vi.stubEnv("OPENAI_BASE_URL", "gateway.example/v1");
+		it("reports a scheme-less OPENAI_BASE_URL without echoing the value", async () => {
+			// A scheme-less value can carry a token in its query string, and this
+			// message reaches a toast, so the value itself must not appear in it.
+			vi.stubEnv("OPENAI_BASE_URL", "gateway.example/v1?access_token=secret-value");
 			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
 			const getAuth = async () => ({
 				type: "oauth" as const,
@@ -1025,13 +1037,12 @@ describe("OpenAIOAuthPlugin", () => {
 			await expect(plugin.auth.loader(getAuth, { options: {}, models: {} })).rejects.toThrow(
 				/\[oc-codex-multi-auth\] OPENAI_BASE_URL is invalid.*not a valid absolute URL/s,
 			);
-			expect(mockClient.tui.showToast).toHaveBeenCalledWith(
-				expect.objectContaining({
-					body: expect.objectContaining({
-						message: expect.stringContaining("[oc-codex-multi-auth] OPENAI_BASE_URL is invalid"),
-					}),
-				}),
-			);
+			const toastMessage = vi.mocked(mockClient.tui.showToast).mock.calls
+				.map((call) => String((call[0] as { body?: { message?: string } })?.body?.message ?? ""))
+				.join("\n");
+			expect(toastMessage).toContain("[oc-codex-multi-auth] OPENAI_BASE_URL is invalid");
+			expect(toastMessage).not.toContain("secret-value");
+			expect(toastMessage).not.toContain("gateway.example");
 		});
 
 		it("rejects a redirect from the OAuth gateway instead of following it", async () => {
@@ -1045,7 +1056,7 @@ describe("OpenAIOAuthPlugin", () => {
 					expiresAt: Date.now() + 60_000,
 				},
 			];
-			vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
 				new Response(null, {
 					status: 302,
 					headers: { location: "https://evil.example/v1/responses?token=leaked" },
@@ -1066,6 +1077,13 @@ describe("OpenAIOAuthPlugin", () => {
 				body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
 			});
 
+			// The mocked fetch returns a raw 302 regardless of RequestInit, so assert
+			// the flag explicitly: without it undici would silently FOLLOW the
+			// redirect and replay the OAuth token to the new origin.
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://gateway.example/v1/responses",
+				expect.objectContaining({ redirect: "manual" }),
+			);
 			expect(response.status).toBe(502);
 			const payload = await response.json();
 			expect(payload.error.message).toContain("302 redirect");

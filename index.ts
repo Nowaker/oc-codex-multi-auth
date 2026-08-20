@@ -245,12 +245,17 @@ import {
 } from "./lib/tui-quota-cache.js";
 
 /**
- * IPv6 loopback literals. WHATWG URL parsing already compresses every equivalent
- * spelling (`0:0:0:0:0:0:0:1` -> `::1`, `::ffff:127.0.0.1` -> `::ffff:7f00:1`),
- * so only the canonical forms need to be listed here.
+ * IPv6 loopback literal. WHATWG URL parsing compresses every equivalent
+ * spelling (`0:0:0:0:0:0:0:1` -> `::1`), so only the canonical form is listed.
  */
-const LOOPBACK_GATEWAY_HOSTS = new Set(["::1", "::ffff:7f00:1"]);
+const LOOPBACK_GATEWAY_HOSTS = new Set(["::1"]);
 const IPV4_LITERAL_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+/**
+ * IPv4-mapped IPv6, which WHATWG serializes in hex rather than dotted form:
+ * `::ffff:127.0.0.1` -> `::ffff:7f00:1`, `::ffff:127.1.1.1` -> `::ffff:7f01:101`.
+ * The high byte of the first group is the first IPv4 octet.
+ */
+const IPV4_MAPPED_PATTERN = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/;
 
 /**
  * Cleartext HTTP is only safe for a peer that cannot leave the host, so the check
@@ -269,6 +274,12 @@ function isLoopbackGatewayHost(hostname: string): boolean {
 		const octets = ipv4.slice(1).map((part) => Number(part));
 		if (octets.some((octet) => !Number.isInteger(octet) || octet > 255)) return false;
 		return octets[0] === 127;
+	}
+	const mapped = IPV4_MAPPED_PATTERN.exec(hostname);
+	if (mapped?.[1]) {
+		// `::ffff:7f00:2` is 127.0.0.2 — just as unroutable as the dotted
+		// spelling, so rejecting it would be an inconsistency, not a safeguard.
+		return Number.parseInt(mapped[1], 16) >>> 8 === 0x7f;
 	}
 	return LOOPBACK_GATEWAY_HOSTS.has(hostname);
 }
@@ -292,9 +303,10 @@ function resolveOpenAIBaseURL(): string | undefined {
 		// `new URL()` throws a bare `TypeError: Invalid URL` that names neither the
 		// plugin nor the variable, which is useless when it surfaces out of the
 		// auth loader. A scheme-less value such as `gateway.example/v1` is the
-		// common way to hit this.
+		// common way to hit this. The value itself is NOT echoed: it can carry a
+		// token in a query string, and this message reaches a toast.
 		throw invalidBaseURL(
-			`"${raw}" is not a valid absolute URL (an explicit https:// or http:// scheme is required)`,
+			"the value is not a valid absolute URL (an explicit https:// or http:// scheme is required)",
 		);
 	}
 	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
