@@ -244,26 +244,74 @@ import {
 	writeTuiQuotaSnapshot,
 } from "./lib/tui-quota-cache.js";
 
-const LOOPBACK_GATEWAY_HOSTS = new Set(["127.0.0.1", "::1"]);
+/**
+ * IPv6 loopback literals. WHATWG URL parsing already compresses every equivalent
+ * spelling (`0:0:0:0:0:0:0:1` -> `::1`, `::ffff:127.0.0.1` -> `::ffff:7f00:1`),
+ * so only the canonical forms need to be listed here.
+ */
+const LOOPBACK_GATEWAY_HOSTS = new Set(["::1", "::ffff:7f00:1"]);
+const IPV4_LITERAL_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+/**
+ * Cleartext HTTP is only safe for a peer that cannot leave the host, so the check
+ * is deliberately restricted to *literal* loopback addresses. Hostnames such as
+ * `localhost` are rejected even though they usually resolve to 127.0.0.1: a host
+ * file or resolver can point them at a remote peer, which would leak the ChatGPT
+ * OAuth access token over the wire.
+ *
+ * The whole 127.0.0.0/8 range is accepted, not just 127.0.0.1 — running several
+ * local services on 127.0.0.2, 127.0.1.1, and friends is a common pattern, and
+ * every address in the block is equally unroutable.
+ */
+function isLoopbackGatewayHost(hostname: string): boolean {
+	const ipv4 = IPV4_LITERAL_PATTERN.exec(hostname);
+	if (ipv4) {
+		const octets = ipv4.slice(1).map((part) => Number(part));
+		if (octets.some((octet) => !Number.isInteger(octet) || octet > 255)) return false;
+		return octets[0] === 127;
+	}
+	return LOOPBACK_GATEWAY_HOSTS.has(hostname);
+}
+
+function invalidBaseURL(reason: string): Error {
+	return new Error(
+		`[oc-codex-multi-auth] OPENAI_BASE_URL is invalid: ${reason}. Fix the value, or unset ` +
+			"CODEX_AUTH_ALLOW_OPENAI_BASE_URL to fall back to the default ChatGPT Codex endpoint.",
+	);
+}
 
 function resolveOpenAIBaseURL(): string | undefined {
 	if (process.env.CODEX_AUTH_ALLOW_OPENAI_BASE_URL !== "1") return undefined;
 	const raw = process.env.OPENAI_BASE_URL?.trim();
 	if (!raw) return undefined;
 
-	const parsed = new URL(raw);
+	let parsed: URL;
+	try {
+		parsed = new URL(raw);
+	} catch {
+		// `new URL()` throws a bare `TypeError: Invalid URL` that names neither the
+		// plugin nor the variable, which is useless when it surfaces out of the
+		// auth loader. A scheme-less value such as `gateway.example/v1` is the
+		// common way to hit this.
+		throw invalidBaseURL(
+			`"${raw}" is not a valid absolute URL (an explicit https:// or http:// scheme is required)`,
+		);
+	}
 	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-		throw new Error("OPENAI_BASE_URL must use http:// or https://");
+		throw invalidBaseURL("it must use http:// or https://");
 	}
 	if (parsed.username || parsed.password) {
-		throw new Error("OPENAI_BASE_URL must not embed credentials");
+		throw invalidBaseURL("it must not embed credentials");
 	}
 	if (parsed.search || parsed.hash || raw.includes("?") || raw.includes("#")) {
-		throw new Error("OPENAI_BASE_URL must not include a query string or fragment");
+		throw invalidBaseURL("it must not include a query string or fragment");
 	}
 	const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-	if (parsed.protocol === "http:" && !LOOPBACK_GATEWAY_HOSTS.has(hostname)) {
-		throw new Error("OPENAI_BASE_URL requires https:// for non-loopback hosts");
+	if (parsed.protocol === "http:" && !isLoopbackGatewayHost(hostname)) {
+		throw invalidBaseURL(
+			`https:// is required for non-loopback host "${hostname}" so the ChatGPT OAuth ` +
+				"access token is never sent in cleartext",
+		);
 	}
 	return parsed.toString().replace(/\/+$/, "");
 }
@@ -288,6 +336,7 @@ function resolveOpenAIBaseURL(): string | undefined {
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
 	let customBaseURLWarningShown = false;
+	let customBaseURLErrorShown = false;
 	let cachedAccountManager: AccountManager | null = null;
 	let accountManagerPromise: Promise<AccountManager> | null = null;
 	let loaderMutex: Promise<void> | null = null;
@@ -1644,7 +1693,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			async loader(getAuth: () => Promise<Auth>, provider: unknown) {
 				const auth = await getAuth();
 				const pluginConfig = loadPluginConfig();
-				const openAIBaseURL = resolveOpenAIBaseURL();
+				let openAIBaseURL: string | undefined;
+				try {
+					openAIBaseURL = resolveOpenAIBaseURL();
+				} catch (err) {
+					// Fail closed rather than silently falling back to the default
+					// endpoint: the operator asked for a gateway, so quietly bypassing
+					// it would send ChatGPT traffic somewhere they did not choose.
+					// Surface the reason the same way storage failures are surfaced.
+					const message = err instanceof Error ? err.message : String(err);
+					if (!customBaseURLErrorShown) {
+						customBaseURLErrorShown = true;
+						await showToast(message, "error");
+					}
+					throw err;
+				}
 				if (openAIBaseURL && !customBaseURLWarningShown) {
 					customBaseURLWarningShown = true;
 					logWarn("Routing ChatGPT OAuth inference through OPENAI_BASE_URL", {
@@ -2465,6 +2528,48 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								}
 							}
 							const fetchLatencyMs = Math.round(performance.now() - fetchStart);
+
+							// `redirect: "manual"` hands back the raw 3xx instead of following it,
+							// so it has to be rejected explicitly. Left alone it would reach
+							// ensureContentType/convertSseToJson as an empty-bodied "success" and
+							// be reported as a content-type or empty-response error that says
+							// nothing about the redirect. Only the Location *origin* is logged;
+							// the full target can carry credentials in its query string.
+							if (openAIBaseURL && response.status >= 300 && response.status < 400) {
+								let redirectTarget = "an unparseable location";
+								const location = response.headers.get("location");
+								if (location) {
+									try {
+										redirectTarget = new URL(location, url).origin;
+									} catch {
+										// keep the placeholder
+									}
+								} else {
+									redirectTarget = "no location header";
+								}
+								logWarn(
+									`OPENAI_BASE_URL gateway attempted a redirect (${response.status}) to ${redirectTarget}`,
+									{ origin: new URL(openAIBaseURL).origin },
+								);
+								accountManager.refundToken(account, modelFamily, model);
+								return new Response(
+									JSON.stringify({
+										error: {
+											message:
+												`The OPENAI_BASE_URL gateway responded with a ${response.status} redirect to ` +
+												`${redirectTarget}. Redirects are not followed, because the ChatGPT OAuth ` +
+												"access token must never be replayed to an endpoint that was not explicitly " +
+												"configured. Point OPENAI_BASE_URL at the final endpoint instead.",
+										},
+									}),
+									{
+										status: 502,
+										headers: {
+											"content-type": "application/json; charset=utf-8",
+										},
+									},
+								);
+							}
 
 							logRequest(LOG_STAGES.RESPONSE, {
 								status: response.status,

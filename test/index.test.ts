@@ -963,8 +963,35 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it.each([
+			"http://127.0.0.2:8080/v1/",
+			"http://127.0.1.1:8080/v1/",
+			"http://127.255.255.254:8080/v1/",
+			"http://[::1]:8080/v1/",
+		])("allows any literal loopback HTTP OAuth gateway: %s", async (baseURL) => {
+			vi.stubEnv("OPENAI_BASE_URL", baseURL);
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(result.baseURL).toBe(baseURL.replace(/\/+$/, ""));
+		});
+
+		it.each([
 			"http://gateway.example/v1",
 			"http://localhost:8080/v1",
+			// Resolves to a loopback address on most hosts, but a resolver can point
+			// it anywhere, so only literal addresses are trusted.
+			"http://loopback.example/v1",
+			// 126/8 and 128/8 bracket the loopback block; neither is loopback.
+			"http://126.255.255.255:8080/v1",
+			"http://128.0.0.1:8080/v1",
 			"https://user:password@gateway.example/v1",
 			"https://gateway.example/v1?tenant=one",
 			"https://gateway.example/v1?",
@@ -982,6 +1009,69 @@ describe("OpenAIOAuthPlugin", () => {
 			});
 
 			await expect(plugin.auth.loader(getAuth, { options: {}, models: {} })).rejects.toThrow();
+		});
+
+		it("reports a scheme-less OPENAI_BASE_URL with an actionable message", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "gateway.example/v1");
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			await expect(plugin.auth.loader(getAuth, { options: {}, models: {} })).rejects.toThrow(
+				/\[oc-codex-multi-auth\] OPENAI_BASE_URL is invalid.*not a valid absolute URL/s,
+			);
+			expect(mockClient.tui.showToast).toHaveBeenCalledWith(
+				expect.objectContaining({
+					body: expect.objectContaining({
+						message: expect.stringContaining("[oc-codex-multi-auth] OPENAI_BASE_URL is invalid"),
+					}),
+				}),
+			);
+		});
+
+		it("rejects a redirect from the OAuth gateway instead of following it", async () => {
+			vi.stubEnv("OPENAI_BASE_URL", "https://gateway.example/v1");
+			vi.stubEnv("CODEX_AUTH_ALLOW_OPENAI_BASE_URL", "1");
+			mockStorage.accounts = [
+				{
+					accountId: "account-1",
+					refreshToken: "refresh-token",
+					accessToken: "access-token",
+					expiresAt: Date.now() + 60_000,
+				},
+			];
+			vi.spyOn(globalThis, "fetch").mockResolvedValue(
+				new Response(null, {
+					status: 302,
+					headers: { location: "https://evil.example/v1/responses?token=leaked" },
+				}),
+			);
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "a",
+				refresh: "r",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			const result = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			if (!result.fetch) throw new Error("Expected SDK fetch implementation");
+			const response = await result.fetch("https://gateway.example/v1/responses", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+			});
+
+			expect(response.status).toBe(502);
+			const payload = await response.json();
+			expect(payload.error.message).toContain("302 redirect");
+			// Origin only: the full location can carry credentials in its query string.
+			expect(payload.error.message).toContain("https://evil.example");
+			expect(payload.error.message).not.toContain("token=leaked");
 		});
 	});
 
