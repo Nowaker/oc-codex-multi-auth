@@ -334,6 +334,41 @@ describe("strategy dispatcher (#183)", () => {
 		},
 	);
 
+	it("sticky stays on its current strict-pool account, then advances only within the pool", () => {
+		const pool = ["account-id-2", "account-id-3"];
+		const first = manager.getAccountForStrategy(
+			"sticky",
+			FAMILY,
+			"gpt-5.6-sol",
+			undefined,
+			pool,
+			"strict",
+		);
+		expect(first?.accountId).toBe("account-id-2");
+		expect(
+			manager.getAccountForStrategy(
+				"sticky",
+				FAMILY,
+				"gpt-5.6-sol",
+				undefined,
+				pool,
+				"strict",
+			),
+		).toBe(first);
+
+		const next = manager.getAccountForStrategy(
+			"sticky",
+			FAMILY,
+			"gpt-5.6-sol",
+			undefined,
+			pool,
+			"strict",
+			new Set([first!.index]),
+		);
+		expect(next?.accountId).toBe("account-id-3");
+		expect([first?.accountId, next?.accountId]).not.toContain("account-id-1");
+	});
+
 	it("falls back to the general pool when configured IDs are unknown", () => {
 		const selected = manager.getAccountForStrategy(
 			"sticky",

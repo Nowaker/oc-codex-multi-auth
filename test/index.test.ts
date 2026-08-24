@@ -4744,6 +4744,60 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 	});
 
+	it("reports actual strict-pool attempts without trying general accounts", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+
+		// The suite's account-manager mock contains one concrete account. Report a
+		// second configured account so this exercises strict-pool exhaustion while
+		// proving that the general account is never fetched.
+		vi.spyOn(AccountManager.prototype, "getAccountCount").mockReturnValue(2);
+		vi.mocked(configModule.getModelAccountPool).mockReturnValueOnce(["acc-1"]);
+		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValueOnce("strict");
+		vi.mocked(configModule.getUnsupportedCodexPolicy).mockReturnValue("strict");
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
+			updatedInit: {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.4-pro" }),
+			},
+			body: { model: "gpt-5.4-pro" },
+		});
+		const errorBody = {
+			error: {
+				code: "model_not_supported_with_chatgpt_account",
+				message:
+					"The 'gpt-5.4-pro' model is not supported when using Codex with a ChatGPT account.",
+			},
+		};
+		vi.mocked(fetchHelpers.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response(JSON.stringify(errorBody), { status: 400 }),
+			rateLimit: undefined,
+			errorBody,
+		});
+		vi.mocked(fetchHelpers.getUnsupportedCodexModelInfo).mockReturnValue({
+			isUnsupported: true,
+			unsupportedModel: "gpt-5.4-pro",
+			message: errorBody.error.message,
+			code: errorBody.error.code,
+		});
+		globalThis.fetch = vi.fn().mockResolvedValueOnce(
+			new Response(JSON.stringify(errorBody), { status: 400 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4-pro" }),
+		});
+		const body = await response.text();
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(body).toContain("unsupported on 1 of 1 attempted pooled account(s)");
+		expect(body).not.toContain("All 2 account(s)");
+	});
+
 	it("falls back from gpt-5.3-codex to gpt-5.2-codex when unsupported fallback is enabled", async () => {
 		const configModule = await import("../lib/config.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
