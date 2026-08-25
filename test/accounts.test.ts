@@ -10,6 +10,7 @@ import {
   shouldUpdateAccountIdFromToken,
   getAccountIdCandidates,
 } from "../lib/accounts.js";
+import { getModelPoolAccountKey } from "../lib/accounts/pool-identity.js";
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 import { SCOPE } from "../lib/auth/auth.js";
@@ -1453,6 +1454,77 @@ describe("AccountManager", () => {
       const waitTime = manager.getMinWaitTimeForFamily("codex", "gpt-5.2");
       expect(waitTime).toBeGreaterThan(0);
       expect(waitTime).toBeLessThanOrEqual(45000);
+    });
+
+    /**
+     * The pool-filtered overload has to resolve pool keys the same way routing
+     * does (`matchesModelPoolAccountKey`). A member-scoped seat key is what
+     * `codex-pool add` writes for any account with a resolvable member id, and
+     * it never equals `account.accountId`.
+     */
+    describe("with a configured account pool", () => {
+      const now = Date.now();
+      const pooledStorage = () => ({
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            accountId: "acct-workspace",
+            accountUserId: "member-1",
+            addedAt: now,
+            lastUsed: now,
+            rateLimitResetTimes: { codex: now + 30000 },
+          },
+          {
+            refreshToken: "token-2",
+            accountId: "acct-workspace",
+            accountUserId: "member-2",
+            addedAt: now,
+            lastUsed: now,
+            rateLimitResetTimes: { codex: now + 60000 },
+          },
+        ],
+      });
+
+      it("reports the wait for a legacy workspace-wide pool key", () => {
+        const manager = new AccountManager(undefined, pooledStorage());
+        const waitTime = manager.getMinWaitTimeForFamily("codex", null, [
+          "acct-workspace",
+        ]);
+        expect(waitTime).toBeGreaterThan(0);
+        expect(waitTime).toBeLessThanOrEqual(30000);
+      });
+
+      it("reports the wait for a member-scoped seat pool key", () => {
+        const manager = new AccountManager(undefined, pooledStorage());
+        const seatKey = getModelPoolAccountKey({
+          accountId: "acct-workspace",
+          accountUserId: "member-2",
+        });
+        expect(seatKey).toBe('seat:["acct-workspace","member-2"]');
+
+        const waitTime = manager.getMinWaitTimeForFamily("codex", null, [
+          seatKey as string,
+        ]);
+        // Only member-2 is pooled, so the answer is its own reset, not member-1's.
+        expect(waitTime).toBeGreaterThan(30000);
+        expect(waitTime).toBeLessThanOrEqual(60000);
+      });
+
+      it("returns 0 when a pooled account is still selectable", () => {
+        const storage = pooledStorage();
+        delete (storage.accounts[1] as { rateLimitResetTimes?: unknown })
+          .rateLimitResetTimes;
+        const manager = new AccountManager(undefined, storage);
+        const seatKey = getModelPoolAccountKey({
+          accountId: "acct-workspace",
+          accountUserId: "member-2",
+        });
+        expect(
+          manager.getMinWaitTimeForFamily("codex", null, [seatKey as string]),
+        ).toBe(0);
+      });
     });
   });
 
