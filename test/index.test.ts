@@ -879,6 +879,7 @@ describe("OpenAIOAuthPlugin", () => {
 				getCurrentOrNextForFamilyHybrid: () => null,
 				getAccountForStrategy: () => null,
 				getMinWaitTimeForFamily: () => 0,
+				getAccountsSnapshot: () => [],
 				hasRefreshToken: () => false,
 				saveToDisk: async () => {},
 			} as unknown as InstanceType<typeof accountsModule.AccountManager>);
@@ -4999,53 +5000,6 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(body).toContain("1 configured pool key(s) resolved to 2 account(s)");
 		expect(body).toContain("unsupported on 2 of 2 attempted pooled account(s)");
 		expect(body).not.toContain("pooled account(s) were never attempted");
-	});
-
-	it("uses account counts for strict diagnostics when snapshots are unavailable", async () => {
-		const accountsModule = await import("../lib/accounts.js");
-		const configModule = await import("../lib/config.js");
-		setMockManagedAccounts([
-			{
-				accountId: "acc-1",
-				email: "user1@example.com",
-				refreshToken: "refresh-1",
-				selectable: false,
-			},
-			{
-				accountId: "acc-2",
-				email: "user2@example.com",
-				refreshToken: "refresh-2",
-				selectable: false,
-			},
-		]);
-		vi.mocked(configModule.getModelAccountPool).mockReturnValue(["acc-1", "acc-2"]);
-		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValue("strict");
-		const prototype = accountsModule.AccountManager.prototype;
-		const snapshotDescriptor = Object.getOwnPropertyDescriptor(
-			prototype,
-			"getAccountsSnapshot",
-		);
-		Object.defineProperty(prototype, "getAccountsSnapshot", {
-			value: undefined,
-			configurable: true,
-		});
-		globalThis.fetch = vi.fn();
-
-		try {
-			const { sdk } = await setupPlugin();
-			const response = await requestGpt54Pro(sdk);
-			const body = await response.text();
-
-			expect(response.status).toBe(503);
-			expect(globalThis.fetch).not.toHaveBeenCalled();
-			expect(body).toContain("2 configured pool key(s) resolved to 2 account(s)");
-			expect(body).toContain("2 pooled account(s) were never attempted");
-			expect(body).not.toContain("matched no known account");
-		} finally {
-			if (snapshotDescriptor) {
-				Object.defineProperty(prototype, "getAccountsSnapshot", snapshotDescriptor);
-			}
-		}
 	});
 
 	it("treats an empty strict-pool snapshot as available", async () => {

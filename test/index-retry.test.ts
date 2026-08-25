@@ -166,6 +166,12 @@ vi.mock("../lib/accounts.js", () => {
 			return 1000;
 		}
 
+		// The terminal-error diagnostics read the live account list to report how
+		// many accounts were never attempted, so this double has to expose it too.
+		getAccountsSnapshot() {
+			return this.accounts.filter((account) => account !== null);
+		}
+
 		shouldShowAccountToast() {
 			return false;
 		}

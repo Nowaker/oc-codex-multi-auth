@@ -3276,28 +3276,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								preferredAccountIds,
 							);
 							const effectiveModel = model ?? requestedModel ?? "requested model";
-							const hasAccountSnapshot =
-								typeof accountManager.getAccountsSnapshot === "function";
-							const accountSnapshot = hasAccountSnapshot
-									? accountManager.getAccountsSnapshot()
-									: [];
+							const accountSnapshot = accountManager.getAccountsSnapshot();
 							const poolAccounts = accountSnapshot.filter((account) =>
 								preferredAccountIds.some((key) =>
 									matchesModelPoolAccountKey(account, key),
 								),
 							);
-							const poolAccountCount = hasAccountSnapshot
-								? poolAccounts.length
-								: accountManager.getAccountCount();
-							const unresolvedKeyCount = hasAccountSnapshot
-								? countUnresolvedPoolKeys(accountSnapshot, preferredAccountIds)
-								: 0;
-							const unavailableCount = hasAccountSnapshot
-								? poolAccounts.filter(
-									(account) =>
-										!fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
-								).length
-								: Math.max(0, poolAccountCount - attemptedCount);
+							const poolAccountCount = poolAccounts.length;
+							const unresolvedKeyCount = countUnresolvedPoolKeys(
+								accountSnapshot,
+								preferredAccountIds,
+							);
+							const unavailableCount = poolAccounts.filter(
+								(account) => !fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
+							).length;
 							const waitDetail =
 								poolWaitMs > 0
 									? ` Try again in ${formatWaitTime(poolWaitMs)}.`
@@ -3350,17 +3342,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
 								const count = accountManager.getAccountCount();
-								const accountSnapshot =
-									typeof accountManager.getAccountsSnapshot === "function"
-										? accountManager.getAccountsSnapshot()
-										: [];
-								const unavailableCount =
-									accountSnapshot.length === count
-										? accountSnapshot.filter(
-											(account) =>
-												!fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
-										).length
-										: Math.max(0, count - attemptedCount);
+								// Counted over the accounts that are still live rather than as
+								// `count - attemptedCount`: an account removed mid-traversal was
+								// genuinely attempted but is no longer one of the `count`
+								// configured accounts, and that arithmetic would hide a live
+								// account that never got a turn.
+								const unavailableCount = accountManager
+									.getAccountsSnapshot()
+									.filter(
+										(account) =>
+											!fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
+									).length;
 
 								if (
 									retryAllAccountsRateLimited &&
