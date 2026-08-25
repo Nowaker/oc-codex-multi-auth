@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.14.2] - 2026-08-25
+
+### Fixed
+- **Pool-exhaustion diagnostics could contradict themselves, and undercounted Business seats.** The identity these counters are keyed on was not stable for the lifetime of a request: it was derived in part from the refresh token, which is single-use and rotates on exchange, and a rotation propagates to every sibling account that shared the old grant. An account fetched earlier in the traversal therefore stopped matching its own recorded identity as soon as any sibling refreshed, and the strict-pool message could report "the model was unsupported on 2 of 2 attempted pooled account(s)" immediately followed by "1 pooled account(s) were never attempted". The key is now built from identity that does not rotate, so two legacy Business seats sharing one workspace id still count as two accounts while a mid-request token rotation leaves the counts alone. Accounts that were never attempted are also counted against the accounts still present rather than by subtracting attempts from a total, so an account removed mid-request no longer hides a live account that never got a turn. (#236)
+
+### Changed
+- **Terminal routing diagnostics no longer degrade silently when account state is unreadable.** The strict-pool and exhaustion messages guarded their account lookup and fell back to an empty account list, which made every configured pool entry look like it matched no known account — turning a message that should explain an exhausted pool into one that blames the operator's configuration. The lookup is now unconditional. (#236)
+
 ## [6.14.1] - 2026-08-25
 
 ### Fixed
