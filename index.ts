@@ -128,7 +128,11 @@ import {
         parseRateLimitReason,
 	lookupCodexCliTokensByEmail,
 } from "./lib/accounts.js";
-import { matchesModelPoolAccountKey } from "./lib/accounts/pool-identity.js";
+import {
+	getModelPoolAccountKey,
+	matchesModelPoolAccountKey,
+	type ModelPoolAccount,
+} from "./lib/accounts/pool-identity.js";
 import { resolveDisplayEmail } from "./lib/account-display.js";
 import { CodexAuthError } from "./lib/errors.js";
 import {
@@ -283,6 +287,47 @@ function isLoopbackGatewayHost(hostname: string): boolean {
 		return Number.parseInt(mapped[1], 16) >>> 8 === 0x7f;
 	}
 	return LOOPBACK_GATEWAY_HOSTS.has(hostname);
+}
+
+/**
+ * Stable per-account identity for the terminal-error diagnostics counters.
+ *
+ * `account.index` is not usable here: `AccountManager.removeAccount` reindexes
+ * the survivors, so an index recorded before a mid-traversal removal silently
+ * refers to a different account afterwards. The model-pool identity survives
+ * that reindex; the refresh token is the last-resort fallback for records that
+ * have not resolved an account id yet.
+ */
+function getAccountDiagnosticsKey(
+	account: ModelPoolAccount & { refreshToken: string },
+): string {
+	return getModelPoolAccountKey(account) ?? `refresh:${account.refreshToken}`;
+}
+
+/**
+ * How many live accounts the configured pool keys actually resolve to.
+ *
+ * Pool keys and accounts are not 1:1 — a legacy `accountId` key matches every
+ * Business seat in that workspace, and two keys can resolve to the same seat —
+ * so pool size must be counted over accounts, never over `poolKeys.length`.
+ */
+function countResolvedPoolAccounts(
+	accounts: readonly ModelPoolAccount[],
+	poolKeys: readonly string[],
+): number {
+	return accounts.filter((account) =>
+		poolKeys.some((key) => matchesModelPoolAccountKey(account, key)),
+	).length;
+}
+
+/** Configured pool keys matching no live account (typo, or account removed). */
+function countUnresolvedPoolKeys(
+	accounts: readonly ModelPoolAccount[],
+	poolKeys: readonly string[],
+): number {
+	return poolKeys.filter(
+		(key) => !accounts.some((account) => matchesModelPoolAccountKey(account, key)),
+	).length;
 }
 
 function invalidBaseURL(reason: string): Error {
@@ -2197,6 +2242,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							while (true) {
 						let accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();
+						// Diagnostics for the terminal error message below. Keyed on a stable
+						// account identity, not `account.index`, so the two `attempted.clear()`
+						// sites that follow a mid-traversal account removal cannot desync them.
+						// Deliberately scoped to this traversal: a fallback restart re-enters
+						// the loop with a different model, and the message names that model.
+						const fetchedAccountKeys = new Set<string>();
+						const unsupportedAccountKeys = new Set<string>();
 						let restartAccountTraversalWithFallback = false;
 						let restartAccountTraversalAfterWorkspaceDeactivation = false;
 						const preferredAccountIds = getModelAccountPool(pluginConfig, model);
@@ -2538,6 +2590,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								// in-memory only and run on Node's single-threaded event loop, so no
 								// filesystem locking or token-redaction concerns are introduced here.
 								runtimeMetrics.totalRequests++;
+								fetchedAccountKeys.add(getAccountDiagnosticsKey(account));
 								response = await fetch(url, {
 									...requestInit,
 									headers,
@@ -2734,6 +2787,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				}
 
 			const unsupportedModelInfo = getUnsupportedCodexModelInfo(errorBody);
+			if (unsupportedModelInfo.isUnsupported) {
+				unsupportedAccountKeys.add(getAccountDiagnosticsKey(account));
+			}
 			const hasRemainingAccounts = attempted.size < Math.max(1, accountCount);
 
 			// Entitlements can differ by account/workspace, so try remaining
@@ -3228,6 +3284,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							continue;
 						}
 
+						// Shared by both terminal messages below: how many distinct accounts
+						// this traversal actually sent upstream, and how many of those the
+						// backend rejected as not entitled to the model.
+						const attemptedCount = fetchedAccountKeys.size;
+						const unsupportedCount = unsupportedAccountKeys.size;
+
 						if (strictAccountPool) {
 							const poolWaitMs = accountManager.getMinWaitTimeForFamily(
 								modelFamily,
@@ -3235,13 +3297,43 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								preferredAccountIds,
 							);
 							const effectiveModel = model ?? requestedModel ?? "requested model";
+							const poolAccounts = accountManager.getAccountsSnapshot();
+							const poolAccountCount = countResolvedPoolAccounts(
+								poolAccounts,
+								preferredAccountIds,
+							);
+							const unresolvedKeyCount = countUnresolvedPoolKeys(
+								poolAccounts,
+								preferredAccountIds,
+							);
+							const unavailableCount = Math.max(
+								0,
+								poolAccountCount - attemptedCount,
+							);
 							const waitDetail =
 								poolWaitMs > 0
 									? ` Try again in ${formatWaitTime(poolWaitMs)}.`
 									: " Check the pooled accounts with `codex-health`.";
+							const attemptDetail =
+								unsupportedCount > 0
+									? ` The model was unsupported on ${unsupportedCount} of ${attemptedCount} attempted pooled account(s).`
+									: attemptedCount > 0
+										? ` ${attemptedCount} pooled account(s) were attempted without success.`
+										: "";
+							const unresolvedDetail =
+								unresolvedKeyCount > 0
+									? ` ${unresolvedKeyCount} configured pool key(s) matched no known account.`
+									: "";
+							const unavailableDetail =
+								unavailableCount > 0
+									? ` ${unavailableCount} pooled account(s) were never attempted (rate-limited, cooling down, or disabled).`
+									: "";
 							const message =
 								`Strict account pool unavailable for ${effectiveModel}. ` +
-								`None of its ${preferredAccountIds.length} configured account(s) is selectable.` +
+								`${preferredAccountIds.length} configured pool key(s) resolved to ${poolAccountCount} account(s).` +
+								attemptDetail +
+								unresolvedDetail +
+								unavailableDetail +
 								waitDetail;
 							if (runtimeMetrics.lastSelectionSnapshot) {
 								runtimeMetrics.lastSelectionSnapshot = {
@@ -3268,8 +3360,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							);
 						}
 
-										const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
-										const count = accountManager.getAccountCount();
+								const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
+								const count = accountManager.getAccountCount();
+								const unavailableCount = Math.max(0, count - attemptedCount);
 
 								if (
 									retryAllAccountsRateLimited &&
@@ -3290,7 +3383,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								}
 
 								const waitLabel = waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
+								// `runtimeMetrics` is plugin-scoped, so `lastErrorCategory` alone
+								// can still hold "unsupported-model" from an *earlier* request.
+								// Require an unsupported response from this traversal as well, or
+								// a request that never reached an account renders "0 of 0".
 								const wasEntitlementExhaustion =
+									unsupportedCount > 0 &&
 									runtimeMetrics.lastErrorCategory === "unsupported-model";
 								const entitlementModel =
 									typeof runtimeMetrics.lastError === "string"
@@ -3301,7 +3399,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										: "";
 								const entitlementDetail =
 									entitlementModel.length > 0
-										? ` The backend rejected '${entitlementModel}' as not entitled for Codex OAuth on every pooled account.`
+										? ` The backend rejected '${entitlementModel}' as not entitled for Codex OAuth on ${unsupportedCount} of ${attemptedCount} attempted account(s).${unavailableCount > 0 ? ` ${unavailableCount} configured account(s) were unavailable or excluded.` : ""}`
 										: "";
 								const message =
 									count === 0
@@ -3309,7 +3407,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										: waitMs > 0
 											? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`
 											: wasEntitlementExhaustion
-												? `All ${count} account(s) returned 'model not supported' for the requested model.${entitlementDetail} Codex model access is account/workspace gated; default gpt-5.6-sol/terra/luna selectors auto-fallback down the 5.6 tiers to gpt-5.5, and gpt-5.5/gpt-5-codex through the GPT-5.4 family when possible. Set \`unsupportedCodexPolicy: "fallback"\` for the full manual fallback chain, or see \`codex-health\` for per-account details.`
+												? `No selectable account succeeded for the requested model across ${count} configured account(s).${entitlementDetail} Codex model access is account/workspace gated; default gpt-5.6-sol/terra/luna selectors auto-fallback down the 5.6 tiers to gpt-5.5, and gpt-5.5/gpt-5-codex through the GPT-5.4 family when possible. Set \`unsupportedCodexPolicy: "fallback"\` for the full manual fallback chain, or see \`codex-health\` for per-account details.`
 												: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;

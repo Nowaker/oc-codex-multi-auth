@@ -316,6 +316,38 @@ const mockQuotaExhaustionCalls: Array<{
 	model?: string | null;
 }> = [];
 
+type MockManagedAccount = {
+	index: number;
+	accountId?: string;
+	email?: string;
+	refreshToken: string;
+	/** `false` makes rotation skip it, standing in for rate-limited/cooling down. */
+	selectable?: boolean;
+};
+
+/**
+ * Accounts served by the mocked `AccountManager`. Most suites assume the single
+ * default account; tests that need real rotation across several accounts replace
+ * the contents with `setMockManagedAccounts`, and the hooks reset it afterwards.
+ */
+const mockManagedAccounts: MockManagedAccount[] = [];
+
+const setMockManagedAccounts = (
+	accounts: ReadonlyArray<Omit<MockManagedAccount, "index">>,
+) => {
+	mockManagedAccounts.length = 0;
+	accounts.forEach((account, index) =>
+		mockManagedAccounts.push({ ...account, index }),
+	);
+};
+
+const resetMockManagedAccounts = () =>
+	setMockManagedAccounts([
+		{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+	]);
+
+resetMockManagedAccounts();
+
 const cloneAccount = (account: (typeof mockStorage.accounts)[number]) => structuredClone(account);
 
 const cloneMockStorage = () => ({
@@ -432,14 +464,11 @@ vi.mock("../lib/storage.js", async () => {
 
 vi.mock("../lib/accounts.js", () => {
 	class MockAccountManager {
-		private accounts = [
-			{
-				index: 0,
-				accountId: "acc-1",
-				email: "user1@example.com",
-				refreshToken: "refresh-1",
-			},
-		];
+		// A getter, not a field: the list is owned by `mockManagedAccounts` so a
+		// test can reshape it after the manager has already been constructed.
+		private get accounts(): MockManagedAccount[] {
+			return mockManagedAccounts;
+		}
 
 		static async loadFromDisk() {
 			return new MockAccountManager();
@@ -449,12 +478,19 @@ vi.mock("../lib/accounts.js", () => {
 			return this.accounts.length;
 		}
 
+		private selectableAccounts(excludedIndices?: ReadonlySet<number>) {
+			return this.accounts.filter(
+				(account) =>
+					account.selectable !== false && !excludedIndices?.has(account.index),
+			);
+		}
+
 		getCurrentOrNextForFamily() {
-			return this.accounts[0] ?? null;
+			return this.selectableAccounts()[0] ?? null;
 		}
 
 		getCurrentOrNextForFamilyHybrid() {
-			return this.accounts[0] ?? null;
+			return this.selectableAccounts()[0] ?? null;
 		}
 
 		getAccountForStrategy(
@@ -464,15 +500,19 @@ vi.mock("../lib/accounts.js", () => {
 			_options?: unknown,
 			preferredAccountIds: readonly string[] = [],
 			poolMode: "preferred" | "strict" = "preferred",
+			excludedIndices?: ReadonlySet<number>,
 		) {
-			const preferred = this.accounts.find(
+			// Honouring `excludedIndices` is what lets a test rotate across several
+			// accounts: without it the caller re-selects account 0 and bails out.
+			const available = this.selectableAccounts(excludedIndices);
+			const preferred = available.find(
 				(account) =>
 					account.accountId !== undefined &&
 					preferredAccountIds.includes(account.accountId),
 			);
 			if (preferred) return preferred;
 			if (poolMode === "strict" && preferredAccountIds.length > 0) return null;
-			return this.getCurrentOrNextForFamilyHybrid();
+			return available[0] ?? null;
 		}
 
 		getSelectionExplainability() {
@@ -3688,6 +3728,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		resetMockManagedAccounts();
 		mockStorage.accounts = [
 			{
 				accountId: "acc-1",
@@ -3702,6 +3743,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch;
+		resetMockManagedAccounts();
+		// `clearAllMocks` in beforeEach only clears call records, so a
+		// `mockReturnValue` set by one test would otherwise still be in force for
+		// the next one. `resetAllMocks` puts every module mock back to the
+		// implementation its `vi.mock` factory declared.
+		vi.resetAllMocks();
 		vi.restoreAllMocks();
 	});
 
@@ -4742,6 +4789,201 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			selectedAccountIndex: 1,
 			zeroBasedSelectedAccountIndex: 0,
 		});
+	});
+
+	/**
+	 * Two *distinct* stored accounts, every upstream call answering
+	 * `model_not_supported_with_chatgpt_account` for gpt-5.4-pro.
+	 *
+	 * The second account is what makes the strict-pool assertions below
+	 * meaningful: with the suite's default single account, "the general account
+	 * was never fetched" holds in `preferred` mode too, so the test could not
+	 * discriminate the mode it exists to cover.
+	 */
+	const setupUnsupportedModelOnEveryAccount = async (
+		accounts: ReadonlyArray<Omit<MockManagedAccount, "index">> = [
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		],
+	) => {
+		const accountsModule = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		// Strict policy: no model fallback, so the traversal exhausts accounts and
+		// reaches the terminal diagnostics under test.
+		vi.mocked(configModule.getUnsupportedCodexPolicy).mockReturnValue("strict");
+		vi.mocked(configModule.getFallbackOnUnsupportedCodexModel).mockReturnValue(false);
+		// The suite-wide mock answers every account with the same token id, which
+		// would rewrite each account's id to that one value and make the pool keys
+		// stop matching. Keep the stored id, which is what the real resolver does
+		// for a stable, non-org account id.
+		vi.mocked(accountsModule.resolveRequestAccountId).mockImplementation(
+			(storedId, _source, tokenId) => storedId ?? tokenId,
+		);
+		setMockManagedAccounts(accounts);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValue({
+			updatedInit: {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.4-pro" }),
+			},
+			body: { model: "gpt-5.4-pro" },
+		});
+		const errorBody = {
+			error: {
+				code: "model_not_supported_with_chatgpt_account",
+				message:
+					"The 'gpt-5.4-pro' model is not supported when using Codex with a ChatGPT account.",
+			},
+		};
+		vi.mocked(fetchHelpers.handleErrorResponse).mockResolvedValue({
+			response: new Response(JSON.stringify(errorBody), { status: 400 }),
+			rateLimit: undefined,
+			errorBody,
+		});
+		vi.mocked(fetchHelpers.getUnsupportedCodexModelInfo).mockReturnValue({
+			isUnsupported: true,
+			unsupportedModel: "gpt-5.4-pro",
+			message: errorBody.error.message,
+			code: errorBody.error.code,
+		});
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify(errorBody), { status: 400 }));
+	};
+
+	const requestGpt54Pro = (sdk: { fetch?: PluginType["fetch"] }) =>
+		sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.4-pro" }),
+		});
+
+	it("reports actual strict-pool attempts without trying general accounts", async () => {
+		const configModule = await import("../lib/config.js");
+		await setupUnsupportedModelOnEveryAccount();
+		vi.mocked(configModule.getModelAccountPool).mockReturnValue(["acc-1"]);
+		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValue("strict");
+
+		const { sdk } = await setupPlugin();
+		const response = await requestGpt54Pro(sdk);
+		const body = await response.text();
+
+		expect(response.status).toBe(503);
+		// acc-2 is a real, healthy, non-pooled account: strict mode must not reach it.
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(body).toContain("strict_pool_unavailable");
+		// Pool size is counted over resolved accounts, not over configured keys.
+		expect(body).toContain("1 configured pool key(s) resolved to 1 account(s)");
+		expect(body).toContain("unsupported on 1 of 1 attempted pooled account(s)");
+		expect(body).not.toContain("All 2 account(s)");
+	});
+
+	it("spills onto the general account when the same pool is preferred, not strict", async () => {
+		const configModule = await import("../lib/config.js");
+		await setupUnsupportedModelOnEveryAccount();
+		vi.mocked(configModule.getModelAccountPool).mockReturnValue(["acc-1"]);
+		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValue("preferred");
+
+		const { sdk } = await setupPlugin();
+		const response = await requestGpt54Pro(sdk);
+		const body = await response.text();
+
+		// The pool mode is the only difference from the strict test above: here the
+		// traversal reaches acc-2 and the upstream rejection is what surfaces.
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		expect(response.status).toBe(400);
+		expect(body).not.toContain("strict_pool_unavailable");
+	});
+
+	it("names an unresolved strict-pool key instead of counting it as an account", async () => {
+		const configModule = await import("../lib/config.js");
+		await setupUnsupportedModelOnEveryAccount();
+		vi.mocked(configModule.getModelAccountPool).mockReturnValue([
+			"acc-1",
+			"typo-account-id",
+		]);
+		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValue("strict");
+
+		const { sdk } = await setupPlugin();
+		const response = await requestGpt54Pro(sdk);
+		const body = await response.text();
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(body).toContain("2 configured pool key(s) resolved to 1 account(s)");
+		expect(body).toContain("1 configured pool key(s) matched no known account");
+		// The unresolved key is not an account, so it must not inflate this count.
+		expect(body).not.toContain("pooled account(s) were never attempted");
+	});
+
+	it("reports how many general accounts the backend rejected the model on", async () => {
+		// acc-2 is configured but not selectable (rate-limited or cooling down), so
+		// the traversal ends with one account attempted out of two configured.
+		await setupUnsupportedModelOnEveryAccount([
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+				selectable: false,
+			},
+		]);
+
+		const { sdk } = await setupPlugin();
+		const response = await requestGpt54Pro(sdk);
+		const body = await response.text();
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(body).toContain(
+			"No selectable account succeeded for the requested model across 2 configured account(s)",
+		);
+		expect(body).toContain(
+			"rejected 'gpt-5.4-pro' as not entitled for Codex OAuth on 1 of 1 attempted account(s)",
+		);
+		expect(body).toContain("1 configured account(s) were unavailable or excluded");
+	});
+
+	it("does not reuse the previous request's entitlement failure when nothing was attempted", async () => {
+		await setupUnsupportedModelOnEveryAccount([
+			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
+			{
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+				selectable: false,
+			},
+		]);
+
+		const { sdk } = await setupPlugin();
+		// The first request ends in entitlement exhaustion, leaving
+		// runtimeMetrics.lastErrorCategory = "unsupported-model". runtimeMetrics is
+		// plugin-scoped, so that value survives into the next request.
+		await requestGpt54Pro(sdk);
+
+		// The second request never reaches an account at all, so it must not inherit
+		// the previous request's entitlement verdict — nor render it as "0 of 0".
+		setMockManagedAccounts([
+			{
+				accountId: "acc-1",
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+				selectable: false,
+			},
+			{
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+				selectable: false,
+			},
+		]);
+		const response = await requestGpt54Pro(sdk);
+		const body = await response.text();
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(body).not.toContain("0 of 0");
+		expect(body).not.toContain("not entitled for Codex OAuth");
+		expect(body).toContain("All 2 account(s) failed");
 	});
 
 	it("falls back from gpt-5.3-codex to gpt-5.2-codex when unsupported fallback is enabled", async () => {
