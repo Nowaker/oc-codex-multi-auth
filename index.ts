@@ -3276,11 +3276,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								preferredAccountIds,
 							);
 							const effectiveModel = model ?? requestedModel ?? "requested model";
-							const accountSnapshot =
-								typeof accountManager.getAccountsSnapshot === "function"
+							const hasAccountSnapshot =
+								typeof accountManager.getAccountsSnapshot === "function";
+							const accountSnapshot = hasAccountSnapshot
 									? accountManager.getAccountsSnapshot()
 									: [];
-							const hasAccountSnapshot = accountSnapshot.length > 0;
 							const poolAccounts = accountSnapshot.filter((account) =>
 								preferredAccountIds.some((key) =>
 									matchesModelPoolAccountKey(account, key),

@@ -5048,6 +5048,23 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		}
 	});
 
+	it("treats an empty strict-pool snapshot as available", async () => {
+		const configModule = await import("../lib/config.js");
+		setMockManagedAccounts([]);
+		vi.mocked(configModule.getModelAccountPool).mockReturnValue(["removed-account"]);
+		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValue("strict");
+		globalThis.fetch = vi.fn();
+
+		const { sdk } = await setupPlugin();
+		const response = await requestGpt54Pro(sdk);
+		const body = await response.text();
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(body).toContain("1 configured pool key(s) resolved to 0 account(s)");
+		expect(body).toContain("1 configured pool key(s) matched no known account");
+	});
+
 	it("counts a live unavailable pooled account after a fetched account is removed", async () => {
 		const configModule = await import("../lib/config.js");
 		await setupRemovedAccountThenUnsupportedModel();
