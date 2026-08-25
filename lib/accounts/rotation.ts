@@ -482,12 +482,19 @@ export class AccountRotation {
 		accountIds?: readonly string[],
 	): number {
 		const now = nowMs();
-		const accountIdSet = accountIds?.length ? new Set(accountIds) : null;
+		// Pool membership is resolved exactly as selection resolves it, via
+		// `matchesModelPoolAccountKey` (see `getPreferredSelectableIndices`).
+		// Raw `accountId` equality would silently match nothing for a
+		// member-scoped `seat:[...]` key -- the format `codex-pool add` writes for
+		// every account with a resolvable member id -- and an empty pool falls
+		// through to `return 0` below, so a fully rate-limited pool reported "no
+		// wait" and its caller answered 503 instead of a 429 with a retry hint.
+		const pooledKeys = accountIds?.length ? accountIds : null;
 		const enabledAccounts = this.state.accounts.filter(
 			(account) =>
 				account.enabled !== false &&
-				(accountIdSet === null ||
-					(account.accountId !== undefined && accountIdSet.has(account.accountId))),
+				(pooledKeys === null ||
+					pooledKeys.some((key) => matchesModelPoolAccountKey(account, key))),
 		);
 		const available = enabledAccounts.filter((account) =>
 			this.isSelectable(account, family, model),
