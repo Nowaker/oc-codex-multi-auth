@@ -290,10 +290,13 @@ function isLoopbackGatewayHost(hostname: string): boolean {
 }
 
 /** Stable per-seat identity used only for in-memory traversal diagnostics. */
-function getAccountDiagnosticsKey(
-	account: ModelPoolAccount & { refreshToken: string },
-): string {
-	return `${getModelPoolAccountKey(account) ?? "unresolved"}:refresh:${account.refreshToken}`;
+function getAccountDiagnosticsKey(account: ManagedAccount): string {
+	return JSON.stringify([
+		getModelPoolAccountKey(account) ?? "unresolved",
+		account.organizationId ?? null,
+		account.email ?? null,
+		account.addedAt,
+	]);
 }
 
 /** Configured pool keys matching no live account (typo, or account removed). */
@@ -3277,19 +3280,24 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								typeof accountManager.getAccountsSnapshot === "function"
 									? accountManager.getAccountsSnapshot()
 									: [];
+							const hasAccountSnapshot = accountSnapshot.length > 0;
 							const poolAccounts = accountSnapshot.filter((account) =>
 								preferredAccountIds.some((key) =>
 									matchesModelPoolAccountKey(account, key),
 								),
 							);
-							const poolAccountCount = poolAccounts.length;
-							const unresolvedKeyCount = countUnresolvedPoolKeys(
-								accountSnapshot,
-								preferredAccountIds,
-							);
-							const unavailableCount = poolAccounts.filter(
-								(account) => !fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
-							).length;
+							const poolAccountCount = hasAccountSnapshot
+								? poolAccounts.length
+								: accountManager.getAccountCount();
+							const unresolvedKeyCount = hasAccountSnapshot
+								? countUnresolvedPoolKeys(accountSnapshot, preferredAccountIds)
+								: 0;
+							const unavailableCount = hasAccountSnapshot
+								? poolAccounts.filter(
+									(account) =>
+										!fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
+								).length
+								: Math.max(0, poolAccountCount - attemptedCount);
 							const waitDetail =
 								poolWaitMs > 0
 									? ` Try again in ${formatWaitTime(poolWaitMs)}.`

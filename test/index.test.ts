@@ -319,8 +319,10 @@ const mockQuotaExhaustionCalls: Array<{
 type MockManagedAccount = {
 	index: number;
 	accountId?: string;
+	accountUserId?: string;
 	email?: string;
 	refreshToken: string;
+	addedAt?: number;
 	/** `false` makes rotation skip it, standing in for rate-limited/cooling down. */
 	selectable?: boolean;
 };
@@ -337,7 +339,7 @@ const setMockManagedAccounts = (
 ) => {
 	mockManagedAccounts.length = 0;
 	accounts.forEach((account, index) =>
-		mockManagedAccounts.push({ ...account, index }),
+		mockManagedAccounts.push({ ...account, index, addedAt: account.addedAt ?? index }),
 	);
 };
 
@@ -4959,10 +4961,30 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	it("counts each legacy Business seat attempted through one workspace pool key", async () => {
 		const configModule = await import("../lib/config.js");
 		await setupUnsupportedModelOnEveryAccount([
-			{ accountId: "workspace-1", email: "seat1@example.com", refreshToken: "refresh-1" },
-			{ accountId: "workspace-1", email: "seat2@example.com", refreshToken: "refresh-2" },
+			{
+				accountId: "workspace-1",
+				accountUserId: "seat-1",
+				email: "seat1@example.com",
+				refreshToken: "shared-refresh",
+			},
+			{
+				accountId: "workspace-1",
+				accountUserId: "seat-2",
+				email: "seat2@example.com",
+				refreshToken: "shared-refresh",
+			},
 			{ accountId: "acc-3", email: "general@example.com", refreshToken: "refresh-3" },
 		]);
+		let fetchCount = 0;
+		vi.mocked(globalThis.fetch).mockImplementation(async () => {
+			fetchCount++;
+			if (fetchCount === 1) {
+				// Refresh propagation rotates the shared grant after seat 1 was keyed.
+				mockManagedAccounts[0]!.refreshToken = "rotated-refresh";
+				mockManagedAccounts[1]!.refreshToken = "rotated-refresh";
+			}
+			return new Response("{}", { status: 400 });
+		});
 		vi.mocked(configModule.getModelAccountPool).mockReturnValue(["workspace-1"]);
 		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValue("strict");
 
@@ -4977,6 +4999,53 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(body).toContain("1 configured pool key(s) resolved to 2 account(s)");
 		expect(body).toContain("unsupported on 2 of 2 attempted pooled account(s)");
 		expect(body).not.toContain("pooled account(s) were never attempted");
+	});
+
+	it("uses account counts for strict diagnostics when snapshots are unavailable", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const configModule = await import("../lib/config.js");
+		setMockManagedAccounts([
+			{
+				accountId: "acc-1",
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+				selectable: false,
+			},
+			{
+				accountId: "acc-2",
+				email: "user2@example.com",
+				refreshToken: "refresh-2",
+				selectable: false,
+			},
+		]);
+		vi.mocked(configModule.getModelAccountPool).mockReturnValue(["acc-1", "acc-2"]);
+		vi.mocked(configModule.getModelAccountPoolMode).mockReturnValue("strict");
+		const prototype = accountsModule.AccountManager.prototype;
+		const snapshotDescriptor = Object.getOwnPropertyDescriptor(
+			prototype,
+			"getAccountsSnapshot",
+		);
+		Object.defineProperty(prototype, "getAccountsSnapshot", {
+			value: undefined,
+			configurable: true,
+		});
+		globalThis.fetch = vi.fn();
+
+		try {
+			const { sdk } = await setupPlugin();
+			const response = await requestGpt54Pro(sdk);
+			const body = await response.text();
+
+			expect(response.status).toBe(503);
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+			expect(body).toContain("2 configured pool key(s) resolved to 2 account(s)");
+			expect(body).toContain("2 pooled account(s) were never attempted");
+			expect(body).not.toContain("matched no known account");
+		} finally {
+			if (snapshotDescriptor) {
+				Object.defineProperty(prototype, "getAccountsSnapshot", snapshotDescriptor);
+			}
+		}
 	});
 
 	it("counts a live unavailable pooled account after a fetched account is removed", async () => {
