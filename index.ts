@@ -289,35 +289,14 @@ function isLoopbackGatewayHost(hostname: string): boolean {
 	return LOOPBACK_GATEWAY_HOSTS.has(hostname);
 }
 
-/**
- * Stable per-account identity for the terminal-error diagnostics counters.
- *
- * `account.index` is not usable here: `AccountManager.removeAccount` reindexes
- * the survivors, so an index recorded before a mid-traversal removal silently
- * refers to a different account afterwards. The model-pool identity survives
- * that reindex; the refresh token is the last-resort fallback for records that
- * have not resolved an account id yet.
- */
-function getAccountDiagnosticsKey(
-	account: ModelPoolAccount & { refreshToken: string },
-): string {
-	return getModelPoolAccountKey(account) ?? `refresh:${account.refreshToken}`;
-}
-
-/**
- * How many live accounts the configured pool keys actually resolve to.
- *
- * Pool keys and accounts are not 1:1 — a legacy `accountId` key matches every
- * Business seat in that workspace, and two keys can resolve to the same seat —
- * so pool size must be counted over accounts, never over `poolKeys.length`.
- */
-function countResolvedPoolAccounts(
-	accounts: readonly ModelPoolAccount[],
-	poolKeys: readonly string[],
-): number {
-	return accounts.filter((account) =>
-		poolKeys.some((key) => matchesModelPoolAccountKey(account, key)),
-	).length;
+/** Stable per-seat identity used only for in-memory traversal diagnostics. */
+function getAccountDiagnosticsKey(account: ManagedAccount): string {
+	return JSON.stringify([
+		getModelPoolAccountKey(account) ?? "unresolved",
+		account.organizationId ?? null,
+		account.email ?? null,
+		account.addedAt,
+	]);
 }
 
 /** Configured pool keys matching no live account (typo, or account removed). */
@@ -2242,9 +2221,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							while (true) {
 						let accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();
-						// Diagnostics for the terminal error message below. Keyed on a stable
-						// account identity, not `account.index`, so the two `attempted.clear()`
-						// sites that follow a mid-traversal account removal cannot desync them.
+						// Diagnostics for the terminal error message below. The composite key keeps
+						// legacy Business seats distinct and can also be compared with snapshots
+						// after a mid-traversal account removal.
 						// Deliberately scoped to this traversal: a fallback restart re-enters
 						// the loop with a different model, and the message names that model.
 						const fetchedAccountKeys = new Set<string>();
@@ -3297,19 +3276,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								preferredAccountIds,
 							);
 							const effectiveModel = model ?? requestedModel ?? "requested model";
-							const poolAccounts = accountManager.getAccountsSnapshot();
-							const poolAccountCount = countResolvedPoolAccounts(
-								poolAccounts,
-								preferredAccountIds,
+							const accountSnapshot = accountManager.getAccountsSnapshot();
+							const poolAccounts = accountSnapshot.filter((account) =>
+								preferredAccountIds.some((key) =>
+									matchesModelPoolAccountKey(account, key),
+								),
 							);
+							const poolAccountCount = poolAccounts.length;
 							const unresolvedKeyCount = countUnresolvedPoolKeys(
-								poolAccounts,
+								accountSnapshot,
 								preferredAccountIds,
 							);
-							const unavailableCount = Math.max(
-								0,
-								poolAccountCount - attemptedCount,
-							);
+							const unavailableCount = poolAccounts.filter(
+								(account) => !fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
+							).length;
 							const waitDetail =
 								poolWaitMs > 0
 									? ` Try again in ${formatWaitTime(poolWaitMs)}.`
@@ -3362,7 +3342,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
 								const count = accountManager.getAccountCount();
-								const unavailableCount = Math.max(0, count - attemptedCount);
+								// Counted over the accounts that are still live rather than as
+								// `count - attemptedCount`: an account removed mid-traversal was
+								// genuinely attempted but is no longer one of the `count`
+								// configured accounts, and that arithmetic would hide a live
+								// account that never got a turn.
+								const unavailableCount = accountManager
+									.getAccountsSnapshot()
+									.filter(
+										(account) =>
+											!fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
+									).length;
 
 								if (
 									retryAllAccountsRateLimited &&
