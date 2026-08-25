@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.14.1] - 2026-08-25
+
+### Fixed
+- **A rate-limited strict model pool answered `503` with no retry hint instead of `429`.** The pool wait-time lookup resolved its members by comparing configured pool entries against an account's raw account id, while routing resolves them through the member-scoped seat identity that `codex-pool` actually writes. For any pool whose accounts have a resolvable member id the two never matched, so the lookup saw an empty pool, reported no wait at all, and the request failed with a `503` telling the operator to check `codex-health` rather than a `429` carrying `Try again in <time>` — costing clients both the retry-after signal and the correct status class for backoff. Pools configured with legacy workspace-wide entries were unaffected, which is why it went unnoticed. (#235)
+- **Pool-exhaustion diagnostics could describe the wrong accounts, or a previous request.** The counts behind these messages were keyed on rotation index, which is reassigned when an account is removed mid-request, so a count recorded before a removal referred to a different account afterwards. Pool size was read off the number of configured entries, which is a different quantity again: one legacy workspace-wide entry can resolve to several Business seats, and two entries can resolve to one seat. The strict-pool message now reports configured entries and resolved accounts separately, names entries that match no known account instead of folding them into an "unavailable" total, and distinguishes accounts that were never attempted from ones that were tried and failed. The general exhaustion message no longer inherits an earlier request's "model not supported" verdict — that state is plugin-scoped, so a request that never reached an account could report a rejection on "0 of 0 attempted account(s)" — and it again states how many accounts are configured. (#234)
+
 ## [6.14.0] - 2026-08-21
 
 ### Added
