@@ -4102,6 +4102,42 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect((await sendPrompt()).status).toBe(200);
 			expect(mockQuotaExhaustionCalls).toEqual([]);
 		});
+
+		it("does not persist exhausted headers from a non-rate-limit error", async () => {
+			respondWith(
+				{
+					"x-codex-primary-used-percent": "100",
+					"x-codex-primary-window-minutes": "300",
+					"x-codex-primary-reset-at": String(nowSeconds() + 5 * 60 * 60),
+				},
+				400,
+			);
+
+			expect((await sendPrompt()).status).toBe(400);
+			expect(mockQuotaExhaustionCalls).toEqual([]);
+		});
+
+		it("persists exhausted headers from a confirmed rate-limit error", async () => {
+			const resetAtSeconds = nowSeconds() + 5 * 60 * 60;
+			respondWith(
+				{
+					"x-codex-primary-used-percent": "100",
+					"x-codex-primary-window-minutes": "300",
+					"x-codex-primary-reset-at": String(resetAtSeconds),
+				},
+				429,
+			);
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			vi.mocked(fetchHelpers.handleErrorResponse).mockImplementationOnce(async (response) => ({
+				response,
+				rateLimit: { retryAfterMs: 60_000, code: "usage_limit_reached" },
+			}));
+
+			expect((await sendPrompt()).status).toBe(429);
+			expect(mockQuotaExhaustionCalls).toEqual([
+				expect.objectContaining({ resetAtMs: resetAtSeconds * 1000 }),
+			]);
+		});
 	});
 
 	it("persists the selected account before writing TUI quota snapshots", async () => {

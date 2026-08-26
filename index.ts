@@ -2678,13 +2678,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								headers: Object.fromEntries(response.headers.entries()),
 							});
 							void recordPromptQuotaHeaders(response, account, accountCount);
-							applyQuotaExhaustion(
-								accountManager,
-								response.headers,
-								account,
-								modelFamily,
-								model,
-							);
+							if (response.ok) {
+								applyQuotaExhaustion(
+									accountManager,
+									response.headers,
+									account,
+									modelFamily,
+									model,
+								);
+							}
 
 								if (!response.ok) {
 									const contextOverflowResult = await handleContextOverflow(response, model);
@@ -2697,6 +2699,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							requestCorrelationId,
 							threadId: threadIdCandidate,
 						});
+					if (rateLimit) {
+						applyQuotaExhaustion(
+							accountManager,
+							response.headers,
+							account,
+							modelFamily,
+							model,
+						);
+					}
 
 			const workspaceDeactivated = isDeactivatedWorkspaceError(errorBody, response.status);
 				if (workspaceDeactivated) {
