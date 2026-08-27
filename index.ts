@@ -794,12 +794,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		 * Take an account out of rotation whenever the backend reports one of its
 		 * quota windows as fully spent (issue #218).
 		 *
-		 * Every Codex response — success or 429 — carries `x-codex-*-used-percent`
-		 * and the matching reset time, so the moment an account hits 0% left we
-		 * can record it instead of rediscovering it with a failed request on every
-		 * subsequent prompt. The block lands on the persisted `rateLimitResetTimes`
-		 * map, so it is remembered across restarts and shared with other processes,
-		 * and it clears itself once the window rolls over.
+		 * Codex carries `x-codex-*-used-percent` and the matching reset time on a
+		 * served request and on a refused one alike, so the moment an account hits
+		 * 0% left we can record it instead of rediscovering it with a failed request
+		 * on every subsequent prompt. The block lands on the persisted
+		 * `rateLimitResetTimes` map, so it is remembered across restarts and shared
+		 * with other processes, and it clears itself once the window rolls over.
+		 *
+		 * Call this only for responses whose headers are authoritative: one the
+		 * backend served, or one it refused for a confirmed usage limit. Every other
+		 * error class — entitlement (issues #16/#17), auth, 5xx, or an upstream
+		 * overload dressed up as a 429 — can echo a stale quota snapshot next to an
+		 * unrelated failure, and writing that echo locked healthy accounts out for
+		 * hours. `handleErrorResponse` makes that call once and reports it back as
+		 * `quotaHeadersAuthoritative`.
+		 *
+		 * The resulting gap is deliberate: an account that really is spent but gets
+		 * a 5xx stays selectable until its next genuine 429, which costs one wasted
+		 * request — cheaper than a false multi-hour block on a healthy account.
+		 *
+		 * @returns true when the headers report a spent window, whether or not the
+		 *   stored block moved. Callers use it to stop retrying this account.
 		 */
 		const applyQuotaExhaustion = (
 			manager: AccountManager,
@@ -807,20 +822,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			account: ManagedAccount,
 			family: ModelFamily,
 			model: string | null | undefined,
-		): void => {
+		): boolean => {
 			try {
 				const resetAtMs = getQuotaExhaustedResetAtMs(headers);
-				if (resetAtMs === undefined) return;
-				if (!manager.markQuotaExhausted(account, resetAtMs, family, model)) return;
+				if (resetAtMs === undefined) return false;
+				if (!manager.markQuotaExhausted(account, resetAtMs, family, model)) return true;
 				account.lastSwitchReason = "rate-limit";
 				manager.saveToDiskDebounced();
 				logWarn(
 					`Account ${account.index + 1} (${account.email ?? "unknown"}) has no ${family} quota left; skipping it for ${formatWaitTime(resetAtMs - Date.now())}.`,
 				);
+				return true;
 			} catch (error) {
 				logDebug(
 					`[${PLUGIN_NAME}] Failed to apply quota exhaustion: ${error instanceof Error ? error.message : String(error)}`,
 				);
+				return false;
 			}
 		};
 
@@ -2677,26 +2694,41 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								latencyMs: fetchLatencyMs,
 								headers: Object.fromEntries(response.headers.entries()),
 							});
-							void recordPromptQuotaHeaders(response, account, accountCount);
-							applyQuotaExhaustion(
-								accountManager,
-								response.headers,
-								account,
-								modelFamily,
-								model,
-							);
+							// The TUI snapshot and the durable rotation block read the same
+							// `x-codex-*` headers, so they share one authority decision — gating
+							// only the block would leave the status line reporting "0% left" for
+							// an account the router considers healthy.
+							const recordQuotaHeaders = (): boolean => {
+								void recordPromptQuotaHeaders(response, account, accountCount);
+								return applyQuotaExhaustion(
+									accountManager,
+									response.headers,
+									account,
+									modelFamily,
+									model,
+								);
+							};
 
-								if (!response.ok) {
+							if (response.ok) {
+								recordQuotaHeaders();
+							} else {
 									const contextOverflowResult = await handleContextOverflow(response, model);
 									if (contextOverflowResult.handled) {
 										return contextOverflowResult.response;
 									}
 
-					const { response: errorResponse, rateLimit, errorBody, retryAsServerError } =
-						await handleErrorResponse(response, {
-							requestCorrelationId,
-							threadId: threadIdCandidate,
-						});
+					const {
+						response: errorResponse,
+						rateLimit,
+						errorBody,
+						retryAsServerError,
+						quotaHeadersAuthoritative,
+					} = await handleErrorResponse(response, {
+						requestCorrelationId,
+						threadId: threadIdCandidate,
+					});
+					const quotaExhausted =
+						quotaHeadersAuthoritative === true && recordQuotaHeaders();
 
 			const workspaceDeactivated = isDeactivatedWorkspaceError(errorBody, response.status);
 				if (workspaceDeactivated) {
@@ -3015,7 +3047,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																														);
 																														const waitLabel = formatWaitTime(delayMs);
 
+																														// A spent window will still be spent in a second, and the block
+																														// just written for it is monotonic — a short retry that happened
+																														// to succeed could not walk it back, so the account would serve
+																														// traffic while rotation still considers it blocked. Rotate.
 																														if (
+																															!quotaExhausted &&
 																															delayMs <= RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS &&
 																															consumeRetryBudget(
 																																"rateLimitShort",

@@ -437,6 +437,11 @@ export interface ErrorHandlingResult {
         rateLimit?: RateLimitInfo;
         errorBody?: unknown;
         retryAsServerError?: boolean;
+        /**
+         * Whether this response's `x-codex-*` quota headers describe the account's
+         * real quota state. See {@link isQuotaHeaderAuthority}.
+         */
+        quotaHeadersAuthoritative?: boolean;
 }
 
 export interface ErrorHandlingOptions {
@@ -927,7 +932,6 @@ export async function handleErrorResponse(
         }
         
         const finalResponse = mapped ?? response;
-        const rateLimit = extractRateLimitInfoFromBody(finalResponse, bodyText);
 
         let errorBody: unknown;
         try {
@@ -946,6 +950,18 @@ export async function handleErrorResponse(
         );
         const errorResponse = ensureJsonErrorResponse(finalResponse, normalizedError);
         const retryAsServerError = isServerOverloadedError(normalizedError);
+        // Decide once, from the same overload verdict the caller branches on, so
+        // the durable block and the retry-after delay can never disagree about
+        // whether these headers mean anything.
+        const quotaHeadersAuthoritative = isQuotaHeaderAuthority(
+                finalResponse.status,
+                retryAsServerError,
+        );
+        const rateLimit = extractRateLimitInfoFromBody(
+                finalResponse,
+                bodyText,
+                quotaHeadersAuthoritative,
+        );
 
         if (finalResponse.status === HTTP_STATUS.UNAUTHORIZED) {
                 logWarn("Codex upstream returned 401 Unauthorized", diagnostics);
@@ -962,6 +978,7 @@ export async function handleErrorResponse(
 		rateLimit,
 		errorBody: normalizedError,
 		retryAsServerError,
+		quotaHeadersAuthoritative: quotaHeadersAuthoritative && rateLimit !== undefined,
 	};
 }
 
@@ -1039,9 +1056,31 @@ function mapUsageLimit404WithBody(response: Response, bodyText: string): Respons
         });
 }
 
+/**
+ * Whether the `x-codex-*` quota headers on an error response may be trusted as
+ * the account's real quota state.
+ *
+ * They are believable only when the backend weighed this very request against
+ * the quota and refused it for a usage limit — HTTP 429, including a 404 that
+ * `mapUsageLimit404WithBody` remapped. Every other error class can echo a stale
+ * snapshot alongside an unrelated failure: entitlement errors (issues #16/#17),
+ * auth failures, 5xx, and upstream overloads dressed up as a 429. Acting on
+ * that echo is what blocked healthy accounts for hours.
+ *
+ * Every consumer of those headers routes through this predicate, so the rule
+ * lives in exactly one place instead of being re-derived per call site.
+ */
+function isQuotaHeaderAuthority(
+        status: number,
+        isServerOverload: boolean,
+): boolean {
+        return status === HTTP_STATUS.TOO_MANY_REQUESTS && !isServerOverload;
+}
+
 function extractRateLimitInfoFromBody(
         response: Response,
         bodyText: string,
+        quotaHeadersAuthoritative: boolean,
 ): RateLimitInfo | undefined {
         const isStatusRateLimit =
                 response.status === HTTP_STATUS.TOO_MANY_REQUESTS;
@@ -1068,8 +1107,13 @@ function extractRateLimitInfoFromBody(
                 );
         if (!isRateLimit) return undefined;
 
+        // The uncapped exhausted-window reset rides on the same authority rule as
+        // the durable block: on any status other than a genuine 429 a stale
+        // `used-percent: 100` would otherwise become an hours-long, uncappable
+        // `retryAfterMs` and freeze the account through `markRateLimitedWithReason`
+        // — the exact block the caller-side gate was added to prevent.
         const retryAfterMs =
-                parseRetryAfterMs(response, parsed) ?? 60000;
+                parseRetryAfterMs(response, parsed, quotaHeadersAuthoritative) ?? 60000;
 
         return { retryAfterMs, code: parsed?.code };
 }
@@ -1266,17 +1310,21 @@ function ensureJsonErrorResponse(response: Response, payload: ErrorPayload): Res
 
 function parseRetryAfterMs(
         response: Response,
-        parsedBody?: { resetsAt?: number; retryAfterMs?: number },
+        parsedBody: { resetsAt?: number; retryAfterMs?: number } | undefined,
+        trustExhaustedWindows: boolean,
 ): number | null {
         // A window the backend reports as fully spent (`used-percent >= 100`)
         // outranks every other signal, and is deliberately uncapped. Its reset
         // is the earliest moment the account can serve again; a `retry-after`
         // of 30s or the sooner 5h reset would just put the account back into
-        // rotation to fail again (issue #218).
-        const exhaustedResetAtMs = getQuotaExhaustedResetAtMs(response.headers);
-        if (exhaustedResetAtMs !== undefined) {
-                const delta = exhaustedResetAtMs - Date.now();
-                if (delta > 0) return delta;
+        // rotation to fail again (issue #218). Only honour it when the caller
+        // says those headers are authoritative for this response.
+        if (trustExhaustedWindows) {
+                const exhaustedResetAtMs = getQuotaExhaustedResetAtMs(response.headers);
+                if (exhaustedResetAtMs !== undefined) {
+                        const delta = exhaustedResetAtMs - Date.now();
+                        if (delta > 0) return delta;
+                }
         }
 
         if (parsedBody?.retryAfterMs !== undefined) {
@@ -1320,12 +1368,20 @@ function parseRetryAfterMs(
         // or an ISO `-reset-at` produces a candidate instead of falling back to
         // the 60s default. Windows the plan has switched off are skipped: their
         // reset says nothing about when this request can go through.
-        for (const window of parseCodexQuotaWindows(response.headers, now)) {
-                if (isQuotaWindowDisabled(window)) continue;
-                const resetAtMs = window.resetAtMs;
-                if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs)) continue;
-                const delta = resetAtMs - now;
-                if (delta > 0) resetCandidates.push(delta);
+        //
+        // This is the second uncapped read of the same `x-codex-*` headers, so it
+        // takes the same authority gate as the exhausted-window shortcut above:
+        // otherwise an untrusted snapshot walks straight back in through the
+        // "ordinary throttle" door and produces the very hours-long delay the
+        // shortcut was gated to prevent.
+        if (trustExhaustedWindows) {
+                for (const window of parseCodexQuotaWindows(response.headers, now)) {
+                        if (isQuotaWindowDisabled(window)) continue;
+                        const resetAtMs = window.resetAtMs;
+                        if (typeof resetAtMs !== "number" || !Number.isFinite(resetAtMs)) continue;
+                        const delta = resetAtMs - now;
+                        if (delta > 0) resetCandidates.push(delta);
+                }
         }
 
         const resetAtHeaders = ["x-ratelimit-reset"];

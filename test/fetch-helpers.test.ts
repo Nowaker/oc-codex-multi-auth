@@ -1931,3 +1931,117 @@ describe("createAbortError (issue #176)", () => {
 		expect(createAbortError(undefined).message).toBe("Aborted");
 	});
 });
+
+describe("quota header authority (issues #16/#17 vs #218)", () => {
+	const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+
+	/**
+	 * The stale snapshot an unrelated failure can echo: a window the backend
+	 * last saw as fully spent, resetting five hours out.
+	 */
+	const staleExhaustedHeaders = () => ({
+		"x-codex-primary-used-percent": "100",
+		"x-codex-primary-window-minutes": "300",
+		"x-codex-primary-reset-at": String(
+			Math.floor((Date.now() + FIVE_HOURS_MS) / 1000),
+		),
+	});
+
+	it("trusts the headers on a confirmed usage-limit 429", async () => {
+		const response = new Response(
+			JSON.stringify({ error: { code: "usage_limit_reached" } }),
+			{ status: 429, headers: staleExhaustedHeaders() },
+		);
+
+		const { rateLimit, quotaHeadersAuthoritative } =
+			await handleErrorResponse(response);
+
+		expect(quotaHeadersAuthoritative).toBe(true);
+		// The spent window outranks the 60s fallback and stays uncapped.
+		expect(rateLimit?.retryAfterMs).toBeGreaterThan(FIVE_HOURS_MS - 60_000);
+	});
+
+	it("trusts the headers on a usage-limit 404 remapped to 429", async () => {
+		const response = new Response(
+			JSON.stringify({ error: { code: "usage_limit_reached" } }),
+			{ status: 404, headers: staleExhaustedHeaders() },
+		);
+
+		const { response: result, quotaHeadersAuthoritative } =
+			await handleErrorResponse(response);
+
+		expect(result.status).toBe(429);
+		expect(quotaHeadersAuthoritative).toBe(true);
+	});
+
+	it("ignores the headers on an entitlement error", async () => {
+		const response = new Response(
+			JSON.stringify({
+				error: {
+					code: "usage_not_included",
+					message: "Usage not included in your plan.",
+				},
+			}),
+			{ status: 400, headers: staleExhaustedHeaders() },
+		);
+
+		const { rateLimit, quotaHeadersAuthoritative } =
+			await handleErrorResponse(response);
+
+		expect(rateLimit).toBeUndefined();
+		expect(quotaHeadersAuthoritative).toBeFalsy();
+	});
+
+	it("ignores the headers on a non-429 error whose text merely mentions a usage limit", async () => {
+		// The body-text match is deliberately loose, so it alone is not proof the
+		// backend refused this request for quota. Before the authority rule this
+		// path wrote an uncapped 5h block onto a healthy account.
+		const response = new Response(
+			JSON.stringify({
+				error: {
+					message: "You've reached your usage limit for gpt-5.6-sol on your plan.",
+				},
+			}),
+			{ status: 400, headers: staleExhaustedHeaders() },
+		);
+
+		const { rateLimit, quotaHeadersAuthoritative } =
+			await handleErrorResponse(response);
+
+		expect(quotaHeadersAuthoritative).toBeFalsy();
+		expect(rateLimit?.retryAfterMs).toBe(60000);
+	});
+
+	it("ignores the headers on a 429-shaped upstream overload", async () => {
+		const response = new Response(
+			JSON.stringify({
+				error: {
+					type: "service_unavailable_error",
+					code: "server_is_overloaded",
+					message: "Our servers are currently overloaded. Please try again later.",
+					retry_after_ms: 1750,
+				},
+			}),
+			{ status: 429, headers: staleExhaustedHeaders() },
+		);
+
+		const { rateLimit, retryAsServerError, quotaHeadersAuthoritative } =
+			await handleErrorResponse(response);
+
+		expect(retryAsServerError).toBe(true);
+		expect(quotaHeadersAuthoritative).toBe(false);
+		// A ten-second blip must not park the account until the quota reset.
+		expect(rateLimit?.retryAfterMs).toBe(1750);
+	});
+
+	it("ignores the headers on a 5xx", async () => {
+		const response = new Response(
+			JSON.stringify({ error: { message: "internal error" } }),
+			{ status: 503, headers: staleExhaustedHeaders() },
+		);
+
+		const { quotaHeadersAuthoritative } = await handleErrorResponse(response);
+
+		expect(quotaHeadersAuthoritative).toBeFalsy();
+	});
+});
