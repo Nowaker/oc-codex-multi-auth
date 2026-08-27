@@ -121,6 +121,22 @@ describe("HealthScoreTracker", () => {
 				DEFAULT_HEALTH_SCORE_CONFIG.maxScore
 			);
 		});
+
+		// `lastUpdated` is stamped with Date.now() at write time, so a negative
+		// interval means the host clock moved backwards (NTP correction, a
+		// resumed VM). Recovery must not become a penalty: unclamped it drove
+		// the score to -17440.
+		it("does not penalize the score when the clock jumps backwards", () => {
+			tracker.recordFailure(0);
+			const afterFailure = tracker.getScore(0);
+
+			vi.setSystemTime(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
+
+			expect(tracker.getScore(0)).toBeCloseTo(afterFailure, 5);
+			expect(tracker.getScore(0)).toBeGreaterThanOrEqual(
+				DEFAULT_HEALTH_SCORE_CONFIG.minScore
+			);
+		});
 	});
 
 	describe("reset and clear", () => {

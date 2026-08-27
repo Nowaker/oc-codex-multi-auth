@@ -104,12 +104,29 @@ describe("formatWaitTime", () => {
   it("formats minutes and seconds when 60s or more", () => {
     expect(formatWaitTime(60000)).toBe("1m 0s");
     expect(formatWaitTime(150000)).toBe("2m 30s");
-    expect(formatWaitTime(3600000)).toBe("60m 0s");
   });
 
   it("rounds down partial seconds", () => {
     expect(formatWaitTime(45500)).toBe("45s");
     expect(formatWaitTime(150999)).toBe("2m 30s");
+  });
+
+  // Callers routinely pass multi-hour quota blocks and process uptime, which
+  // used to render as a five-figure minute count ("10080m 0s" for a week).
+  it("splits out hours once past an hour", () => {
+    expect(formatWaitTime(3600000)).toBe("1h 0m 0s");
+    expect(formatWaitTime(5 * 60 * 60 * 1000 + 90_000)).toBe("5h 1m 30s");
+  });
+
+  it("splits out days once past a day", () => {
+    expect(formatWaitTime(7 * 24 * 60 * 60 * 1000)).toBe("7d 0h 0m");
+    expect(formatWaitTime(26 * 60 * 60 * 1000)).toBe("1d 2h 0m");
+  });
+
+  it("reads non-finite input as zero instead of emitting NaN", () => {
+    expect(formatWaitTime(Number.NaN)).toBe("0s");
+    expect(formatWaitTime(Number.POSITIVE_INFINITY)).toBe("0s");
+    expect(formatWaitTime(Number.NEGATIVE_INFINITY)).toBe("0s");
   });
 });
 

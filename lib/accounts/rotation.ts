@@ -16,6 +16,7 @@ import {
 	type HybridSelectionOptions,
 } from "../rotation.js";
 import { matchesModelPoolAccountKey } from "./pool-identity.js";
+import { MAX_QUOTA_RESET_HORIZON_MS } from "../quota-windows.js";
 import type { CooldownReason } from "../storage.js";
 import { nowMs } from "../utils.js";
 import {
@@ -141,6 +142,21 @@ export class AccountRotation {
 		return null;
 	}
 
+	/**
+	 * Health/token/freshness-weighted selection. The historical default.
+	 *
+	 * When at least one account is selectable this returns the best-scoring one.
+	 * When NONE is — every account disabled, rate-limited or cooling down —
+	 * `selectHybridAccount` deliberately falls back to the least-recently-used
+	 * account instead of returning null, because retrying a blocked account
+	 * beats refusing to send anything (a single-account pool has nowhere to fail
+	 * over to, and a persisted block can outlive the limit that caused it).
+	 *
+	 * So a returned account is NOT a promise that it is selectable. Callers that
+	 * need that guarantee must consult `getSelectionExplainability`, which is
+	 * what `codex-doctor` does. {@link getCurrentOrNextForFamilySticky} and
+	 * {@link getCurrentOrNextForFamily} return null in the same situation.
+	 */
 	getCurrentOrNextForFamilyHybrid(
 		family: ModelFamily,
 		model?: string | null,
@@ -227,8 +243,16 @@ export class AccountRotation {
 	 * issue describes).
 	 *
 	 * Returns null when no account is available (every account disabled,
-	 * rate-limited, or cooling down), matching the other selectors' contract so
-	 * the request loop's wait/retry logic is unchanged.
+	 * rate-limited, or cooling down), like `getCurrentOrNextForFamily`, so the
+	 * request loop's wait/retry logic is unchanged.
+	 *
+	 * Note this is NOT the whole-pool-blocked behaviour of
+	 * {@link getCurrentOrNextForFamilyHybrid}: that selector deliberately falls
+	 * back to the least-recently-used account rather than hard-failing, on the
+	 * grounds that retrying a blocked account beats refusing to send anything at
+	 * all — which matters most for a single-account pool, where there is nothing
+	 * to fail over to. The two strategies disagree here on purpose; an earlier
+	 * version of this comment claimed they agreed.
 	 */
 	getCurrentOrNextForFamilySticky(
 		family: ModelFamily,
@@ -427,6 +451,14 @@ export class AccountRotation {
 	 * 429s, so it survives restarts and is shared with other processes through
 	 * the accounts file, and it expires on its own via `clearExpiredRateLimits`.
 	 *
+	 * Because that write is monotonic and persisted, it is also unforgiving: a
+	 * reset stamp further out than any real window would strand the account for
+	 * as long as it claims, with nothing in the product able to walk it back. The
+	 * upper bound below is the same guard `parseQuotaResetAtMs` applies to the
+	 * headers, repeated here because this is the method that makes a block
+	 * permanent — the lower bound on the next line has always been checked for
+	 * the same reason.
+	 *
 	 * @returns true when a new (or longer) block was written.
 	 */
 	markQuotaExhausted(
@@ -437,7 +469,9 @@ export class AccountRotation {
 	): boolean {
 		if (!Number.isFinite(resetAtMs)) return false;
 		const resetAt = Math.floor(resetAtMs);
-		if (resetAt <= nowMs()) return false;
+		const now = nowMs();
+		if (resetAt <= now) return false;
+		if (resetAt - now > MAX_QUOTA_RESET_HORIZON_MS) return false;
 
 		let changed = false;
 		for (const key of this.getBlockedQuotaKeys(family, model)) {

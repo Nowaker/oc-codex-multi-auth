@@ -76,10 +76,25 @@ export function isRateLimitedForFamily(
 	return isRateLimitedForQuotaKey(entity, baseKey);
 }
 
+/**
+ * Human-readable duration, used in toasts, status lines and log warnings.
+ *
+ * Non-finite input reads as zero rather than propagating: the old arithmetic
+ * turned NaN into the string "NaNs" and Infinity into "Infinitym NaNs", both of
+ * which reached users verbatim.
+ *
+ * Hours and days are split out because the callers routinely pass durations far
+ * past an hour — a weekly quota block and process uptime both used to render as
+ * a five-figure minute count ("10080m 0s").
+ */
 export function formatWaitTime(ms: number): string {
-	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-	const minutes = Math.floor(totalSeconds / 60);
+	const totalSeconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+	const days = Math.floor(totalSeconds / 86400);
+	const hours = Math.floor((totalSeconds % 86400) / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
 	const seconds = totalSeconds % 60;
+	if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+	if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
 	if (minutes > 0) return `${minutes}m ${seconds}s`;
 	return `${seconds}s`;
 }

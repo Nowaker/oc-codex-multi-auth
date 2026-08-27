@@ -45,6 +45,37 @@ const QUOTA_HEADER_SUFFIXES = [
 /** Epoch values below this are seconds, above are milliseconds. */
 const EPOCH_SECONDS_CEILING = 10_000_000_000;
 
+/**
+ * The furthest ahead a reset time can be and still be believable.
+ *
+ * The longest window Codex has is the weekly one, so anything past a month is
+ * not a quota reset — it is a garbled header, a wrong-unit value, or a gateway
+ * inventing a number. Believing it is not a small error: the reset is written
+ * into the persisted `rateLimitResetTimes` map through a deliberately monotonic
+ * writer, so a single bogus header takes the account out of rotation for as
+ * long as it claims (measured: `-reset-after-seconds: 4000000000` = 127 years)
+ * and nothing in the product can shorten it again.
+ */
+export const MAX_QUOTA_RESET_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Reject a reset time that cannot be real.
+ *
+ * Rejecting rather than clamping is the safe direction: an implausible header
+ * tells us nothing about when the account recovers, and "no usable reset time"
+ * leaves the account selectable so the next request rediscovers the truth. A
+ * clamp would still write a month-long block on the strength of a garbled
+ * value.
+ */
+function withinResetHorizon(
+	resetAtMs: number,
+	now: number,
+): number | undefined {
+	if (!Number.isFinite(resetAtMs)) return undefined;
+	if (resetAtMs - now > MAX_QUOTA_RESET_HORIZON_MS) return undefined;
+	return resetAtMs;
+}
+
 function parseFiniteNumberHeader(
 	headers: Headers,
 	name: string,
@@ -68,6 +99,11 @@ function parseFiniteIntHeader(headers: Headers, name: string): number | undefine
  * `-reset-after-seconds` is preferred over `-reset-at` because it is immune to
  * clock skew between this host and the backend. `-reset-at` is accepted both as
  * an epoch stamp (seconds or milliseconds) and as an ISO-8601 date string.
+ *
+ * Every branch returns through {@link withinResetHorizon}: this is the one
+ * choke point all three header forms pass through, so bounding it here is what
+ * keeps an implausible value out of both the durable rotation block and the
+ * retry-after delay derived from the same headers.
  */
 export function parseQuotaResetAtMs(
 	headers: Headers,
@@ -79,7 +115,7 @@ export function parseQuotaResetAtMs(
 		`${prefix}-reset-after-seconds`,
 	);
 	if (typeof resetAfterSeconds === "number" && resetAfterSeconds > 0) {
-		return now + resetAfterSeconds * 1000;
+		return withinResetHorizon(now + resetAfterSeconds * 1000, now);
 	}
 
 	const resetAtRaw = headers.get(`${prefix}-reset-at`);
@@ -88,13 +124,18 @@ export function parseQuotaResetAtMs(
 	if (/^\d+$/.test(trimmed)) {
 		const parsed = Number.parseInt(trimmed, 10);
 		if (Number.isFinite(parsed) && parsed > 0) {
-			return parsed < EPOCH_SECONDS_CEILING ? parsed * 1000 : parsed;
+			return withinResetHorizon(
+				parsed < EPOCH_SECONDS_CEILING ? parsed * 1000 : parsed,
+				now,
+			);
 		}
 		return undefined;
 	}
 
 	const parsedDate = Date.parse(trimmed);
-	return Number.isFinite(parsedDate) ? parsedDate : undefined;
+	return Number.isFinite(parsedDate)
+		? withinResetHorizon(parsedDate, now)
+		: undefined;
 }
 
 export function hasCodexQuotaHeaders(headers: Headers): boolean {

@@ -96,7 +96,12 @@ export class HealthScoreTracker {
 
   private applyPassiveRecovery(entry: HealthEntry): number {
     const now = Date.now();
-    const hoursSinceUpdate = (now - entry.lastUpdated) / (1000 * 60 * 60);
+    // Elapsed time is clamped at zero. `lastUpdated` is always stamped with
+    // Date.now() at write time, so a negative interval means the clock moved
+    // backwards (NTP correction, a resumed VM) — and an unclamped negative
+    // interval turns recovery into a penalty, driving the score arbitrarily far
+    // below minScore instead of leaving it where it was. Measured: -17440.
+    const hoursSinceUpdate = Math.max(0, now - entry.lastUpdated) / (1000 * 60 * 60);
     const recovery = hoursSinceUpdate * this.config.passiveRecoveryPerHour;
     return Math.min(entry.score + recovery, this.config.maxScore);
   }
