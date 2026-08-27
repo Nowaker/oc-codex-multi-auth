@@ -3964,6 +3964,73 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(metrics.routingVisibility.accountPoolMode).toBe("strict-unavailable");
 	});
 
+	it("does not record TUI quota cache from a non-authoritative error response", async () => {
+		const previousStateDir = process.env.OPENCODE_STATE_DIR;
+		const stateDir = await mkdtemp(join(tmpdir(), "tui-quota-error-"));
+		process.env.OPENCODE_STATE_DIR = stateDir;
+		const quotaHeaders = {
+			"x-codex-primary-used-percent": "100",
+			"x-codex-primary-window-minutes": "300",
+			"x-codex-secondary-used-percent": "100",
+			"x-codex-secondary-window-minutes": "10080",
+			"x-codex-plan-type": "plus",
+			"x-codex-active-limit": "40",
+		};
+		const sendPrompt = async () => {
+			const { sdk } = await setupPlugin();
+			return sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+		};
+		try {
+			const { getTuiQuotaCachePath, readTuiQuotaSnapshot } = await import(
+				"../lib/tui-quota-cache.js"
+			);
+			const cachePath = getTuiQuotaCachePath(stateDir);
+
+			// An entitlement-style failure carrying a stale 0%-left snapshot. The
+			// router ignores those headers, so the status line must not report the
+			// account as spent either.
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ error: { code: "usage_not_included" } }), {
+					status: 400,
+					headers: quotaHeaders,
+				}),
+			);
+			await sendPrompt();
+			for (let attempt = 0; attempt < 20; attempt += 1) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			expect(await readTuiQuotaSnapshot(cachePath)).toBeFalsy();
+
+			// Positive control: the same headers on a served request still land, so
+			// the assertion above is about the authority gate and not a broken write.
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), {
+					status: 200,
+					headers: quotaHeaders,
+				}),
+			);
+			await sendPrompt();
+			let snapshot = await readTuiQuotaSnapshot(cachePath);
+			for (let attempt = 0; !snapshot && attempt < 20; attempt += 1) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				snapshot = await readTuiQuotaSnapshot(cachePath);
+			}
+			expect(snapshot).toEqual(
+				expect.objectContaining({ source: "headers", planType: "plus" }),
+			);
+		} finally {
+			if (previousStateDir === undefined) {
+				delete process.env.OPENCODE_STATE_DIR;
+			} else {
+				process.env.OPENCODE_STATE_DIR = previousStateDir;
+			}
+			await rm(stateDir, { recursive: true, force: true });
+		}
+	});
+
 	it("records TUI quota cache from successful Codex response headers", async () => {
 		const previousStateDir = process.env.OPENCODE_STATE_DIR;
 		const stateDir = await mkdtemp(join(tmpdir(), "tui-quota-index-"));
@@ -4131,12 +4198,50 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			vi.mocked(fetchHelpers.handleErrorResponse).mockImplementationOnce(async (response) => ({
 				response,
 				rateLimit: { retryAfterMs: 60_000, code: "usage_limit_reached" },
+				quotaHeadersAuthoritative: true,
 			}));
 
-			expect((await sendPrompt()).status).toBe(429);
+			// The only account in the pool is now blocked, so the router runs out of
+			// candidates rather than replaying the upstream 429 — the same outcome any
+			// rate limit past the short-retry threshold already produced.
+			expect((await sendPrompt()).status).toBe(503);
 			expect(mockQuotaExhaustionCalls).toEqual([
 				expect.objectContaining({ resetAtMs: resetAtSeconds * 1000 }),
 			]);
+			// The window is spent for the next five hours and the block just written
+			// for it cannot be shortened, so the short 429 retry must not fire: a
+			// second upstream call here would mean the account is serving traffic
+			// while rotation still considers it blocked.
+			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		});
+
+		it("ignores exhausted headers on a 429-shaped upstream overload", async () => {
+			respondWith(
+				{
+					"x-codex-primary-used-percent": "100",
+					"x-codex-primary-window-minutes": "300",
+					"x-codex-primary-reset-at": String(nowSeconds() + 5 * 60 * 60),
+				},
+				429,
+			);
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			vi.mocked(fetchHelpers.handleErrorResponse).mockImplementationOnce(async (response) => ({
+				response,
+				rateLimit: { retryAfterMs: 1_750, code: "server_is_overloaded" },
+				retryAsServerError: true,
+				quotaHeadersAuthoritative: false,
+			}));
+
+			const { resetAllCircuitBreakers } = await import("../lib/circuit-breaker.js");
+			try {
+				await sendPrompt();
+				// A ten-second upstream blip must not park the account until the reset.
+				expect(mockQuotaExhaustionCalls).toEqual([]);
+			} finally {
+				// The overload path feeds the module-level breaker, which outlives this
+				// test and would short-circuit every later request in the file.
+				resetAllCircuitBreakers();
+			}
 		});
 	});
 
