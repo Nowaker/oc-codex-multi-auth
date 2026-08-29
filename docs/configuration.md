@@ -215,7 +215,6 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
   "quotaNotifications": {
     "enabled": false,
     "intervalMs": 1800000,
-    "maskAccountEmails": true,
     "notifyEveryCheck": false,
     "thresholds": [25, 10, 0]
   }
@@ -266,22 +265,18 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `pidOffsetEnabled` | `false` | add a small PID-based offset to hybrid selection scores (helps multi-process load spread) |
 | `fetchTimeoutMs` | `60000` | upstream fetch timeout in ms |
 | `streamStallTimeoutMs` | `45000` | max time to wait for next SSE chunk before aborting |
-| `quotaNotifications` | disabled | optional macOS Notification Center alerts for aggregate 5-hour and weekly pool quotas; `intervalMs` defaults to 30 minutes with a 30-second minimum, `maskAccountEmails` defaults to `true`, `notifyEveryCheck` defaults to `false`, and `thresholds` defaults to `[25, 10, 0]` |
+| `quotaNotifications` | disabled | optional macOS Notification Center alerts for aggregate 5-hour and weekly pool quotas; `intervalMs` defaults to 30 minutes with a 30-second minimum, `notifyEveryCheck` defaults to `false`, and `thresholds` defaults to `[25, 10, 0]` |
 
 Quota notifications query each distinct enabled account with bounded
 concurrency. The 5-hour and weekly windows are tracked independently, and each
 threshold alerts once until that window rises above it after a reset. Messages
-contain aggregate percentages and reset times plus masked emails for the
-accounts providing the best remaining quota and nearest reset. Emails are
-masked by default; set `maskAccountEmails` to `false` to show full emails.
-Account identities are never persisted in notification state.
+use two compact lines: the highest remaining 5-hour percentage with the nearest
+reset, followed by the highest remaining weekly percentage. Account identities
+are omitted from alerts and are never persisted in notification state.
 Set `notifyEveryCheck` to `true` to deliver the aggregate message after every
 successful poll interval even when no threshold was crossed. Delivery state is
 shared across OpenCode processes so concurrent plugin instances produce only
 one routine alert per interval.
-Alerts use 5-hour data when available and weekly data otherwise; both lines
-always describe the same window. A third line shows the highest available
-weekly percentage and its configured account email display.
 Delivery uses macOS's built-in `osascript` support and does not require an
 additional notification package. The feature is unavailable on Windows and
 Linux. Quit and restart OpenCode after changing the setting. If macOS blocks

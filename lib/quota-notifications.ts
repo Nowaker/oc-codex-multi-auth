@@ -195,19 +195,13 @@ export function selectPreferredQuotaWindow(usage: AggregatedQuotaUsage): {
 }
 
 export function formatQuotaNotification(usage: AggregatedQuotaUsage): string {
-	const selected = selectPreferredQuotaWindow(usage);
-	const weeklyEmail = usage.weekly.bestAccountEmail ? ` | ${usage.weekly.bestAccountEmail}` : "";
+	const fiveHourLine = usage.fiveHour.remainingPercent !== undefined
+		? `5h: ${usage.fiveHour.remainingPercent}% | resets ${formatUsageReset(usage.fiveHour.resetAtMs) ?? "unavailable"}`
+		: "5h: unavailable";
 	const weeklyLine = usage.weekly.remainingPercent !== undefined
-		? `Weekly best: ${usage.weekly.remainingPercent}% | weekly${weeklyEmail}`
-		: "Weekly best: unavailable";
-	if (!selected) return `Best left: unavailable\nNearest reset: unavailable\n${weeklyLine}`;
-	const bestEmail = selected.usage.bestAccountEmail ? ` | ${selected.usage.bestAccountEmail}` : "";
-	const resetEmail = selected.usage.resetAccountEmail ? ` | ${selected.usage.resetAccountEmail}` : "";
-	return [
-		`Best left: ${selected.usage.remainingPercent}% | ${selected.label}${bestEmail}`,
-		`Nearest reset: ${formatUsageReset(selected.usage.resetAtMs) ?? "unavailable"} | ${selected.label}${resetEmail}`,
-		weeklyLine,
-	].join("\n");
+		? `Weekly: ${usage.weekly.remainingPercent}%`
+		: "Weekly: unavailable";
+	return `${fiveHourLine}\n${weeklyLine}`;
 }
 
 export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {}): QuotaMonitor {
@@ -283,7 +277,7 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 				const shouldNotify = transition.crossings.length > 0 || everyCheckDue;
 				if (!disposed && expectedGeneration === generation && shouldNotify) {
 					delivered = await dependencies
-						.notify("Codex Quota Low", formatQuotaNotification(usage))
+						.notify("Codex quota low", formatQuotaNotification(usage))
 						.catch((error: unknown) => {
 							logDebug(`Failed to deliver quota notification: ${(error as Error).message}`);
 							return false;

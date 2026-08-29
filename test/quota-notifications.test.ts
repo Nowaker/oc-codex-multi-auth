@@ -91,7 +91,7 @@ describe("quota notification aggregation", () => {
 });
 
 describe("quota notification content", () => {
-	it("uses the highest short-window percentage, its shortest reset, and the weekly best", () => {
+	it("shows a compact 5-hour summary and weekly best", () => {
 		const aggregate = {
 			fiveHour: {
 				remainingPercent: 8,
@@ -108,21 +108,16 @@ describe("quota notification content", () => {
 		};
 		expect(selectPreferredQuotaWindow(aggregate)?.name).toBe("fiveHour");
 		const lines = formatQuotaNotification(aggregate).split("\n");
-		expect(lines).toHaveLength(3);
-		expect(lines[0]).toBe("Best left: 8% | 5-hour | fi***@example.com");
-		expect(lines[1]).toMatch(/^Nearest reset: .+ \| 5-hour \| re\*\*\*@example\.com$/);
-		expect(lines[2]).toBe("Weekly best: 72% | weekly | be***@example.com");
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toMatch(/^5h: 8% \| resets .+$/);
+		expect(lines[1]).toBe("Weekly: 72%");
 	});
 
 	it("handles a missing quota window", () => {
 		expect(formatQuotaNotification({
 			fiveHour: {},
 			weekly: { remainingPercent: 20, bestAccountEmail: "we***@example.com" },
-		})).toBe(
-			"Best left: 20% | weekly | we***@example.com\n" +
-			"Nearest reset: unavailable | weekly\n" +
-			"Weekly best: 20% | weekly | we***@example.com",
-		);
+		})).toBe("5h: unavailable\nWeekly: 20%");
 	});
 });
 
@@ -297,7 +292,7 @@ describe("quota monitor lifecycle", () => {
 		await monitor.runNow();
 
 		expect(notify).toHaveBeenCalledOnce();
-		expect(notify.mock.calls[0]?.[1]).toContain("Weekly best: 20% | weekly | ac***@example.com");
+		expect(notify.mock.calls[0]?.[1]).toBe("5h: 50% | resets unavailable\nWeekly: 20%");
 	});
 
 	it("notifies after every successful check when configured", async () => {
@@ -377,7 +372,7 @@ describe("quota monitor lifecycle", () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
-	it("shows full emails when masking is disabled", async () => {
+	it("omits account identities even when masking is disabled", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
 		tempDirectories.push(directory);
 		setStoragePathDirect(join(directory, "accounts.json"));
@@ -399,6 +394,6 @@ describe("quota monitor lifecycle", () => {
 
 		await monitor.runNow();
 
-		expect(notify.mock.calls[0]?.[1]).toContain("account@example.com");
+		expect(notify.mock.calls[0]?.[1]).toBe("5h: 50% | resets unavailable\nWeekly: 50%");
 	});
 });
