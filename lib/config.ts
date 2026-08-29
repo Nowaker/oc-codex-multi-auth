@@ -1042,3 +1042,49 @@ export function getStreamStallTimeoutMs(pluginConfig: PluginConfig): number {
 		{ min: 1_000 },
 	);
 }
+
+export interface QuotaNotificationsConfig {
+	enabled: boolean;
+	intervalMs: number;
+	maskAccountEmails: boolean;
+	notifyEveryCheck: boolean;
+	thresholds: number[];
+}
+
+export function getQuotaNotifications(
+	pluginConfig: PluginConfig,
+): QuotaNotificationsConfig {
+	const config = pluginConfig.quotaNotifications;
+
+	let enabled = config?.enabled ?? false;
+	const envEnabled = parseBooleanEnv(process.env.CODEX_AUTH_QUOTA_NOTIFICATIONS);
+	if (envEnabled !== undefined) {
+		enabled = envEnabled;
+	}
+
+	const intervalMs = resolveNumberSetting(
+		"CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS",
+		config?.intervalMs,
+		1_800_000,
+		{ min: 30_000 },
+	);
+
+	let thresholds = config?.thresholds ?? [25, 10, 0];
+
+	// Normalize thresholds: unique, valid range, descending order
+	thresholds = Array.from(new Set(thresholds))
+		.filter((t) => Number.isFinite(t) && t >= 0 && t <= 100)
+		.sort((a, b) => b - a);
+
+	if (thresholds.length === 0) {
+		thresholds = [25, 10, 0];
+	}
+
+	return {
+		enabled,
+		intervalMs,
+		maskAccountEmails: config?.maskAccountEmails ?? true,
+		notifyEveryCheck: config?.notifyEveryCheck ?? false,
+		thresholds,
+	};
+}

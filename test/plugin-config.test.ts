@@ -24,6 +24,7 @@ import {
 	getStreamStallTimeoutMs,
 	getAutoUpdate,
 	getAccountToastsEnabled,
+	getQuotaNotifications,
 } from '../lib/config.js';
 import type { PluginConfig } from '../lib/types.js';
 import * as fs from 'node:fs';
@@ -71,6 +72,8 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_FALLBACK_GPT53_TO_GPT52',
 		'CODEX_AUTH_AUTO_UPDATE',
 		'CODEX_AUTH_ACCOUNT_TOASTS',
+		'CODEX_AUTH_QUOTA_NOTIFICATIONS',
+		'CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS',
 	] as const;
 	const originalEnv: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
 
@@ -852,6 +855,53 @@ describe('Plugin Configuration', () => {
 			process.env.CODEX_AUTH_STREAM_STALL_TIMEOUT_MS = '30000';
 			expect(getStreamStallTimeoutMs({})).toBe(30000);
 			delete process.env.CODEX_AUTH_STREAM_STALL_TIMEOUT_MS;
+		});
+	});
+
+	describe('quota notification settings', () => {
+		it('is disabled by default with production-safe defaults', () => {
+			expect(getQuotaNotifications({})).toEqual({
+				enabled: false,
+				intervalMs: 1_800_000,
+				maskAccountEmails: true,
+				notifyEveryCheck: false,
+				thresholds: [25, 10, 0],
+			});
+		});
+
+		it('normalizes thresholds and clamps the interval to 30 seconds', () => {
+			expect(getQuotaNotifications({
+				quotaNotifications: {
+					enabled: true,
+					intervalMs: 10_000,
+					thresholds: [0, 25, 10, 25],
+				},
+			})).toEqual({
+				enabled: true,
+				intervalMs: 30_000,
+				maskAccountEmails: true,
+				notifyEveryCheck: false,
+				thresholds: [25, 10, 0],
+			});
+		});
+
+		it('enables notifications on every successful check', () => {
+			expect(getQuotaNotifications({
+				quotaNotifications: { notifyEveryCheck: true },
+			}).notifyEveryCheck).toBe(true);
+		});
+
+		it('allows full account emails in notifications', () => {
+			expect(getQuotaNotifications({
+				quotaNotifications: { maskAccountEmails: false },
+			}).maskAccountEmails).toBe(false);
+		});
+
+		it('honors environment overrides', () => {
+			process.env.CODEX_AUTH_QUOTA_NOTIFICATIONS = '1';
+			process.env.CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS = '600000';
+			expect(getQuotaNotifications({}).enabled).toBe(true);
+			expect(getQuotaNotifications({}).intervalMs).toBe(600_000);
 		});
 	});
 });

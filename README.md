@@ -293,6 +293,51 @@ Primary config files:
 - `~/.config/opencode/tui.json`
 - `~/.opencode/openai-codex-auth-config.json`
 
+### Desktop quota notifications
+
+Quota notifications are an optional macOS-only feature. While the plugin is
+running, it checks all enabled accounts and alerts through Notification Center
+when the best remaining 5-hour or weekly pool quota crosses 25%, 10%, or 0%.
+The feature is disabled by default.
+
+Each alert uses the 5-hour window
+when that data is available and falls back to weekly otherwise. The first line
+shows the highest remaining percentage and its account; the second shows the
+shortest reset time and account within that same window. Email addresses are
+masked by default for lock-screen privacy. A third line always shows the highest
+available weekly percentage and its account:
+
+```text
+Best left: 10% | 5-hour | lu***@gmail.com
+Nearest reset: 22:30 | 5-hour | wo***@company.com
+Weekly best: 72% | weekly | we***@example.com
+```
+
+```json
+{
+  "quotaNotifications": {
+    "enabled": true,
+    "intervalMs": 1800000,
+    "maskAccountEmails": true,
+    "notifyEveryCheck": false,
+    "thresholds": [25, 10, 0]
+  }
+}
+```
+
+Add the object above to `~/.opencode/openai-codex-auth-config.json`, or set
+`CODEX_AUTH_QUOTA_NOTIFICATIONS=1`, then quit and restart OpenCode. The minimum
+interval is 30 seconds. If macOS blocks the alert, allow notifications for
+the process shown in **System Settings > Notifications**. The setting is
+ignored on Windows and Linux.
+
+Set `"notifyEveryCheck": true` to show the aggregate quota notification after
+every successful poll interval instead of only when a configured threshold is
+crossed. Multiple OpenCode processes share delivery state, so only one alert is
+shown per interval.
+Account emails are masked by default. Set `"maskAccountEmails": false` to show
+full emails in Notification Center.
+
 ### Route models to preferred accounts
 
 Use `modelAccountPools` to assign one or more preferred ChatGPT accounts or Business seats to a

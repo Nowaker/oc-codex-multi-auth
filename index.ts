@@ -112,6 +112,7 @@ import {
 	setCorrelationId,
 	clearCorrelationId,
 } from "./lib/logger.js";
+import { createQuotaMonitor } from "./lib/quota-notifications.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
 import {
@@ -757,6 +758,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			email?: string;
 			accountLabel?: string;
 		};
+		const quotaMonitor = createQuotaMonitor();
 
 		const clearPromptQuotaCache = async (): Promise<void> => {
 			try {
@@ -1661,6 +1663,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
           try {
                 const { event } = input;
+                if (event.type === "server.instance.disposed") {
+                        quotaMonitor.dispose();
+                        return;
+                }
                 // Handle TUI account selection events
                 // Accepts generic selection events with an index property
                 if (
@@ -1774,6 +1780,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const startupPerProjectAccounts = getPerProjectAccounts(startupPluginConfig);
 	setStoragePath(startupPerProjectAccounts ? process.cwd() : null);
 	await backfillHostOpenAIAuthFromPool();
+	if (process.env.NODE_ENV !== "test" || process.env.TEST_QUOTA_MONITOR === "1") {
+		quotaMonitor.start();
+	}
 
         return {
                 event: eventHandler,
