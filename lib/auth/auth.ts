@@ -1,5 +1,5 @@
 import { randomBytes, webcrypto } from "node:crypto";
-import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
+import type { PKCEPair, AuthorizationFlow, TokenResult, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
 import {
 	OAUTH_CALLBACK_PATH,
@@ -23,6 +23,28 @@ export const TOKEN_URL = "https://auth.openai.com/oauth/token";
 // 127.0.0.1 loopback interface for local-only listening.
 export const REDIRECT_URI = `http://localhost:${OAUTH_CALLBACK_PORT}${OAUTH_CALLBACK_PATH}`;
 
+export type AuthorizationInputParseResult =
+	| {
+		readonly source: "raw";
+		readonly code: string | undefined;
+		readonly state: undefined;
+	}
+	| {
+		readonly source: "url";
+		readonly code: string | undefined;
+		readonly state: string | undefined;
+	}
+	| {
+		readonly source: "query";
+		readonly code: string | undefined;
+		readonly state: string | undefined;
+	}
+	| {
+		readonly source: "fragment";
+		readonly code: string | undefined;
+		readonly state: string | undefined;
+	};
+
 /**
  * Generate a random state value for OAuth flow
  * @returns Random hex string
@@ -36,42 +58,63 @@ export function createState(): string {
  * @param input - User input (URL, code#state, or just code)
  * @returns Parsed authorization data
  */
-export function parseAuthorizationInput(input: string): ParsedAuthInput {
+export function parseAuthorizationInput(input: string): AuthorizationInputParseResult {
 	const value = (input || "").trim();
-	if (!value) return {};
+	if (!value) {
+		return { source: "raw", code: undefined, state: undefined };
+	}
 
 	try {
 		const url = new URL(value);
-		let code = url.searchParams.get("code") ?? undefined;
-		let state = url.searchParams.get("state") ?? undefined;
-
-		// Fallback: check hash if not found in searchParams (for #code=... format)
-		if (url.hash && (!code || !state)) {
-			const hashValue = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;
-			const hashParams = new URLSearchParams(hashValue);
-			code = code ?? hashParams.get("code") ?? undefined;
-			state = state ?? hashParams.get("state") ?? undefined;
+		const fragmentParams = new URLSearchParams(url.hash.slice(1));
+		return {
+			source: "url",
+			code: url.searchParams.get("code") ?? fragmentParams.get("code") ?? undefined,
+			state: url.searchParams.get("state") ?? fragmentParams.get("state") ?? undefined,
+		};
+	} catch (error) {
+		if (!(error instanceof TypeError)) {
+			throw error;
 		}
+	}
 
-		if (code || state) {
-			return { code, state };
+	if (value.startsWith("#")) {
+		const fragmentParams = new URLSearchParams(value.slice(1));
+		if (fragmentParams.has("code") || fragmentParams.has("state")) {
+			return {
+				source: "fragment",
+				code: fragmentParams.get("code") ?? undefined,
+				state: fragmentParams.get("state") ?? undefined,
+			};
 		}
-	} catch {
-		// Invalid URL, try other parsing methods
+		return { source: "fragment", code: undefined, state: value.slice(1) };
 	}
 
 	if (value.includes("#")) {
-		const [code, state] = value.split("#", 2);
-		return { code, state };
+		try {
+			const fragmentUrl = new URL(value, "https://authorization-input.invalid/");
+			return {
+				source: "fragment",
+				code: fragmentUrl.pathname.slice(1) || undefined,
+				state: fragmentUrl.hash.slice(1),
+			};
+		} catch (error) {
+			if (!(error instanceof TypeError)) {
+				throw error;
+			}
+		}
 	}
-	if (value.includes("code=")) {
-		const params = new URLSearchParams(value);
+
+	const params = new URLSearchParams(value);
+	if (params.has("code") || params.has("state")) {
 		return {
+			source: "query",
 			code: params.get("code") ?? undefined,
 			state: params.get("state") ?? undefined,
 		};
 	}
-	return { code: value };
+
+	return { source: "raw", code: value, state: undefined };
 }
 
 /**

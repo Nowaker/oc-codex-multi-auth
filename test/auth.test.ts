@@ -28,102 +28,133 @@ describe('Auth Module', () => {
 	});
 
 	describe('parseAuthorizationInput', () => {
-		it('should parse full OAuth callback URL', () => {
-			const input = 'http://localhost:1455/auth/callback?code=abc123&state=xyz789';
+		it.each([
+			{
+				name: 'full OAuth callback URL with query parameters',
+				input: 'http://localhost:1455/auth/callback?code=abc123&state=xyz789',
+				expected: { source: 'url', code: 'abc123', state: 'xyz789' },
+			},
+			{
+				name: 'full OAuth callback URL with fragment parameters',
+				input: 'http://localhost:1455/auth/callback#code=abc123&state=xyz789',
+				expected: { source: 'url', code: 'abc123', state: 'xyz789' },
+			},
+			{
+				name: 'query string',
+				input: 'code=abc123&state=xyz789',
+				expected: { source: 'query', code: 'abc123', state: 'xyz789' },
+			},
+			{
+				name: 'bare fragment parameters',
+				input: '#code=abc123&state=xyz789',
+				expected: { source: 'fragment', code: 'abc123', state: 'xyz789' },
+			},
+			{
+				name: 'code#state shorthand',
+				input: 'abc123#xyz789',
+				expected: { source: 'fragment', code: 'abc123', state: 'xyz789' },
+			},
+			{
+				name: 'raw code',
+				input: 'abc123',
+				expected: { source: 'raw', code: 'abc123', state: undefined },
+			},
+			{
+				name: 'opaque raw code containing equals signs',
+				input: 'opaque=part==',
+				expected: { source: 'raw', code: 'opaque=part==', state: undefined },
+			},
+			{
+				name: 'malformed URL-shaped raw code',
+				input: 'https://[invalid',
+				expected: { source: 'raw', code: 'https://[invalid', state: undefined },
+			},
+			{
+				name: 'malformed URL-shaped raw code containing a fragment separator',
+				input: 'https://[invalid#state',
+				expected: { source: 'raw', code: 'https://[invalid#state', state: undefined },
+			},
+		])('preserves $name input', ({ input, expected }) => {
+			// Given the authorization input and expected parse result above
+			// When
 			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'abc123', state: 'xyz789' });
+
+			// Then
+			expect(result).toEqual(expected);
 		});
 
-		it('should parse code#state format', () => {
-			const input = 'abc123#xyz789';
+		it.each([
+			{
+				name: 'URL with unrelated parameters',
+				input: 'http://localhost:1455/auth/callback?error=access_denied',
+				expected: { source: 'url', code: undefined, state: undefined },
+			},
+			{
+				name: 'URL with code and omitted state',
+				input: 'http://localhost:1455/auth/callback?code=abc123',
+				expected: { source: 'url', code: 'abc123', state: undefined },
+			},
+			{
+				name: 'URL with code and empty state',
+				input: 'http://localhost:1455/auth/callback?code=abc123&state=',
+				expected: { source: 'url', code: 'abc123', state: '' },
+			},
+			{
+				name: 'code-only query',
+				input: 'code=abc123',
+				expected: { source: 'query', code: 'abc123', state: undefined },
+			},
+			{
+				name: 'state-only query',
+				input: 'state=test-state',
+				expected: { source: 'query', code: undefined, state: 'test-state' },
+			},
+			{
+				name: 'code with empty shorthand state',
+				input: 'abc123#',
+				expected: { source: 'fragment', code: 'abc123', state: '' },
+			},
+			{
+				name: 'state-only fragment shorthand',
+				input: '#abc123',
+				expected: { source: 'fragment', code: undefined, state: 'abc123' },
+			},
+			{
+				name: 'URL query code with fragment state fallback',
+				input: 'http://localhost:1455/auth/callback?code=querycode#state=hashstate',
+				expected: { source: 'url', code: 'querycode', state: 'hashstate' },
+			},
+			{
+				name: 'URL query state with fragment code fallback',
+				input: 'http://localhost:1455/auth/callback?state=querystate#code=hashcode',
+				expected: { source: 'url', code: 'hashcode', state: 'querystate' },
+			},
+		])('classifies $name without changing supplied values', ({ input, expected }) => {
+			// Given the structured authorization input and expected parse result above
+			// When
 			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'abc123', state: 'xyz789' });
+
+			// Then
+			expect(result).toEqual(expected);
 		});
 
-		it('should parse query string format', () => {
-			const input = 'code=abc123&state=xyz789';
+		it.each(['', '  '])('classifies empty input as an empty raw value', (input) => {
+			// Given empty or whitespace-only authorization input
+			// When
 			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'abc123', state: 'xyz789' });
+
+			// Then
+			expect(result).toEqual({ source: 'raw', code: undefined, state: undefined });
 		});
 
-		it('should parse query string with code= only (no state param)', () => {
-			const input = 'code=abc123';
-			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'abc123', state: undefined });
+		it.each([undefined, null])('retains the runtime empty-input fallback for %s', (input) => {
+			// Given a nullish value from an untyped JavaScript caller
+			// When
+			const result = parseAuthorizationInput(input as unknown as string);
+
+			// Then
+			expect(result).toEqual({ source: 'raw', code: undefined, state: undefined });
 		});
-
-		it('should parse URL with fragment parameters (#code=...)', () => {
-			const input = 'http://localhost:1455/auth/callback#code=abc123&state=xyz789';
-			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'abc123', state: 'xyz789' });
-		});
-
-		it('should prefer query params over hash params when both exist', () => {
-			const input = 'http://localhost:1455/auth/callback?code=querycode&state=querystate#code=hashcode&state=hashstate';
-			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'querycode', state: 'querystate' });
-		});
-
-		it('should fallback to hash for missing state in query', () => {
-			const input = 'http://localhost:1455/auth/callback?code=querycode#state=hashstate';
-			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'querycode', state: 'hashstate' });
-		});
-
-		it('should fallback to hash for missing code in query', () => {
-			const input = 'http://localhost:1455/auth/callback?state=querystate#code=hashcode';
-			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'hashcode', state: 'querystate' });
-		});
-
-		it('should handle URL with hash but without # prefix', () => {
-			const input = 'http://localhost:1455/auth/callback#code=abc123';
-			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'abc123', state: undefined });
-		});
-
-		it('should return code and state when only state is in hash (line 44 coverage)', () => {
-			const input = 'http://localhost:1455/auth/callback?code=querycode#state=hashstate';
-			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: 'querycode', state: 'hashstate' });
-		});
-
-		it('should return state only when only state is in hash and no code (line 44 coverage)', () => {
-			const input = 'http://localhost:1455/auth/callback#state=hashstate';
-			const result = parseAuthorizationInput(input);
-			expect(result).toEqual({ code: undefined, state: 'hashstate' });
-		});
-
-	it('should parse code only', () => {
-		const input = 'abc123';
-		const result = parseAuthorizationInput(input);
-		expect(result).toEqual({ code: 'abc123' });
-	});
-
-	it('should parse code= query string without state (line 58 state undefined branch)', () => {
-		const input = 'code=abc123';
-		const result = parseAuthorizationInput(input);
-		expect(result).toEqual({ code: 'abc123', state: undefined });
-	});
-
-		it('should return empty object for empty input', () => {
-			const result = parseAuthorizationInput('');
-			expect(result).toEqual({});
-		});
-
-		it('should handle whitespace', () => {
-			const result = parseAuthorizationInput('  ');
-			expect(result).toEqual({});
-		});
-
-	it('should fall through to # split when valid URL has hash with no code/state params (line 44 false branch)', () => {
-		// URL parses successfully but hash contains no code= or state= params
-		// Line 44's false branch is hit (code && state both undefined)
-		// Falls through to line 51 which splits on #
-		const input = 'http://localhost:1455/auth/callback#invalid';
-		const result = parseAuthorizationInput(input);
-		expect(result).toEqual({ code: 'http://localhost:1455/auth/callback', state: 'invalid' });
-	});
 	});
 
 	describe('decodeJWT', () => {
