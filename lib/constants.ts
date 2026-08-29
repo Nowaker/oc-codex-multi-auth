@@ -88,13 +88,16 @@ export const PLATFORM_OPENERS = {
 /** OAuth authorization labels */
 export const AUTH_LABELS = {
 	OAUTH: "Codex OAuth (ChatGPT Plus/Pro)",
+	OAUTH_MANUAL_BROWSER: "Codex OAuth (Open URL Manually)",
 	OAUTH_DEVICE_CODE: "Codex OAuth (Device Code)",
 	OAUTH_MANUAL: "Codex OAuth (Manual URL Paste)",
 	API_KEY: "Manual API Key (Advanced)",
 	INSTRUCTIONS:
-		"A browser window should open. If it doesn't, copy the URL and open it manually.",
+		"Opening the default browser to complete sign-in. If nothing opens, copy the URL and open it in any browser.",
+	INSTRUCTIONS_MANUAL_BROWSER:
+		"Open this URL in any browser to sign in; sign-in completes automatically through the localhost callback on port 1455.",
 	INSTRUCTIONS_MANUAL:
-		"After logging in, copy the full redirect URL and paste it here.",
+		"After logging in, paste either the full redirect URL or the raw authorization code here.",
 } as const;
 
 /** Multi-account configuration */

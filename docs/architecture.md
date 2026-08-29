@@ -44,7 +44,7 @@ Standalone read/ops commands (no OpenCode agent loop required): `doctor`, `statu
 
 `index.ts` is the runtime entry OpenCode loads. It owns:
 
-- OAuth login modes: browser callback, device code, and manual URL paste
+- OAuth login modes: default-browser callback, open-URL-manually callback, device code, and manual URL/code paste
 - account manager lifecycle and local account storage (V3)
 - request URL/body/header transformation (native or legacy, plus responses-lite for GPT-5.6)
 - health-aware account selection, `rotationStrategy`, and `modelAccountPools`
@@ -154,7 +154,7 @@ This guarantee is intentionally local-filesystem/same-host. A process that exits
 - Multi-turn continuity depends on `reasoning.encrypted_content` and the host-supplied conversation history.
 - Account pool limits: max **20** accounts; auth-failure cooldown **30s**; auto-removal after **3** consecutive auth failures.
 - Account bootstrap can hydrate from Codex CLI storage under `~/.codex` unless `CODEX_AUTH_SYNC_CODEX_CLI=0`.
-- Auth methods exposed to OpenCode are the three OAuth labels only (browser, device code, manual URL). There is no registered API-key login method.
+- Auth methods exposed to OpenCode are the four OAuth labels only (default browser, open URL manually, device code, manual URL/code paste). There is no registered API-key login method.
 - Credentials and account metadata stay local unless the user exports or migrates them.
 - Diagnostic commands redact sensitive account/token details by default.
 - The optional keychain backend must fall back without deleting JSON credentials silently.

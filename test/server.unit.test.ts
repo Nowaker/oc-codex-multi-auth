@@ -256,6 +256,20 @@ describe('OAuth Server Unit Tests', () => {
 	});
 
 	describe('close function', () => {
+		it('keeps repeated close calls non-throwing', async () => {
+			// Given a ready callback server
+			const result = await startLocalOAuthServer({ state: 'test-state' });
+
+			// When the host closes it repeatedly
+			const closeTwice = () => {
+				result.close();
+				result.close();
+			};
+
+			// Then both close attempts remain safe
+			expect(closeTwice).not.toThrow();
+		});
+
 		it('should close all bound servers when ready=true', async () => {
 			const result = await startLocalOAuthServer({ state: 'test-state' });
 			result.close();
@@ -289,6 +303,18 @@ describe('OAuth Server Unit Tests', () => {
 	});
 
 	describe('waitForCode function', () => {
+		it('returns cancellation after the host closes a ready server', async () => {
+			// Given a ready callback server that the host closes
+			const result = await startLocalOAuthServer({ state: 'test-state' });
+			result.close();
+
+			// When callback observation starts after closure
+			const code = await result.waitForCode('test-state');
+
+			// Then the server reports cancellation
+			expect(code).toBeNull();
+		});
+
 		it('should return null immediately when ready=false', async () => {
 			mockHttp.__setListenBehavior('fail-all');
 

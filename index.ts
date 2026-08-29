@@ -30,11 +30,16 @@ import { join } from "node:path";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
 import {
+        type AuthorizationInputParseResult,
         createAuthorizationFlow,
         exchangeAuthorizationCode,
         parseAuthorizationInput,
         REDIRECT_URI,
 } from "./lib/auth/auth.js";
+import {
+	startLoopbackFlow,
+	type LoopbackFlowUnavailable,
+} from "./lib/auth/loopback-flow.js";
 import {
 	buildDeviceCodeInstructions,
 	completeDeviceCodeSession,
@@ -53,8 +58,6 @@ import {
 	coordinateFlaggedPersistedRefresh,
 	coordinatePersistedRefresh,
 } from "./lib/storage/coordinated-refresh.js";
-import { openBrowserUrl } from "./lib/auth/browser.js";
-import { startLocalOAuthServer } from "./lib/auth/server.js";
 import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
 import {
 	getCodexMode,
@@ -630,84 +633,116 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		}
 	};
 
+		const listenerUnavailableMessage = (): string =>
+			`OAuth callback server failed to start on localhost loopback port 1455. ` +
+			`Retry with "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}".`;
+
+		const callbackCancelledMessage = (): string =>
+			`OAuth callback timed out or was cancelled. ` +
+			`If you are on SSH, WSL, or a headless machine, retry with "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}".`;
+
+		const browserOpenFailedMessage = (): string =>
+			`Could not launch your default browser. ` +
+			`Retry with "${AUTH_LABELS.OAUTH_MANUAL_BROWSER}" to print the URL and open it in the browser of your choice, ` +
+			`or use "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}".`;
+
+		const unavailableMessage = (
+			lifecycle: LoopbackFlowUnavailable["lifecycle"],
+		): string => {
+			switch (lifecycle) {
+				case "listener_unavailable":
+					return listenerUnavailableMessage();
+				case "browser_open_failed":
+					return browserOpenFailedMessage();
+				default: {
+					const unreachable: never = lifecycle;
+					return unreachable;
+				}
+			}
+		};
+
+		/**
+		 * The asymmetry is deliberate: a raw code carries no state to compare
+		 * and PKCE still binds it to this attempt's verifier, whereas
+		 * structured input reproduces the callback's own parameters, so a
+		 * missing or empty state there means the paste did not come from this
+		 * attempt and must not reach the exchange.
+		 */
+		const manualInputRejection = (
+			parsed: AuthorizationInputParseResult,
+			expectedState: string,
+		): string | undefined => {
+			if (!parsed.code) {
+				return "No authorization code found. Paste the raw code, or the full callback URL (e.g., http://localhost:1455/auth/callback?code=...). If browser callback keeps failing, retry with Device Code.";
+			}
+			switch (parsed.source) {
+				case "raw":
+					return undefined;
+				case "url":
+				case "query":
+				case "fragment":
+					if (!parsed.state) {
+						return "That callback URL carries no OAuth state, so it cannot be matched to this login attempt. Paste the complete callback URL including its state parameter, paste the raw code on its own, or retry with Device Code.";
+					}
+					if (parsed.state !== expectedState) {
+						return "OAuth state mismatch. Restart login and paste the code or callback URL generated for this login attempt, or retry with Device Code.";
+					}
+					return undefined;
+				default: {
+					const unreachable: never = parsed;
+					return unreachable;
+				}
+			}
+		};
+
 		const buildManualOAuthFlow = (
 			pkce: { verifier: string },
 			url: string,
 			expectedState: string,
 			replaceAll: boolean,
 		) => ({
-                url,
-                method: "code" as const,
-                instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
-                validate: (input: string): string | undefined => {
-                        const parsed = parseAuthorizationInput(input);
-                        if (!parsed.code) {
-                                return "No authorization code found. Paste the full callback URL (e.g., http://localhost:1455/auth/callback?code=...). If browser callback keeps failing, retry with Device Code.";
-                        }
-                        if (!parsed.state) {
-                                return parsed.source === "raw"
-                                        ? "That is a bare authorization code. This flow needs the full callback URL, including the state parameter (e.g., http://localhost:1455/auth/callback?code=...&state=...). If needed, retry with Device Code."
-                                        : "Missing OAuth state. Paste the full callback URL including both code and state parameters. If needed, retry with Device Code.";
-                        }
-                        if (parsed.state !== expectedState) {
-                                return "OAuth state mismatch. Restart login and paste the callback URL generated for this login attempt, or retry with Device Code.";
-                        }
-                        return undefined;
-                },
-                callback: async (input: string) => {
-                        const parsed = parseAuthorizationInput(input);
-                        if (!parsed.code || !parsed.state) {
-                                return {
-                                        type: "failed" as const,
-                                        reason: "invalid_response" as const,
-                                        message: "Missing authorization code or OAuth state",
-                                };
-                        }
-                        if (parsed.state !== expectedState) {
-                                return {
-                                        type: "failed" as const,
-                                        reason: "invalid_response" as const,
-                                        message: "OAuth state mismatch. Restart login and try again, or retry with Device Code.",
-                                };
-                        }
-						const tokens = await exchangeAuthorizationCode(
-				parsed.code,
-				pkce.verifier,
-				REDIRECT_URI,
-			);
-			if (tokens?.type === "success") {
-								const resolved = await resolveAndPersistAccountSelection(tokens, {
-									persistSelections: persistAuthenticatedSelections,
-									replaceAll,
-								});
-								return resolved.primary;
-						}
-                        return tokens?.type === "failed"
-                                ? tokens
-                                : { type: "failed" as const };
-                },
-        });
+			url,
+			method: "code" as const,
+			instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
+			validate: (input: string): string | undefined =>
+				manualInputRejection(parseAuthorizationInput(input), expectedState),
+			callback: async (input: string) => {
+				const parsed = parseAuthorizationInput(input);
+				const rejection = manualInputRejection(parsed, expectedState);
+				if (rejection !== undefined || !parsed.code) {
+					return {
+						type: "failed" as const,
+						reason: "invalid_response" as const,
+						message: rejection ?? "Missing authorization code",
+					};
+				}
+				const tokens = await exchangeAuthorizationCode(
+					parsed.code,
+					pkce.verifier,
+					REDIRECT_URI,
+				);
+				if (tokens?.type === "success") {
+					const resolved = await resolveAndPersistAccountSelection(tokens, {
+						persistSelections: persistAuthenticatedSelections,
+						replaceAll,
+					});
+					return resolved.primary;
+				}
+				return tokens?.type === "failed"
+					? tokens
+					: { type: "failed" as const };
+			},
+		});
 
 		const runOAuthFlow = async (
 			forceNewLogin: boolean = false,
 		): Promise<TokenResult> => {
-			const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
-			logInfo(`OAuth URL: ${url}`);
-
-			let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
-			try {
-				serverInfo = await startLocalOAuthServer({ state });
-			} catch (err) {
-				logDebug(`[${PLUGIN_NAME}] Failed to start OAuth server: ${(err as Error)?.message ?? String(err)}`);
-				serverInfo = null;
-			}
-			openBrowserUrl(url);
-
-			if (!serverInfo || !serverInfo.ready) {
-				serverInfo?.close();
-				const message =
-					`OAuth callback server failed to start on localhost loopback port 1455. ` +
-					`Retry with "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}".`;
+			const session = await startLoopbackFlow({
+				openBrowser: true,
+				forceNewLogin,
+			});
+			if (session.type === "unavailable") {
+				const message = unavailableMessage(session.lifecycle);
 				logWarn(`\n[${PLUGIN_NAME}] ${message}\n`);
 				return {
 					type: "failed" as const,
@@ -715,25 +750,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					message,
 				};
 			}
-
-			const result = await serverInfo.waitForCode(state);
-			serverInfo.close();
-
-			if (!result) {
+			logInfo(`OAuth URL: ${session.url}`);
+			const result = await session.waitAndExchange();
+			if (result.type === "cancelled") {
 				return {
 					type: "failed" as const,
 					reason: "unknown" as const,
-					message:
-						`OAuth callback timed out or was cancelled. ` +
-						`If you are on SSH, WSL, or a headless machine, retry with "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}".`,
+					message: callbackCancelledMessage(),
 				};
 			}
-
-			return await exchangeAuthorizationCode(
-				result.code,
-				pkce.verifier,
-				REDIRECT_URI,
-			);
+			return result;
 		};
 
         const showToast = async (
@@ -3489,10 +3515,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							setStoragePath(authPerProjectAccounts ? process.cwd() : null);
 
 							const accounts: TokenSuccessWithAccount[] = [];
-							const noBrowser =
-								inputs?.noBrowser === "true" ||
-								inputs?.["no-browser"] === "true";
-							const useManualMode = noBrowser;
 							const explicitLoginMode =
 								inputs?.loginMode === "fresh" || inputs?.loginMode === "add"
 									? inputs.loginMode
@@ -4249,14 +4271,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							if (refreshAccountIndex !== undefined) {
 								targetCount = 1;
 							}
-							if (useManualMode) {
-								targetCount = 1;
-							}
-
-							if (useManualMode) {
-								const { pkce, state, url } = await createAuthorizationFlow();
-								return buildManualOAuthFlow(pkce, url, state, startFresh);
-							}
 
 							const explicitCountProvided =
 								typeof inputs?.accountCount === "string" && inputs.accountCount.trim().length > 0;
@@ -4367,6 +4381,60 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						},
 					},
 					{
+						label: AUTH_LABELS.OAUTH_MANUAL_BROWSER,
+						type: "oauth" as const,
+						authorize: async () => {
+							// Must happen BEFORE the callback persists, to ensure correct
+							// storage location: OpenCode invokes callback() separately from
+							// authorize(), so the path has to be pinned here.
+							const manualBrowserPluginConfig = loadPluginConfig();
+							applyUiRuntimeFromConfig(manualBrowserPluginConfig);
+							const manualBrowserPerProjectAccounts = getPerProjectAccounts(manualBrowserPluginConfig);
+							setStoragePath(manualBrowserPerProjectAccounts ? process.cwd() : null);
+
+							const session = await startLoopbackFlow({ openBrowser: false });
+							if (session.type === "unavailable") {
+								const message = unavailableMessage(session.lifecycle);
+								logWarn(`\n[${PLUGIN_NAME}] ${message}\n`);
+								return {
+									url: "",
+									instructions: message,
+									method: "auto" as const,
+									callback: () =>
+										Promise.resolve({
+											type: "failed" as const,
+											reason: "invalid_response" as const,
+											message,
+										}),
+								};
+							}
+
+							return {
+								url: session.url,
+								instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL_BROWSER,
+								method: "auto" as const,
+								callback: async () => {
+									const result = await session.waitAndExchange();
+									if (result.type === "cancelled") {
+										return {
+											type: "failed" as const,
+											reason: "unknown" as const,
+											message: callbackCancelledMessage(),
+										};
+									}
+									if (result.type !== "success") {
+										return result;
+									}
+									const resolved = await resolveAndPersistAccountSelection(result, {
+										persistSelections: persistAuthenticatedSelections,
+										replaceAll: false,
+									});
+									return resolved.primary;
+								},
+							};
+						},
+					},
+					{
 						label: AUTH_LABELS.OAUTH_DEVICE_CODE,
 						type: "oauth" as const,
 						authorize: async () => {
@@ -4405,22 +4473,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						},
 					},
 
-				{
-					label: AUTH_LABELS.OAUTH_MANUAL,
-					type: "oauth" as const,
-					authorize: async () => {
-                                                        // Initialize storage path for manual OAuth flow
-                                                        // Must happen BEFORE persistAccountPool to ensure correct storage location
-                                                        const manualPluginConfig = loadPluginConfig();
+					{
+						label: AUTH_LABELS.OAUTH_MANUAL,
+						type: "oauth" as const,
+						authorize: async () => {
+							// Must happen BEFORE the callback persists, to ensure correct
+							// storage location: OpenCode invokes callback() separately from
+							// authorize(), so the path has to be pinned here.
+							const manualPluginConfig = loadPluginConfig();
 							applyUiRuntimeFromConfig(manualPluginConfig);
-                                                        const manualPerProjectAccounts = getPerProjectAccounts(manualPluginConfig);
+							const manualPerProjectAccounts = getPerProjectAccounts(manualPluginConfig);
 							setStoragePath(manualPerProjectAccounts ? process.cwd() : null);
 
 							const { pkce, state, url } = await createAuthorizationFlow();
 							return buildManualOAuthFlow(pkce, url, state, false);
-                                                },
-                                        },
-                        ],
+						},
+					},
+				],
                 },
                 tool: createToolRegistry(ctx),
 	};

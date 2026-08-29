@@ -32,7 +32,7 @@ Package version: see `package.json` (`version` field).
 | Plugin orchestration | `index.ts` | OAuth loader, request pipeline, metrics, recovery, `ToolContext` assembly |
 | TUI quota status | `tui.ts`, `lib/tui-status.ts`, `lib/tui-quota-cache.ts`, `lib/codex-usage.ts` | prompt quota status, quota details, shared quota cache |
 | Tool registry | `lib/tools/index.ts` + `lib/tools/codex-*.ts` | 24 registered `codex-*` tools |
-| OAuth flow + PKCE | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts` | browser/device/manual login, token refresh, workspace selection |
+| OAuth flow + PKCE | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts`, `lib/auth/loopback-flow.ts` | browser/device/manual login, shared listener lifecycle, token refresh, workspace selection |
 | OAuth scopes | `lib/auth/scopes.ts` | connector scope validation and re-auth checks |
 | Multi-account rotation | `lib/accounts.ts`, `lib/accounts/`, `lib/rotation.ts` | `rotationStrategy` hybrid/sticky/round-robin, health scoring, cooldowns, token bucket, recovery |
 | Account storage | `lib/storage.ts`, `lib/storage/` | V3 facade, per-project/global paths, keychain, backup/import/export |

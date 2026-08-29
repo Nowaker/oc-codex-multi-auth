@@ -219,11 +219,13 @@ Failed to access Codex API
 
 **Solutions:**
 
-1. **Manual URL paste:**
+1. **Alternate login:**
    - Re-run `opencode auth login`
-   - Select **"Codex OAuth (Device Code)"** first if you are on SSH, WSL, or a headless machine
-   - If device code is unavailable, fall back to **"Codex OAuth (Manual URL Paste)"**
-   - Paste the full redirect URL after login when using the manual flow
+   - **If localhost port 1455 is reachable** (including via `ssh -L 1455:localhost:1455 user@remote`):
+     choose **`Codex OAuth (Open URL Manually)`** - it prints the URL after the listener is ready; open it in any browser; login completes automatically through localhost
+   - **If localhost is not reachable** (containers, restricted networks):
+     choose **`Codex OAuth (Device Code)`** - follow the verification link and one-time code;
+     if device code is unavailable, fall back to **`Codex OAuth (Manual URL Paste)`** - paste the full callback URL or raw authorization code
 
 2. **Check port 1455 availability:**
    ```bash
@@ -247,7 +249,7 @@ Failed to access Codex API
 **Solutions:**
 - Re-run `opencode auth login` to generate a fresh URL
 - Open the URL directly in browser (don't use a stale link)
-- For SSH/WSL/remote, use **"Device Code"** first, then **"Manual URL Paste"** if needed
+- For SSH/WSL/remote: if localhost port 1455 is reachable (including via SSH port forwarding), choose **Open URL Manually**; if localhost is not reachable, choose **Device Code**; use **Manual URL Paste** only as a last resort
 
 </details>
 
