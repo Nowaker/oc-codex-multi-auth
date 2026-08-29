@@ -110,14 +110,14 @@ describe("quota notification content", () => {
 		const lines = formatQuotaNotification(aggregate).split("\n");
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toMatch(/^5h: 8% \| resets .+$/);
-		expect(lines[1]).toBe("Weekly: 72%");
+		expect(lines[1]).toMatch(/^Weekly: 72% \| resets .+$/);
 	});
 
 	it("handles a missing quota window", () => {
 		expect(formatQuotaNotification({
 			fiveHour: {},
 			weekly: { remainingPercent: 20, bestAccountEmail: "we***@example.com" },
-		})).toBe("5h: unavailable\nWeekly: 20%");
+		})).toBe("5h: unavailable\nWeekly: 20% | resets unavailable");
 	});
 });
 
@@ -292,7 +292,7 @@ describe("quota monitor lifecycle", () => {
 		await monitor.runNow();
 
 		expect(notify).toHaveBeenCalledOnce();
-		expect(notify.mock.calls[0]?.[1]).toBe("5h: 50% | resets unavailable\nWeekly: 20%");
+		expect(notify.mock.calls[0]?.[1]).toBe("5h: 50% | resets unavailable\nWeekly: 20% | resets unavailable");
 	});
 
 	it("notifies after every successful check when configured", async () => {
@@ -394,6 +394,6 @@ describe("quota monitor lifecycle", () => {
 
 		await monitor.runNow();
 
-		expect(notify.mock.calls[0]?.[1]).toBe("5h: 50% | resets unavailable\nWeekly: 50%");
+		expect(notify.mock.calls[0]?.[1]).toBe("5h: 50% | resets unavailable\nWeekly: 50% | resets unavailable");
 	});
 });

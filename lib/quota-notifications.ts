@@ -199,7 +199,7 @@ export function formatQuotaNotification(usage: AggregatedQuotaUsage): string {
 		? `5h: ${usage.fiveHour.remainingPercent}% | resets ${formatUsageReset(usage.fiveHour.resetAtMs) ?? "unavailable"}`
 		: "5h: unavailable";
 	const weeklyLine = usage.weekly.remainingPercent !== undefined
-		? `Weekly: ${usage.weekly.remainingPercent}%`
+		? `Weekly: ${usage.weekly.remainingPercent}% | resets ${formatUsageReset(usage.weekly.resetAtMs) ?? "unavailable"}`
 		: "Weekly: unavailable";
 	return `${fiveHourLine}\n${weeklyLine}`;
 }

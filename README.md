@@ -307,7 +307,7 @@ and lock-screen privacy:
 
 ```text
 5h: 10% | resets 22:30
-Weekly: 72%
+Weekly: 72% | resets 22:30 on Aug 30
 ```
 
 ```json
