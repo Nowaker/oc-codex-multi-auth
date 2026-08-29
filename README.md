@@ -331,6 +331,12 @@ interval is 30 seconds. If macOS blocks the alert, allow notifications for
 the process shown in **System Settings > Notifications**. The setting is
 ignored on Windows and Linux.
 
+When `terminal-notifier` is installed through Homebrew, alerts use OpenCode's
+name, icon, and bundle identity and replace the previous quota alert instead of
+stacking. Without it, delivery falls back automatically to macOS `osascript`.
+Choose the **Alerts** style under **System Settings > Notifications > OpenCode**
+to keep branded notifications visible until dismissed.
+
 Set `"notifyEveryCheck": true` to show the aggregate quota notification after
 every successful poll interval instead of only when a configured threshold is
 crossed. Multiple OpenCode processes share delivery state, so only one alert is

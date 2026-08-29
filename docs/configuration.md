@@ -282,11 +282,13 @@ one routine alert per interval.
 Alerts use 5-hour data when available and weekly data otherwise; both lines
 always describe the same window. A third line shows the highest available
 weekly percentage and its configured account email display.
-Delivery uses macOS's built-in `osascript` support and does not require an
-additional notification package. The feature is unavailable on Windows and
-Linux. Quit and restart OpenCode after changing the setting. If macOS blocks
-the alert, allow notifications for the process shown in **System Settings >
-Notifications**.
+Delivery prefers a Homebrew-installed `terminal-notifier`, using OpenCode's
+`ai.opencode.desktop` bundle identity and a stable group so each routine alert
+replaces the previous one. If the helper is unavailable or fails, delivery
+falls back automatically to macOS's built-in `osascript`. The feature is
+unavailable on Windows and Linux. Quit and restart OpenCode after changing the
+setting. For persistent branded alerts, choose **Alerts** under **System
+Settings > Notifications > OpenCode**.
 
 Use `codex-pool action="set" model="gpt-5.6-sol" accounts=[7,8]` to manage a
 pool with 1-based account numbers while persisting stable IDs. The tool also
