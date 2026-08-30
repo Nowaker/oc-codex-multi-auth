@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.14.4] - 2026-08-30
+
+### Fixed
+- **Manually pasted authorization input reached the token exchange mangled, or not at all.** The `Codex OAuth (Manual URL Paste)` flow is the escape hatch when the browser callback cannot be captured, and its parser derived every result from `new URL()`, which normalises rather than preserves. The `code#state` shorthand round-tripped the code through `URL.pathname`: a space became `%20`, a backslash became a forward slash, a `..` segment was collapsed away, a leading `//` was absorbed as a host and left no code at all, and everything after a `?` was dropped. Its state came from `URL.hash`, which is percent-encoded, so a state carrying any character the URL serializer escapes could never equal the state generated for that login attempt. The URL branch returned unconditionally, so an opaque code that `new URL()` accepts because it contains a colon (`ac:1a2b3c`) was reported as a callback with no code, and the user was told to paste a URL they do not have. Any raw value carrying a `state=` pair was reinterpreted as a query string and its code discarded, and a bare `#value` fragment was filed under state, throwing away the code it held. Each of these posted a wrong code, or no code, to the token endpoint, where the only feedback is an opaque `invalid_grant`. The shorthand and raw paths now split on the pasted bytes. A value is read as a URL only when it carried a code or state or opens with `scheme://`, and as a query only when it opens with a parameter name. A callback pasted without its scheme (`127.0.0.1:1455/auth/callback?code=...`) is now read as a URL instead of losing its code. (#238)
+- **An unexpected `URL` rejection could escape the interactive login prompt.** The parser rethrew anything that was not a `TypeError`, and `instanceof` is realm-sensitive, so a subclassed or cross-realm rejection propagated out of the prompt's `validate()` and `callback()` instead of degrading to "treat the value as a raw code". Every rejection now falls back to the raw path, which is what the preceding bare `catch` did. (#238)
+- **A bare authorization code and a callback missing its state now get different instructions.** Both previously produced "Missing OAuth state. Paste the full callback URL including both code and state parameters", which does not tell someone who pasted only the code what they got wrong. The state requirement itself is unchanged: state is what binds a pasted callback to the login attempt that generated it. (#238)
+
+### Internal
+- The parser's result type collapsed from four structurally identical union members to two, and the orphaned `ParsedAuthInput` interface, whose last import the same change removed, was deleted from `lib/types.ts`. (#238)
+- `test/index.test.ts` no longer hand-writes a stand-in for `parseAuthorizationInput`. A `vi.mock` factory is not type-checked against the real module, so the stand-in still returned the pre-change shape with no `source` field, and the manual-flow tests would have passed vacuously once `index.ts` began branching on it. The mock now delegates to the real parser, and the deleted query-over-fragment precedence test is restored. (#238)
+
 ## [6.14.3] - 2026-08-27
 
 ### Fixed
