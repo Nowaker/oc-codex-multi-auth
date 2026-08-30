@@ -644,7 +644,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 return "No authorization code found. Paste the full callback URL (e.g., http://localhost:1455/auth/callback?code=...). If browser callback keeps failing, retry with Device Code.";
                         }
                         if (!parsed.state) {
-                                return "Missing OAuth state. Paste the full callback URL including both code and state parameters. If needed, retry with Device Code.";
+                                return parsed.source === "raw"
+                                        ? "That is a bare authorization code. This flow needs the full callback URL, including the state parameter (e.g., http://localhost:1455/auth/callback?code=...&state=...). If needed, retry with Device Code."
+                                        : "Missing OAuth state. Paste the full callback URL including both code and state parameters. If needed, retry with Device Code.";
                         }
                         if (parsed.state !== expectedState) {
                                 return "OAuth state mismatch. Restart login and paste the callback URL generated for this login attempt, or retry with Device Code.";
