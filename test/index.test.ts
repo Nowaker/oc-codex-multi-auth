@@ -25,42 +25,45 @@ vi.mock("@opencode-ai/plugin/tool", () => {
 	return { tool };
 });
 
-vi.mock("../lib/auth/auth.js", () => ({
-	createAuthorizationFlow: vi.fn(async () => ({
-		pkce: { verifier: "test-verifier", challenge: "test-challenge" },
-		state: "test-state",
-		url: "https://auth.openai.com/test",
-	})),
-	exchangeAuthorizationCode: vi.fn(async () => ({
-		type: "success" as const,
-		access: "access-token",
-		refresh: "refresh-token",
-		expires: Date.now() + 3600_000,
-		idToken: "id-token",
-	})),
-	parseAuthorizationInput: vi.fn((input: string) => {
-		const codeMatch = input.match(/code=([^&]+)/);
-		const stateMatch = input.match(/state=([^&#]+)/);
-		return {
-			code: codeMatch?.[1],
-			state: stateMatch?.[1],
-		};
-	}),
-	decodeJWT: vi.fn((token: string) => {
-		try {
-			const payload = token.split(".")[1];
-			return payload
-				? (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
-						string,
-						unknown
-					>)
-				: null;
-		} catch {
-			return null;
-		}
-	}),
-	REDIRECT_URI: "http://localhost:1455/auth/callback",
-}));
+vi.mock("../lib/auth/auth.js", async () => {
+	// parseAuthorizationInput is pure, so the manual-flow tests run the real
+	// classifier rather than a hand-written stand-in. A stand-in cannot be
+	// type-checked against the module and would silently drift from its
+	// `source` contract, which is what index.ts branches on.
+	const actual = await vi.importActual<typeof import("../lib/auth/auth.js")>(
+		"../lib/auth/auth.js",
+	);
+
+	return {
+		createAuthorizationFlow: vi.fn(async () => ({
+			pkce: { verifier: "test-verifier", challenge: "test-challenge" },
+			state: "test-state",
+			url: "https://auth.openai.com/test",
+		})),
+		exchangeAuthorizationCode: vi.fn(async () => ({
+			type: "success" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 3600_000,
+			idToken: "id-token",
+		})),
+		parseAuthorizationInput: vi.fn(actual.parseAuthorizationInput),
+		decodeJWT: vi.fn((token: string) => {
+			try {
+				const payload = token.split(".")[1];
+				return payload
+					? (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
+							string,
+							unknown
+						>)
+					: null;
+			} catch {
+				return null;
+			}
+		}),
+		REDIRECT_URI: "http://localhost:1455/auth/callback",
+	};
+});
 
 // Only the refresh lease is stubbed: `getStoragePath()` is mocked to a path that
 // does not exist, and acquiring a real cross-process lockfile there would create
@@ -750,6 +753,31 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await flow.callback(invalidInput);
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("invalid_response");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("tells the user to paste the callback URL when only a bare code is supplied", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const manualMethod = plugin.auth.methods[2] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string; reason?: string }>;
+				}>;
+			};
+
+			const flow = await manualMethod.authorize();
+			// A bare code carries no state, so it cannot be bound to this login
+			// attempt. The message has to name the missing part, not just repeat
+			// the generic "missing OAuth state" wording used for callback input.
+			const bareCode = "abc123";
+
+			const message = flow.validate(bareCode);
+			expect(message).toContain("bare authorization code");
+			expect(message).toContain("state");
+			expect(flow.validate("state=test-state")).toContain("No authorization code found");
+
+			const result = await flow.callback(bareCode);
+			expect(result.type).toBe("failed");
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 

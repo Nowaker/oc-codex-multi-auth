@@ -55,6 +55,36 @@ describe('Auth Module', () => {
 				expected: { source: 'fragment', code: 'abc123', state: 'xyz789' },
 			},
 			{
+				name: 'code#state shorthand whose code contains a space',
+				input: 'abc def#xyz789',
+				expected: { source: 'fragment', code: 'abc def', state: 'xyz789' },
+			},
+			{
+				name: 'code#state shorthand whose code contains a backslash',
+				input: 'abc\\def#xyz789',
+				expected: { source: 'fragment', code: 'abc\\def', state: 'xyz789' },
+			},
+			{
+				name: 'code#state shorthand whose code contains dot segments',
+				input: 'a/../b#xyz789',
+				expected: { source: 'fragment', code: 'a/../b', state: 'xyz789' },
+			},
+			{
+				name: 'code#state shorthand whose code opens with a double slash',
+				input: '//abc#xyz789',
+				expected: { source: 'fragment', code: '//abc', state: 'xyz789' },
+			},
+			{
+				name: 'code#state shorthand whose code contains a question mark',
+				input: 'abc?x#xyz789',
+				expected: { source: 'fragment', code: 'abc?x', state: 'xyz789' },
+			},
+			{
+				name: 'code#state shorthand whose state contains a space',
+				input: 'abc123#xyz 789',
+				expected: { source: 'fragment', code: 'abc123', state: 'xyz 789' },
+			},
+			{
 				name: 'raw code',
 				input: 'abc123',
 				expected: { source: 'raw', code: 'abc123', state: undefined },
@@ -63,6 +93,26 @@ describe('Auth Module', () => {
 				name: 'opaque raw code containing equals signs',
 				input: 'opaque=part==',
 				expected: { source: 'raw', code: 'opaque=part==', state: undefined },
+			},
+			{
+				name: 'opaque raw code containing a colon',
+				input: 'ac:1a2b3c',
+				expected: { source: 'raw', code: 'ac:1a2b3c', state: undefined },
+			},
+			{
+				name: 'opaque raw code shaped like a non-special URL scheme',
+				input: 'v2:abcdef',
+				expected: { source: 'raw', code: 'v2:abcdef', state: undefined },
+			},
+			{
+				name: 'opaque raw code followed by an unrelated ampersand parameter',
+				input: 'Zm9vYmFy&state=YmFy',
+				expected: { source: 'raw', code: 'Zm9vYmFy&state=YmFy', state: undefined },
+			},
+			{
+				name: 'fragment carrying a bare value rather than parameters',
+				input: '#abc123',
+				expected: { source: 'raw', code: 'abc123', state: undefined },
 			},
 			{
 				name: 'malformed URL-shaped raw code',
@@ -115,9 +165,9 @@ describe('Auth Module', () => {
 				expected: { source: 'fragment', code: 'abc123', state: '' },
 			},
 			{
-				name: 'state-only fragment shorthand',
-				input: '#abc123',
-				expected: { source: 'fragment', code: undefined, state: 'abc123' },
+				name: 'fragment separator carrying no value',
+				input: '#',
+				expected: { source: 'raw', code: undefined, state: undefined },
 			},
 			{
 				name: 'URL query code with fragment state fallback',
@@ -129,6 +179,36 @@ describe('Auth Module', () => {
 				input: 'http://localhost:1455/auth/callback?state=querystate#code=hashcode',
 				expected: { source: 'url', code: 'hashcode', state: 'querystate' },
 			},
+			{
+				name: 'URL query parameters taking precedence over fragment parameters',
+				input: 'http://localhost:1455/auth/callback?code=querycode&state=querystate#code=hashcode&state=hashstate',
+				expected: { source: 'url', code: 'querycode', state: 'querystate' },
+			},
+			{
+				name: 'URL carrying only a fragment state',
+				input: 'http://localhost:1455/auth/callback#state=hashstate',
+				expected: { source: 'url', code: undefined, state: 'hashstate' },
+			},
+			{
+				name: 'URL carrying only a fragment code',
+				input: 'http://localhost:1455/auth/callback#code=abc123',
+				expected: { source: 'url', code: 'abc123', state: undefined },
+			},
+			{
+				name: 'URL whose fragment names no parameter',
+				input: 'http://localhost:1455/auth/callback#invalid',
+				expected: { source: 'url', code: undefined, state: undefined },
+			},
+			{
+				name: 'callback URL pasted without its scheme',
+				input: 'localhost:1455/auth/callback?code=abc123&state=xyz789',
+				expected: { source: 'url', code: 'abc123', state: 'xyz789' },
+			},
+			{
+				name: 'callback URL pasted without its scheme against a numeric host',
+				input: '127.0.0.1:1455/auth/callback?code=abc123&state=xyz789',
+				expected: { source: 'url', code: 'abc123', state: 'xyz789' },
+			},
 		])('classifies $name without changing supplied values', ({ input, expected }) => {
 			// Given the structured authorization input and expected parse result above
 			// When
@@ -138,7 +218,7 @@ describe('Auth Module', () => {
 			expect(result).toEqual(expected);
 		});
 
-		it.each(['', '  '])('classifies empty input as an empty raw value', (input) => {
+		it.each(['', '  '])('classifies empty input as an empty raw value for %j', (input) => {
 			// Given empty or whitespace-only authorization input
 			// When
 			const result = parseAuthorizationInput(input);

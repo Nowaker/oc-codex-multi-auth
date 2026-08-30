@@ -66,11 +66,6 @@ export interface AuthorizationFlow {
 	url: string;
 }
 
-export interface ParsedAuthInput {
-	code?: string;
-	state?: string;
-}
-
 /**
  * JWT payload with ChatGPT account info
  */
