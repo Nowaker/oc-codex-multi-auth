@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { access, mkdtemp, readFile, rm, stat, utimes, watch, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import {
 	setStoragePathDirect,
 	withAccountStorageTransaction,
 } from "../lib/storage.js";
+import { waitForFile } from "./support/wait-for-file.js";
 
 type ChildResult = {
 	readonly code: number | null;
@@ -22,29 +23,6 @@ type ChildRun = {
 	readonly process: ChildProcessWithoutNullStreams;
 	readonly completed: Promise<ChildResult>;
 };
-
-function isMissingFile(error: unknown): boolean {
-	return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-async function waitForFile(filePath: string): Promise<void> {
-	const controller = new AbortController();
-	const watcher = watch(dirname(filePath), { signal: controller.signal });
-	try {
-		try {
-			await access(filePath);
-			return;
-		} catch (error) {
-			if (!isMissingFile(error)) throw error;
-		}
-
-		for await (const event of watcher) {
-			if (event.filename === basename(filePath)) return;
-		}
-	} finally {
-		controller.abort();
-	}
-}
 
 function runChild(environment: Readonly<Record<string, string>>): ChildRun {
 	const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
