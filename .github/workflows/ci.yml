@@ -26,7 +26,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['18', '20', '22']
+        # Node 18 is absent on purpose: vitest 4 declares
+        # `engines: ^20.0.0 || ^22.0.0 || >=24.0.0`, and on Node 18 the suite
+        # fails 226 tests across 21 files with `Hook timed out` in ordinary
+        # afterEach blocks. The package itself still supports Node 18, so that
+        # claim is tested by the consumer-smoke job below rather than dropped.
+        node: ['20', '22', '24']
         os: [ubuntu-latest]
         include:
           - node: '20'
@@ -59,6 +64,60 @@ jobs:
 
       - name: Test
         run: npm test
+
+  # package.json declares `engines: >=18.0.0`, but the quality job cannot test
+  # Node 18 because the dev toolchain requires >=20. This job defends the claim
+  # from the consumer's side instead: pack the real tarball, install it, and run
+  # the CLI on Node 18. It never loads vitest or eslint.
+  consumer-smoke:
+    name: Consumer smoke (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `npm pack` runs prepack, not prepublishOnly, so dist/ must be built here
+      # or the tarball ships without its compiled runtime.
+      - name: Build
+        run: npm run build
+
+      - name: Pack the publishable tarball
+        run: npm pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Install the tarball and run the CLI
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y > /dev/null
+          npm install "$RUNNER_TEMP"/oc-codex-multi-auth-*.tgz
+          node node_modules/oc-codex-multi-auth/scripts/install-oc-codex-multi-auth.js status --json > status.json
+          cat status.json
+          node -e '
+            const { readFileSync } = require("node:fs");
+            const status = JSON.parse(readFileSync("status.json", "utf8"));
+            if (status.command !== "status") {
+              throw new Error("expected command status, got " + JSON.stringify(status.command));
+            }
+            if (typeof status.totalAccounts !== "number") {
+              throw new Error("status output is missing totalAccounts");
+            }
+          '
 
   audit-ci:
     name: Dependency audit

@@ -1,5 +1,5 @@
 import { randomBytes, webcrypto } from "node:crypto";
-import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
+import type { PKCEPair, AuthorizationFlow, TokenResult, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
 import {
 	OAUTH_CALLBACK_PATH,
@@ -24,6 +24,70 @@ export const TOKEN_URL = "https://auth.openai.com/oauth/token";
 export const REDIRECT_URI = `http://localhost:${OAUTH_CALLBACK_PORT}${OAUTH_CALLBACK_PATH}`;
 
 /**
+ * Classification of manually pasted authorization input.
+ *
+ * `raw` means the value could not be read as a callback URL, query string, or
+ * fragment, so it is returned byte for byte as an opaque authorization code and
+ * never carries state. Every other source is structured callback input, where
+ * `code` and `state` are exactly what the callback supplied.
+ */
+export type AuthorizationInputParseResult =
+	| {
+		readonly source: "raw";
+		readonly code: string | undefined;
+		readonly state: undefined;
+	}
+	| {
+		readonly source: "url" | "query" | "fragment";
+		readonly code: string | undefined;
+		readonly state: string | undefined;
+	};
+
+// An authorization code is opaque and may contain a colon, so a value that only
+// looks like a URL ("ac:1a2b3c") must fall back to the raw path instead of being
+// reported as a callback that carries no code.
+const ABSOLUTE_URL_PREFIX = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+
+// A query string opens with a parameter name followed by "=". Anything else
+// ("Zm9vYmFy&state=x") is an opaque code that happens to contain "&".
+const QUERY_STRING_PREFIX = /^[^\s&=?#/]+=/;
+
+/**
+ * Parse a URL, reporting failure as undefined instead of throwing.
+ *
+ * Every rejection is treated the same on purpose: this runs inside the
+ * interactive login prompt, where an unexpected error class must degrade to
+ * "treat the value as a raw code" rather than escape the prompt.
+ */
+function tryParseUrl(value: string): URL | undefined {
+	try {
+		return new URL(value);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Read `code` and `state` from a callback, preferring the query string and
+ * falling back to the fragment for whichever value the query omitted.
+ */
+function readCallbackParams(
+	query: URLSearchParams,
+	fragment: string,
+): { code: string | undefined; state: string | undefined } {
+	const code = query.get("code") ?? undefined;
+	const state = query.get("state") ?? undefined;
+	if (!fragment || (code !== undefined && state !== undefined)) {
+		return { code, state };
+	}
+	const fragmentParams = new URLSearchParams(fragment);
+	return {
+		code: code ?? fragmentParams.get("code") ?? undefined,
+		state: state ?? fragmentParams.get("state") ?? undefined,
+	};
+}
+
+/**
  * Generate a random state value for OAuth flow
  * @returns Random hex string
  */
@@ -32,46 +96,87 @@ export function createState(): string {
 }
 
 /**
- * Parse authorization code and state from user input
- * @param input - User input (URL, code#state, or just code)
- * @returns Parsed authorization data
+ * Parse the authorization code and state out of manually pasted input.
+ *
+ * Accepts a full callback URL (values in the query string, in the fragment, or
+ * split across both), a callback URL pasted without its scheme, a bare query
+ * string, a bare `#code=...&state=...` fragment, the `code#state` shorthand,
+ * and an opaque authorization code on its own. Values are returned exactly as
+ * pasted: the shorthand and raw paths never percent-encode or normalise them.
+ *
+ * @param input - User input (callback URL, query string, fragment, code#state, or a bare code)
+ * @returns The parsed values and the `source` they were recognised from, where
+ *   `source: "raw"` marks an opaque code that carries no callback state
  */
-export function parseAuthorizationInput(input: string): ParsedAuthInput {
+export function parseAuthorizationInput(input: string): AuthorizationInputParseResult {
 	const value = (input || "").trim();
-	if (!value) return {};
-
-	try {
-		const url = new URL(value);
-		let code = url.searchParams.get("code") ?? undefined;
-		let state = url.searchParams.get("state") ?? undefined;
-
-		// Fallback: check hash if not found in searchParams (for #code=... format)
-		if (url.hash && (!code || !state)) {
-			const hashValue = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;
-			const hashParams = new URLSearchParams(hashValue);
-			code = code ?? hashParams.get("code") ?? undefined;
-			state = state ?? hashParams.get("state") ?? undefined;
-		}
-
-		if (code || state) {
-			return { code, state };
-		}
-	} catch {
-		// Invalid URL, try other parsing methods
+	if (!value) {
+		return { source: "raw", code: undefined, state: undefined };
 	}
 
-	if (value.includes("#")) {
-		const [code, state] = value.split("#", 2);
-		return { code, state };
+	const url = tryParseUrl(value);
+	if (url) {
+		const { code, state } = readCallbackParams(url.searchParams, url.hash.slice(1));
+		// Without a "scheme://" prefix this may be an opaque code that merely
+		// parsed as a URL, so only claim it when it actually carried a value.
+		if (code !== undefined || state !== undefined || ABSOLUTE_URL_PREFIX.test(value)) {
+			return { source: "url", code, state };
+		}
 	}
-	if (value.includes("code=")) {
-		const params = new URLSearchParams(value);
+
+	if (value.startsWith("#")) {
+		const fragmentParams = new URLSearchParams(value.slice(1));
+		if (fragmentParams.has("code") || fragmentParams.has("state")) {
+			return {
+				source: "fragment",
+				code: fragmentParams.get("code") ?? undefined,
+				state: fragmentParams.get("state") ?? undefined,
+			};
+		}
+		// "#abc123" names no parameter. The prompt asks for a code, so return it
+		// as one rather than filing it under state where it can never match.
+		return { source: "raw", code: value.slice(1) || undefined, state: undefined };
+	}
+
+	// Callback URL pasted without its scheme, e.g. "127.0.0.1:1455/auth/callback?code=...".
+	const queryIndex = value.indexOf("?");
+	if (queryIndex >= 0) {
+		const afterQuery = value.slice(queryIndex + 1);
+		const boundary = afterQuery.indexOf("#");
+		const { code, state } = readCallbackParams(
+			new URLSearchParams(boundary >= 0 ? afterQuery.slice(0, boundary) : afterQuery),
+			boundary >= 0 ? afterQuery.slice(boundary + 1) : "",
+		);
+		if (code !== undefined || state !== undefined) {
+			return { source: "url", code, state };
+		}
+	}
+
+	// "code#state" shorthand, split on the raw bytes. Routing this through URL
+	// would percent-encode the values, collapse "..", and truncate at "?". A
+	// value that looks like a URL but failed to parse is a malformed URL rather
+	// than a shorthand, so it is left for the raw path below.
+	const fragmentIndex = value.indexOf("#");
+	if (fragmentIndex >= 0 && !ABSOLUTE_URL_PREFIX.test(value)) {
 		return {
-			code: params.get("code") ?? undefined,
-			state: params.get("state") ?? undefined,
+			source: "fragment",
+			code: value.slice(0, fragmentIndex) || undefined,
+			state: value.slice(fragmentIndex + 1),
 		};
 	}
-	return { code: value };
+
+	if (QUERY_STRING_PREFIX.test(value)) {
+		const params = new URLSearchParams(value);
+		if (params.has("code") || params.has("state")) {
+			return {
+				source: "query",
+				code: params.get("code") ?? undefined,
+				state: params.get("state") ?? undefined,
+			};
+		}
+	}
+
+	return { source: "raw", code: value, state: undefined };
 }
 
 /**

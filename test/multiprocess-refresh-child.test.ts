@@ -1,7 +1,8 @@
-import { access, appendFile, writeFile, watch } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { appendFile, writeFile } from "node:fs/promises";
 
 import { describe, it, vi } from "vitest";
+
+import { waitForFile } from "./support/wait-for-file.js";
 
 vi.mock("../lib/auth/auth.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../lib/auth/auth.js")>()),
@@ -26,29 +27,6 @@ function requiredEnvironment(name: string): string {
 		throw new Error(`${name} is required`);
 	}
 	return value;
-}
-
-function isMissingFile(error: unknown): boolean {
-	return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-async function waitForFile(filePath: string): Promise<void> {
-	const controller = new AbortController();
-	const watcher = watch(dirname(filePath), { signal: controller.signal });
-	try {
-		try {
-			await access(filePath);
-			return;
-		} catch (error) {
-			if (!isMissingFile(error)) throw error;
-		}
-
-		for await (const event of watcher) {
-			if (event.filename === basename(filePath)) return;
-		}
-	} finally {
-		controller.abort();
-	}
 }
 
 const childMode = process.env["MULTIPROCESS_CHILD_MODE"];
