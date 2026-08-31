@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	deduplicateUsageAccountIndices,
 	fetchCodexUsage,
+	formatUsageReset,
 	getUsageLeftPercent,
 	hasUsageWindow,
 	parseCodexUsagePayload,
@@ -12,6 +13,21 @@ import {
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 describe("codex usage helpers", () => {
+	it("formats reset times using a 12-hour clock", () => {
+		const formatTime = vi
+			.spyOn(Date.prototype, "toLocaleTimeString")
+			.mockReturnValue("10:30 PM");
+
+		expect(formatUsageReset(Date.now() + 60_000)).toBe("10:30 PM");
+		expect(formatTime).toHaveBeenCalledWith(undefined, {
+			hour: "2-digit",
+			minute: "2-digit",
+			hour12: true,
+		});
+
+		formatTime.mockRestore();
+	});
+
 	it("parses usage payloads using remaining-percent semantics", () => {
 		const payload: UsagePayload = {
 			plan_type: "team",

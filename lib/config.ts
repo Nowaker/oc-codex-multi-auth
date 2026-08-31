@@ -1046,7 +1046,6 @@ export function getStreamStallTimeoutMs(pluginConfig: PluginConfig): number {
 export interface QuotaNotificationsConfig {
 	enabled: boolean;
 	intervalMs: number;
-	maskAccountEmails: boolean;
 	notifyEveryCheck: boolean;
 	thresholds: number[];
 }
@@ -1083,7 +1082,6 @@ export function getQuotaNotifications(
 	return {
 		enabled,
 		intervalMs,
-		maskAccountEmails: config?.maskAccountEmails ?? true,
 		notifyEveryCheck: config?.notifyEveryCheck ?? false,
 		thresholds,
 	};

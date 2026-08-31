@@ -306,8 +306,8 @@ highest remaining weekly quota. Account identities are omitted for readability
 and lock-screen privacy:
 
 ```text
-5h: 10% | resets 22:30
-Weekly: 72% | resets 22:30 on Aug 30
+5h: 10% | resets 10:30 PM
+Weekly: 72% | resets 10:30 PM on Aug 30
 ```
 
 ```json

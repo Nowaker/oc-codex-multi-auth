@@ -9,7 +9,6 @@ import {
 	resolveCodexUsageAccountId,
 	type CodexUsageSummary,
 } from "./codex-usage.js";
-import { maskEmailForDisplay } from "./account-display.js";
 import { logDebug, logInfo, logWarn } from "./logger.js";
 import {
 	isDesktopNotificationSupported,
@@ -33,8 +32,6 @@ export type QuotaWindowName = "fiveHour" | "weekly";
 export interface AggregatedQuotaWindow {
 	remainingPercent?: number;
 	resetAtMs?: number;
-	bestAccountEmail?: string;
-	resetAccountEmail?: string;
 }
 
 export interface AggregatedQuotaUsage {
@@ -47,13 +44,10 @@ export interface QuotaThresholdCrossing {
 	threshold: number;
 	remainingPercent: number;
 	resetAtMs?: number;
-	bestAccountEmail?: string;
-	resetAccountEmail?: string;
 }
 
 export interface AccountQuotaSummary {
 	usage: CodexUsageSummary;
-	email?: string;
 }
 
 export interface QuotaMonitor {
@@ -68,7 +62,6 @@ type MonitorDependencies = {
 	fetchSummary: (
 		storage: AccountStorageV3,
 		account: AccountMetadataV3 | undefined,
-		maskAccountEmails: boolean,
 	) => Promise<AccountQuotaSummary | null>;
 	notify: DesktopNotifier;
 	notificationsSupported: () => boolean;
@@ -83,14 +76,11 @@ function aggregateWindow(
 ): AggregatedQuotaWindow {
 	let remainingPercent: number | undefined;
 	let resetAtMs: number | undefined;
-	let bestAccountEmail: string | undefined;
-	let resetAccountEmail: string | undefined;
 	for (const accountSummary of summaries) {
 		const window = select(accountSummary.usage);
 		const remaining = getUsageLeftPercent(window.usedPercent);
 		if (remaining !== undefined && (remainingPercent === undefined || remaining > remainingPercent)) {
 			remainingPercent = remaining;
-			bestAccountEmail = accountSummary.email;
 		}
 		if (
 			typeof window.resetAtMs === "number" &&
@@ -99,10 +89,9 @@ function aggregateWindow(
 			(resetAtMs === undefined || window.resetAtMs < resetAtMs)
 		) {
 			resetAtMs = window.resetAtMs;
-			resetAccountEmail = accountSummary.email;
 		}
 	}
-	return { remainingPercent, resetAtMs, bestAccountEmail, resetAccountEmail };
+	return { remainingPercent, resetAtMs };
 }
 
 export function aggregateQuotaUsage(
@@ -155,8 +144,6 @@ export function transitionQuotaState(
 			threshold: fiveHour.threshold,
 			remainingPercent: usage.fiveHour.remainingPercent,
 			resetAtMs: usage.fiveHour.resetAtMs,
-			bestAccountEmail: usage.fiveHour.bestAccountEmail,
-			resetAccountEmail: usage.fiveHour.resetAccountEmail,
 		});
 	}
 	if (weekly.threshold !== undefined && usage.weekly.remainingPercent !== undefined) {
@@ -165,8 +152,6 @@ export function transitionQuotaState(
 			threshold: weekly.threshold,
 			remainingPercent: usage.weekly.remainingPercent,
 			resetAtMs: usage.weekly.resetAtMs,
-			bestAccountEmail: usage.weekly.bestAccountEmail,
-			resetAccountEmail: usage.weekly.resetAccountEmail,
 		});
 	}
 	return {
@@ -245,7 +230,6 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 				chunk.map((index) => dependencies.fetchSummary(
 					storage,
 					storage.accounts[index],
-					config.maskAccountEmails,
 				)),
 			);
 			for (const summary of results) {
@@ -277,7 +261,7 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 				const shouldNotify = transition.crossings.length > 0 || everyCheckDue;
 				if (!disposed && expectedGeneration === generation && shouldNotify) {
 					delivered = await dependencies
-						.notify("Codex quota low", formatQuotaNotification(usage))
+						.notify("Codex quota status", formatQuotaNotification(usage))
 						.catch((error: unknown) => {
 							logDebug(`Failed to deliver quota notification: ${(error as Error).message}`);
 							return false;
@@ -349,7 +333,6 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 async function fetchUsageForAccount(
 	storage: AccountStorageV3,
 	account: AccountMetadataV3 | undefined,
-	maskAccountEmails: boolean,
 ): Promise<AccountQuotaSummary | null> {
 	if (!account) return null;
 	try {
@@ -363,7 +346,6 @@ async function fetchUsageForAccount(
 				organizationId: account.organizationId,
 				normalizeAccountErrors: true,
 			})),
-			email: maskAccountEmails ? maskEmailForDisplay(account.email) : account.email,
 		};
 	} catch (error) {
 		logDebug(`Failed to fetch quota for one account: ${(error as Error).message}`);

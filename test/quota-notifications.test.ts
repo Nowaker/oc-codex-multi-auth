@@ -36,21 +36,21 @@ function usage(options: {
 	});
 }
 
-function accountUsage(email: string, options: Parameters<typeof usage>[0]): AccountQuotaSummary {
-	return { email, usage: usage(options) };
+function accountUsage(options: Parameters<typeof usage>[0]): AccountQuotaSummary {
+	return { usage: usage(options) };
 }
 
 describe("quota notification aggregation", () => {
 	it("uses the best remaining quotas and earliest future resets", () => {
 		const result = aggregateQuotaUsage(
 			[
-				accountUsage("fi***@example.com", {
+				accountUsage({
 					fiveHourUsed: 80,
 					weeklyUsed: 30,
 					fiveHourReset: 2_000,
 					weeklyReset: 3_000,
 				}),
-				accountUsage("se***@example.com", {
+				accountUsage({
 					fiveHourUsed: 40,
 					weeklyUsed: 90,
 					fiveHourReset: 1_500,
@@ -63,21 +63,17 @@ describe("quota notification aggregation", () => {
 			fiveHour: {
 				remainingPercent: 60,
 				resetAtMs: 1_500_000,
-				bestAccountEmail: "se***@example.com",
-				resetAccountEmail: "se***@example.com",
 			},
 			weekly: {
 				remainingPercent: 70,
 				resetAtMs: 2_500_000,
-				bestAccountEmail: "fi***@example.com",
-				resetAccountEmail: "se***@example.com",
 			},
 		});
 	});
 
 	it("ignores expired reset timestamps", () => {
 		const result = aggregateQuotaUsage(
-			[accountUsage("ac***@example.com", {
+			[accountUsage({
 				fiveHourUsed: 50,
 				weeklyUsed: 50,
 				fiveHourReset: 500,
@@ -96,14 +92,10 @@ describe("quota notification content", () => {
 			fiveHour: {
 				remainingPercent: 8,
 				resetAtMs: Date.now() + 60_000,
-				bestAccountEmail: "fi***@example.com",
-				resetAccountEmail: "re***@example.com",
 			},
 			weekly: {
 				remainingPercent: 72,
 				resetAtMs: Date.now() + 120_000,
-				bestAccountEmail: "be***@example.com",
-				resetAccountEmail: "we***@example.com",
 			},
 		};
 		expect(selectPreferredQuotaWindow(aggregate)?.name).toBe("fiveHour");
@@ -116,7 +108,7 @@ describe("quota notification content", () => {
 	it("handles a missing quota window", () => {
 		expect(formatQuotaNotification({
 			fiveHour: {},
-			weekly: { remainingPercent: 20, bestAccountEmail: "we***@example.com" },
+			weekly: { remainingPercent: 20 },
 		})).toBe("5h: unavailable\nWeekly: 20% | resets unavailable");
 	});
 });
@@ -229,7 +221,7 @@ describe("quota monitor lifecycle", () => {
 		vi.useFakeTimers();
 		const loadStorage = vi.fn().mockResolvedValue(null);
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: false, intervalMs: 1_000, maskAccountEmails: true, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage,
 			initialDelayMs: 10,
 		});
@@ -244,7 +236,7 @@ describe("quota monitor lifecycle", () => {
 		vi.useFakeTimers();
 		const loadStorage = vi.fn().mockResolvedValue(null);
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, maskAccountEmails: true, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage,
 			initialDelayMs: 10,
 		});
@@ -257,7 +249,7 @@ describe("quota monitor lifecycle", () => {
 	it("does not poll accounts when desktop notifications are unsupported", async () => {
 		const loadStorage = vi.fn().mockResolvedValue(null);
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, maskAccountEmails: true, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage,
 			notificationsSupported: () => false,
 		});
@@ -273,13 +265,13 @@ describe("quota monitor lifecycle", () => {
 		let weeklyUsed = 50;
 		const notify = vi.fn().mockResolvedValue(true);
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, maskAccountEmails: true, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage: async () => ({
 				version: 3,
 				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
 				activeIndex: 0,
 			}),
-			fetchSummary: async () => accountUsage("ac***@example.com", {
+			fetchSummary: async () => accountUsage({
 				fiveHourUsed: 50,
 				weeklyUsed,
 			}),
@@ -292,7 +284,10 @@ describe("quota monitor lifecycle", () => {
 		await monitor.runNow();
 
 		expect(notify).toHaveBeenCalledOnce();
-		expect(notify.mock.calls[0]?.[1]).toBe("5h: 50% | resets unavailable\nWeekly: 20% | resets unavailable");
+		expect(notify).toHaveBeenCalledWith(
+			"Codex quota status",
+			"5h: 50% | resets unavailable\nWeekly: 20% | resets unavailable",
+		);
 	});
 
 	it("notifies after every successful check when configured", async () => {
@@ -302,13 +297,13 @@ describe("quota monitor lifecycle", () => {
 		const notify = vi.fn().mockResolvedValue(true);
 		let now = 1_000;
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, maskAccountEmails: true, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
 			loadStorage: async () => ({
 				version: 3,
 				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
 				activeIndex: 0,
 			}),
-			fetchSummary: async () => accountUsage("ac***@example.com", {
+			fetchSummary: async () => accountUsage({
 				fiveHourUsed: 50,
 				weeklyUsed: 50,
 			}),
@@ -330,13 +325,13 @@ describe("quota monitor lifecycle", () => {
 		setStoragePathDirect(join(directory, "accounts.json"));
 		const notify = vi.fn().mockResolvedValue(true);
 		const dependencies = {
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, maskAccountEmails: true, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
 			loadStorage: async () => ({
 				version: 3 as const,
 				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
 				activeIndex: 0,
 			}),
-			fetchSummary: async () => accountUsage("ac***@example.com", {
+			fetchSummary: async () => accountUsage({
 				fiveHourUsed: 50,
 				weeklyUsed: 50,
 			}),
@@ -356,7 +351,7 @@ describe("quota monitor lifecycle", () => {
 	it("does not notify every check when no quota fetch succeeds", async () => {
 		const notify = vi.fn().mockResolvedValue(true);
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, maskAccountEmails: true, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
 			loadStorage: async () => ({
 				version: 3,
 				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
@@ -372,28 +367,4 @@ describe("quota monitor lifecycle", () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
-	it("omits account identities even when masking is disabled", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
-		tempDirectories.push(directory);
-		setStoragePathDirect(join(directory, "accounts.json"));
-		const notify = vi.fn().mockResolvedValue(true);
-		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, maskAccountEmails: false, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
-			loadStorage: async () => ({
-				version: 3,
-				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
-				activeIndex: 0,
-			}),
-			fetchSummary: async (_storage, _account, maskAccountEmails) => accountUsage(
-				maskAccountEmails ? "ac***@example.com" : "account@example.com",
-				{ fiveHourUsed: 50, weeklyUsed: 50 },
-			),
-			notify,
-			notificationsSupported: () => true,
-		});
-
-		await monitor.runNow();
-
-		expect(notify.mock.calls[0]?.[1]).toBe("5h: 50% | resets unavailable\nWeekly: 50% | resets unavailable");
-	});
 });

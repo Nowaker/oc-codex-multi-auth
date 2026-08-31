@@ -863,7 +863,6 @@ describe('Plugin Configuration', () => {
 			expect(getQuotaNotifications({})).toEqual({
 				enabled: false,
 				intervalMs: 1_800_000,
-				maskAccountEmails: true,
 				notifyEveryCheck: false,
 				thresholds: [25, 10, 0],
 			});
@@ -879,7 +878,6 @@ describe('Plugin Configuration', () => {
 			})).toEqual({
 				enabled: true,
 				intervalMs: 30_000,
-				maskAccountEmails: true,
 				notifyEveryCheck: false,
 				thresholds: [25, 10, 0],
 			});
@@ -889,12 +887,6 @@ describe('Plugin Configuration', () => {
 			expect(getQuotaNotifications({
 				quotaNotifications: { notifyEveryCheck: true },
 			}).notifyEveryCheck).toBe(true);
-		});
-
-		it('allows full account emails in notifications', () => {
-			expect(getQuotaNotifications({
-				quotaNotifications: { maskAccountEmails: false },
-			}).maskAccountEmails).toBe(false);
 		});
 
 		it('honors environment overrides', () => {
