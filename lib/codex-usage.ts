@@ -133,7 +133,7 @@ export function formatUsageReset(
 	const time = date.toLocaleTimeString(undefined, {
 		hour: "2-digit",
 		minute: "2-digit",
-		hour12: true,
+		hour12: false,
 	});
 	if (sameDay) return time;
 	const day = date.toLocaleDateString(undefined, {
