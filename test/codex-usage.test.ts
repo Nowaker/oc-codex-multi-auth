@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	deduplicateUsageAccountIndices,
 	fetchCodexUsage,
+	formatUsageReset,
 	getUsageLeftPercent,
 	hasUsageWindow,
 	parseCodexUsagePayload,
@@ -12,6 +13,28 @@ import {
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 describe("codex usage helpers", () => {
+	it("formats same-day reset times on a locale-independent 24-hour clock", () => {
+		// Pinned well clear of midnight: a real clock would cross into the next
+		// day inside the 60s offset and take the "on <date>" branch instead.
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(2026, 0, 15, 12, 0, 0));
+		const formatTime = vi
+			.spyOn(Date.prototype, "toLocaleTimeString")
+			.mockReturnValue("22:30");
+
+		try {
+			expect(formatUsageReset(Date.now() + 60_000)).toBe("22:30");
+			expect(formatTime).toHaveBeenCalledWith(undefined, {
+				hour: "2-digit",
+				minute: "2-digit",
+				hour12: false,
+			});
+		} finally {
+			formatTime.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	it("parses usage payloads using remaining-percent semantics", () => {
 		const payload: UsagePayload = {
 			plan_type: "team",

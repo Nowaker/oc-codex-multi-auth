@@ -1042,3 +1042,56 @@ export function getStreamStallTimeoutMs(pluginConfig: PluginConfig): number {
 		{ min: 1_000 },
 	);
 }
+
+export interface QuotaNotificationsConfig {
+	enabled: boolean;
+	intervalMs: number;
+	notifyEveryCheck: boolean;
+	thresholds: number[];
+}
+
+export const DEFAULT_QUOTA_NOTIFICATION_THRESHOLDS: readonly number[] = [25, 10, 0];
+
+export function getQuotaNotifications(
+	pluginConfig: PluginConfig,
+): QuotaNotificationsConfig {
+	const config = pluginConfig.quotaNotifications;
+
+	const enabled = resolveBooleanSetting(
+		"CODEX_AUTH_QUOTA_NOTIFICATIONS",
+		config?.enabled,
+		false,
+	);
+
+	const intervalMs = resolveNumberSetting(
+		"CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS",
+		config?.intervalMs,
+		1_800_000,
+		{ min: 30_000 },
+	);
+
+	const configured = config?.thresholds;
+	let thresholds: number[];
+	if (configured === undefined) {
+		thresholds = [...DEFAULT_QUOTA_NOTIFICATION_THRESHOLDS];
+	} else {
+		// Normalize: unique, in range, most-generous first. An explicitly empty
+		// array is honoured — it is the only way to run `notifyEveryCheck`
+		// without threshold alerts, so it must not fall back to the defaults.
+		thresholds = Array.from(new Set(configured))
+			.filter((value) => Number.isFinite(value) && value >= 0 && value <= 100)
+			.sort((a, b) => b - a);
+		if (thresholds.length === 0 && configured.length > 0) {
+			logWarn(
+				"[quotaNotifications] every configured threshold was out of the 0-100 range; threshold alerts are disabled",
+			);
+		}
+	}
+
+	return {
+		enabled,
+		intervalMs,
+		notifyEveryCheck: config?.notifyEveryCheck ?? false,
+		thresholds,
+	};
+}

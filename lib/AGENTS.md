@@ -20,6 +20,7 @@ lib/
 ├── config.ts               # plugin config parsing and env overrides
 ├── constants.ts            # URLs, provider ids, limits, labels
 ├── context-overflow.ts     # context length error handling
+├── desktop-notifications.ts # macOS Notification Center delivery via osascript
 ├── error-sentinels.ts      # structured special-case errors
 ├── errors.ts               # custom error types
 ├── health.ts               # account health status
@@ -30,6 +31,8 @@ lib/
 ├── parallel-probe.ts       # parallel health checks
 ├── proactive-refresh.ts    # token refresh before expiry
 ├── prompts/                # Codex/OpenCode prompts and ETag caches
+├── quota-notification-state.ts # cross-process threshold/delivery state file
+├── quota-notifications.ts  # aggregate quota poller and threshold transitions
 ├── recovery.ts             # recovery barrel / compatibility entry
 ├── recovery/               # session recovery hook, storage, constants, types
 ├── refresh-queue.ts        # queued token refresh (race prevention)

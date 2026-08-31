@@ -65,6 +65,12 @@ export const PluginConfigSchema = z.object({
 	pidOffsetEnabled: z.boolean().optional(),
 	fetchTimeoutMs: z.number().min(1_000).optional(),
 	streamStallTimeoutMs: z.number().min(1_000).optional(),
+	quotaNotifications: z.object({
+		enabled: z.boolean().optional(),
+		intervalMs: z.number().min(30_000).optional(),
+		notifyEveryCheck: z.boolean().optional(),
+		thresholds: z.array(z.number().min(0).max(100)).optional(),
+	}).optional(),
 });
 
 export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;

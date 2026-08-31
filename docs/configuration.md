@@ -211,7 +211,13 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
   "tokenRefreshSkewMs": 60000,
   "rateLimitToastDebounceMs": 60000,
   "fetchTimeoutMs": 60000,
-  "streamStallTimeoutMs": 45000
+  "streamStallTimeoutMs": 45000,
+  "quotaNotifications": {
+    "enabled": false,
+    "intervalMs": 1800000,
+    "notifyEveryCheck": false,
+    "thresholds": [25, 10, 0]
+  }
 }
 ```
 
@@ -259,6 +265,29 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `pidOffsetEnabled` | `false` | add a small PID-based offset to hybrid selection scores (helps multi-process load spread) |
 | `fetchTimeoutMs` | `60000` | upstream fetch timeout in ms |
 | `streamStallTimeoutMs` | `45000` | max time to wait for next SSE chunk before aborting |
+| `quotaNotifications` | disabled | optional macOS Notification Center alerts for aggregate 5-hour and weekly pool quotas; `intervalMs` defaults to 30 minutes with a 30-second minimum, `notifyEveryCheck` defaults to `false`, and `thresholds` defaults to `[25, 10, 0]` |
+
+Quota notifications query each distinct enabled account with bounded
+concurrency. The 5-hour and weekly windows are tracked independently, and each
+threshold alerts once until that window rises above it after a reset. Each line
+reports the account with the most headroom in that window plus that same
+account's reset time, so the percentage and the reset always come from one
+account. A window the plan has switched off reports `used_percent: 0` and is
+skipped rather than scored as a full quota. Account identities are omitted from
+alerts and are never persisted in notification state.
+Set `notifyEveryCheck` to `true` to deliver the aggregate message after every
+successful poll interval even when no threshold was crossed. Set
+`thresholds` to `[]` to disable threshold alerts entirely; omitting the key
+keeps the `[25, 10, 0]` default. Delivery state is stored beside the accounts
+file the alerts are computed from (`oc-codex-multi-auth-quota-notifications.json`),
+so concurrent OpenCode processes in the same account scope produce only one
+routine alert per interval. With the default `perProjectAccounts`, that scope
+is one project.
+Delivery uses macOS's built-in `osascript` support and does not require an
+additional notification package. The feature is unavailable on Windows and
+Linux. Quit and restart OpenCode after changing the setting. If macOS blocks
+the alert, allow notifications for the process shown in **System Settings >
+Notifications**.
 
 Use `codex-pool action="set" model="gpt-5.6-sol" accounts=[7,8]` to manage a
 pool with 1-based account numbers while persisting stable IDs. The tool also
@@ -349,6 +378,8 @@ override any config with env vars (boolean values are truthy only for `"1"`):
 | `CODEX_AUTH_PREWARM=0` | disable startup prewarm when legacy transform is enabled (native mode does not prewarm) |
 | `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS=60000` | refresh OAuth tokens this many ms before expiry |
 | `CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS=60000` | debounce rate-limit toast notifications |
+| `CODEX_AUTH_QUOTA_NOTIFICATIONS=1` | enable macOS aggregate quota notifications |
+| `CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS=1800000` | override the quota check interval (minimum 30000 ms) |
 | `CODEX_AUTH_SESSION_RECOVERY=0` | disable automatic session recovery hooks |
 | `CODEX_AUTH_AUTO_RESUME=0` | disable auto-resume after thinking-block recovery |
 | `CODEX_AUTH_FAST_SESSION=1` | enable fast-session defaults |

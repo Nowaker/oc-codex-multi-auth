@@ -112,6 +112,7 @@ import {
 	setCorrelationId,
 	clearCorrelationId,
 } from "./lib/logger.js";
+import { createQuotaMonitor } from "./lib/quota-notifications.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
 import {
@@ -1659,10 +1660,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
+		// Created here, after `invalidateAccountManagerCache`, because the
+		// monitor refreshes access tokens unattended. A refresh rotates the
+		// single-use refresh token durably on disk, so the cached
+		// AccountManager holding the old one must be dropped or its debounced
+		// save clobbers the rotation (see `reloadCachedAccountManager` above).
+		const quotaMonitor = createQuotaMonitor({
+			onCredentialsPersisted: invalidateAccountManagerCache,
+		});
+
         // Event handler for session recovery and account selection
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
           try {
                 const { event } = input;
+                if (event.type === "server.instance.disposed") {
+                        quotaMonitor.dispose();
+                        return;
+                }
                 // Handle TUI account selection events
                 // Accepts generic selection events with an index property
                 if (
@@ -1776,6 +1790,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const startupPerProjectAccounts = getPerProjectAccounts(startupPluginConfig);
 	setStoragePath(startupPerProjectAccounts ? process.cwd() : null);
 	await backfillHostOpenAIAuthFromPool();
+	quotaMonitor.start();
 
         return {
                 event: eventHandler,

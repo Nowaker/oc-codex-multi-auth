@@ -112,6 +112,7 @@ oc-codex-multi-auth doctor
 - Per-project accounts: `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json`.
 - Global accounts: `~/.opencode/oc-codex-multi-auth-accounts.json`.
 - Flagged accounts: `~/.opencode/oc-codex-multi-auth-flagged-accounts.json`.
+- Quota notification state: `oc-codex-multi-auth-quota-notifications.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
 - Request logs: `~/.opencode/logs/codex-plugin/` when logging is enabled.
 - Model catalog: 12 modern bases / 53 variants; legacy 53 explicit.
 - Bases: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-fast`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`.
