@@ -232,7 +232,9 @@ export function formatUsageCredits(
 export function formatAdditionalUsageLimitName(
 	name: string | undefined,
 ): string {
-	if (!name) return "Additional limit";
+	// `limit_name` is declared `string` but arrives straight from the usage
+	// document, so a non-string reaches `.replace` and throws.
+	if (typeof name !== "string" || !name) return "Additional limit";
 	if (name === "code_review_rate_limit") return "Code review";
 	return name
 		.replace(/[_-]+/g, " ")
@@ -254,20 +256,42 @@ export function hasUsageWindow(window: LimitWindow): boolean {
 	);
 }
 
+/**
+ * Reduce a `/wham/usage` document to the summary the callers render.
+ *
+ * The parameter is whatever `response.json()` produced: {@link fetchCodexUsage}
+ * casts its result to {@link UsagePayload} without validating it, and a `200`
+ * carrying the body `null` is valid JSON. The gateway in front of `/wham/usage`
+ * is user-configurable (`OPENAI_BASE_URL`), so that is a reachable response and
+ * not only a hypothetical. Every field *inside* the payload is already
+ * null-tolerant; the payload itself was not, and dereferencing it threw
+ * `Cannot read properties of null (reading 'rate_limit')`. A non-object payload
+ * is now read as an empty document, which renders as "unavailable".
+ */
 export function parseCodexUsagePayload(
-	payload: UsagePayload,
+	payload: UsagePayload | null | undefined,
 ): CodexUsageSummary {
-	const primary = mapUsageWindow(payload.rate_limit?.primary_window ?? null);
-	const secondary = mapUsageWindow(payload.rate_limit?.secondary_window ?? null);
+	const source: UsagePayload =
+		typeof payload === "object" && payload !== null ? payload : {};
+	// Same reasoning one level down: the field is declared `Array | null` but
+	// arrives unvalidated, and `.find`/`.filter` on a non-array, or a member
+	// dereference on a null entry, throws.
+	const additionalRateLimits = (
+		Array.isArray(source.additional_rate_limits) ? source.additional_rate_limits : []
+	).filter((entry): entry is NonNullable<typeof entry> =>
+		typeof entry === "object" && entry !== null,
+	);
+	const primary = mapUsageWindow(source.rate_limit?.primary_window ?? null);
+	const secondary = mapUsageWindow(source.rate_limit?.secondary_window ?? null);
 	const codeReviewRateLimit =
-		payload.code_review_rate_limit ??
-		payload.additional_rate_limits?.find(
+		source.code_review_rate_limit ??
+		additionalRateLimits.find(
 			(entry) => entry.limit_name === "code_review_rate_limit",
 		)?.rate_limit ??
 		null;
 	const codeReview = mapUsageWindow(codeReviewRateLimit?.primary_window ?? null);
-	const credits = formatUsageCredits(payload.credits ?? null);
-	const additionalLimits = (payload.additional_rate_limits ?? [])
+	const credits = formatUsageCredits(source.credits ?? null);
+	const additionalLimits = additionalRateLimits
 		.filter((entry) => entry.limit_name !== "code_review_rate_limit")
 		.map((entry) => ({
 			name: formatAdditionalUsageLimitName(
@@ -290,7 +314,7 @@ export function parseCodexUsagePayload(
 	}
 
 	return {
-		planType: payload.plan_type ?? null,
+		planType: source.plan_type ?? null,
 		credits: credits ?? null,
 		primary,
 		secondary,

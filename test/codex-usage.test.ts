@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	deduplicateUsageAccountIndices,
 	fetchCodexUsage,
+	formatUsageLimitSummary,
 	formatUsageReset,
 	getUsageLeftPercent,
 	hasUsageWindow,
@@ -32,6 +33,21 @@ describe("codex usage helpers", () => {
 		} finally {
 			formatTime.mockRestore();
 			vi.useRealTimers();
+		}
+	});
+
+	it("reads a non-object usage document as an empty one instead of throwing", () => {
+		// `fetchCodexUsage` casts `response.json()` straight to UsagePayload, so a
+		// 200 whose body is `null` reaches the parser as null.
+		for (const payload of [null, undefined, "ok", 5, true] as unknown[]) {
+			const usage = parseCodexUsagePayload(payload as UsagePayload);
+			expect(usage.limits, `payload=${String(payload)}`).toEqual([]);
+			expect(usage.primary, `payload=${String(payload)}`).toEqual({});
+			expect(usage.secondary, `payload=${String(payload)}`).toEqual({});
+			expect(usage.planType, `payload=${String(payload)}`).toBeNull();
+			expect(usage.credits, `payload=${String(payload)}`).toBeNull();
+			expect(usage.additionalLimits, `payload=${String(payload)}`).toEqual([]);
+			expect(formatUsageLimitSummary(usage.primary)).toBe("unavailable");
 		}
 	});
 
