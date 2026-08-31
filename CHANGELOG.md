@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- **Quota Notifications**: Added optional macOS Notification Center monitoring for 5-hour and weekly quotas across all enabled accounts. When enabled via `quotaNotifications.enabled: true` or `CODEX_AUTH_QUOTA_NOTIFICATIONS=1`, it independently tracks the best remaining limit for each pool-wide window and alerts at 25%, 10%, or 0%. Set `quotaNotifications.notifyEveryCheck: true` to receive the same aggregate alert after every successful poll instead. Alerts use two compact lines: the highest remaining 5-hour percentage with its nearest reset, followed by the highest remaining weekly percentage. Account identities are omitted for readability and lock-screen privacy. Shared delivery timestamps suppress duplicate every-check alerts from concurrent plugin instances, while threshold crossings remain immediate. Threshold state is persisted without account identities so alerts do not repeat until the relevant window resets.
-
 ## [6.14.4] - 2026-08-30
 
 ### Fixed

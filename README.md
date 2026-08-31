@@ -300,14 +300,15 @@ running, it checks all enabled accounts and alerts through Notification Center
 when the best remaining 5-hour or weekly pool quota crosses 25%, 10%, or 0%.
 The feature is disabled by default.
 
-Each alert uses two compact lines. The first shows the highest remaining
-5-hour quota and nearest reset across enabled accounts; the second shows the
-highest remaining weekly quota. Account identities are omitted for readability
-and lock-screen privacy:
+Each line reports the enabled account with the most headroom in that window,
+together with that same account's reset time, so the pair always describes a
+quota that one account actually has. Windows a plan has switched off are
+skipped rather than counted as full. Account identities are omitted for
+readability and lock-screen privacy:
 
 ```text
-5h: 10% | resets 10:30 PM
-Weekly: 72% | resets 10:30 PM on Aug 30
+5h: 10% | resets 22:30
+Weekly: 72% | resets 22:30 on Aug 30
 ```
 
 ```json
@@ -329,8 +330,13 @@ ignored on Windows and Linux.
 
 Set `"notifyEveryCheck": true` to show the aggregate quota notification after
 every successful poll interval instead of only when a configured threshold is
-crossed. Multiple OpenCode processes share delivery state, so only one alert is
-shown per interval.
+crossed. Set `"thresholds": []` to turn threshold alerts off entirely.
+
+Delivery state lives beside the accounts file the alerts are computed from, so
+OpenCode processes working in the same account scope show only one alert per
+interval. With the default `perProjectAccounts`, that scope is one project:
+two projects have separate account pools and therefore alert independently.
+
 ### Route models to preferred accounts
 
 Use `modelAccountPools` to assign one or more preferred ChatGPT accounts or Business seats to a

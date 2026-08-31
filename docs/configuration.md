@@ -269,14 +269,20 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 
 Quota notifications query each distinct enabled account with bounded
 concurrency. The 5-hour and weekly windows are tracked independently, and each
-threshold alerts once until that window rises above it after a reset. Messages
-use two compact lines: the highest remaining 5-hour percentage with the nearest
-reset, followed by the highest remaining weekly percentage. Account identities
-are omitted from alerts and are never persisted in notification state.
+threshold alerts once until that window rises above it after a reset. Each line
+reports the account with the most headroom in that window plus that same
+account's reset time, so the percentage and the reset always come from one
+account. A window the plan has switched off reports `used_percent: 0` and is
+skipped rather than scored as a full quota. Account identities are omitted from
+alerts and are never persisted in notification state.
 Set `notifyEveryCheck` to `true` to deliver the aggregate message after every
-successful poll interval even when no threshold was crossed. Delivery state is
-shared across OpenCode processes so concurrent plugin instances produce only
-one routine alert per interval.
+successful poll interval even when no threshold was crossed. Set
+`thresholds` to `[]` to disable threshold alerts entirely; omitting the key
+keeps the `[25, 10, 0]` default. Delivery state is stored beside the accounts
+file the alerts are computed from (`oc-codex-multi-auth-quota-notifications.json`),
+so concurrent OpenCode processes in the same account scope produce only one
+routine alert per interval. With the default `perProjectAccounts`, that scope
+is one project.
 Delivery uses macOS's built-in `osascript` support and does not require an
 additional notification package. The feature is unavailable on Windows and
 Linux. Quit and restart OpenCode after changing the setting. If macOS blocks
