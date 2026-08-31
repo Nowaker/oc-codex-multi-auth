@@ -330,7 +330,9 @@ ignored on Windows and Linux.
 
 Set `"notifyEveryCheck": true` to show the aggregate quota notification after
 every successful poll interval instead of only when a configured threshold is
-crossed. Set `"thresholds": []` to turn threshold alerts off entirely.
+crossed. Set `"thresholds": []` to turn threshold alerts off entirely; pair it
+with `"notifyEveryCheck": true` or the monitor has nothing to deliver and stops
+polling.
 
 Delivery state lives beside the accounts file the alerts are computed from, so
 OpenCode processes working in the same account scope show only one alert per

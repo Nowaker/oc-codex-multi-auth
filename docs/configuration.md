@@ -278,7 +278,10 @@ alerts and are never persisted in notification state.
 Set `notifyEveryCheck` to `true` to deliver the aggregate message after every
 successful poll interval even when no threshold was crossed. Set
 `thresholds` to `[]` to disable threshold alerts entirely; omitting the key
-keeps the `[25, 10, 0]` default. Delivery state is stored beside the accounts
+keeps the `[25, 10, 0]` default. `"thresholds": []` together with
+`"notifyEveryCheck": false` can never produce an alert, so the monitor stops
+polling instead of querying the usage endpoint for every account forever.
+Delivery state is stored beside the accounts
 file the alerts are computed from (`oc-codex-multi-auth-quota-notifications.json`),
 so concurrent OpenCode processes in the same account scope produce only one
 routine alert per interval. With the default `perProjectAccounts`, that scope
