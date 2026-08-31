@@ -278,12 +278,26 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 	const check = async (config: QuotaNotificationsConfig, expectedGeneration: number): Promise<void> => {
 		const storage = await dependencies.loadStorage();
 		if (!storage || storage.accounts.length === 0 || disposed || expectedGeneration !== generation) return;
+		// Resolved next to the load that produced `storage`, not after the
+		// fetches: the host flips `setStoragePath` when the project changes, and
+		// this aggregate describes the accounts that were just read.
+		const statePath = getQuotaNotificationStatePath(getStoragePath());
 
 		const indices = deduplicateUsageAccountIndices(storage);
 		const summaries: AccountQuotaSummary[] = [];
-		let credentialsPersisted = false;
+		// Fired at the moment of rotation, not at the end of the check. The
+		// rotated refresh token is already durable on disk, and the host's
+		// cached AccountManager has a 500ms debounced save still holding the old
+		// one; a check over N accounts takes far longer than that, so deferring
+		// this leaves exactly the lost-update window open that it exists to
+		// close. Cheap to call more than once: it is a no-op with no cached
+		// manager.
 		const markCredentialsPersisted = (): void => {
-			credentialsPersisted = true;
+			try {
+				dependencies.onCredentialsPersisted();
+			} catch (error) {
+				logWarn(`Failed to invalidate account cache after a quota refresh: ${(error as Error).message}`);
+			}
 		};
 		for (let offset = 0; offset < indices.length; offset += MAX_CONCURRENCY) {
 			if (disposed || expectedGeneration !== generation) break;
@@ -299,21 +313,10 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 				if (summary) summaries.push(summary);
 			}
 		}
-		// Must run even when the tick is aborting: a rotated refresh token is
-		// already durable on disk, and leaving the host's cached AccountManager
-		// holding the old one lets its debounced save clobber the rotation.
-		if (credentialsPersisted) {
-			try {
-				dependencies.onCredentialsPersisted();
-			} catch (error) {
-				logWarn(`Failed to invalidate account cache after a quota refresh: ${(error as Error).message}`);
-			}
-		}
 		if (summaries.length === 0 || disposed || expectedGeneration !== generation) return;
 
 		const now = dependencies.now();
 		const usage = aggregateQuotaUsage(summaries, now);
-		const statePath = getQuotaNotificationStatePath(getStoragePath());
 		const memoryState = memoryStateByPath.get(statePath);
 
 		let claim: DeliveryClaim;
@@ -404,7 +407,11 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 		let keepPolling = true;
 		try {
 			const config = dependencies.loadConfig();
-			keepPolling = config.enabled && dependencies.notificationsSupported();
+			// `thresholds: []` with `notifyEveryCheck: false` can never deliver
+			// anything, so polling it would query the usage endpoint for every
+			// account, forever, with no possible output.
+			const canDeliver = config.notifyEveryCheck || config.thresholds.length > 0;
+			keepPolling = config.enabled && canDeliver && dependencies.notificationsSupported();
 			if (keepPolling) await check(config, expectedGeneration);
 		} catch (error) {
 			logDebug(`Quota monitor tick failed: ${(error as Error).message}`);

@@ -352,6 +352,21 @@ describe("quota monitor lifecycle", () => {
 		monitor.dispose();
 	});
 
+	it("does not poll a configuration that can never deliver", async () => {
+		const loadStorage = vi.fn().mockResolvedValue(null);
+		const monitor = createQuotaMonitor({
+			// Enabled, but with no thresholds and no every-check alert there is
+			// nothing any check could produce.
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [] }),
+			loadStorage,
+			notificationsSupported: () => true,
+		});
+
+		await monitor.runNow();
+
+		expect(loadStorage).not.toHaveBeenCalled();
+	});
+
 	it("keeps polling on the configured interval while enabled", async () => {
 		vi.useFakeTimers();
 		const loadStorage = vi.fn().mockResolvedValue(null);
@@ -613,6 +628,36 @@ describe("quota monitor lifecycle", () => {
 		expect(notify).toHaveBeenCalledTimes(2);
 		expect(await readQuotaNotificationState(getQuotaNotificationStatePath(join(directory, "accounts.json"))))
 			.toMatchObject({ weekly: {}, lastDeliveredAt: undefined });
+	});
+
+	it("writes state beside the accounts file the check actually read", async () => {
+		const projectA = await mkdtemp(join(tmpdir(), "quota-monitor-a-"));
+		const projectB = await mkdtemp(join(tmpdir(), "quota-monitor-b-"));
+		tempDirectories.push(projectA, projectB);
+		const accountsA = join(projectA, "accounts.json");
+		const accountsB = join(projectB, "accounts.json");
+		setStoragePathDirect(accountsA);
+
+		const monitor = createQuotaMonitor({
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadStorage: async () => ({
+				version: 3,
+				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+				activeIndex: 0,
+			}),
+			fetchSummary: async () => {
+				// The host switched projects while the fetches were in flight.
+				setStoragePathDirect(accountsB);
+				return accountUsage({ fiveHourUsed: 50, weeklyUsed: 50 });
+			},
+			notify: vi.fn().mockResolvedValue(true),
+			notificationsSupported: () => true,
+		});
+
+		await monitor.runNow();
+
+		expect(await readQuotaNotificationState(getQuotaNotificationStatePath(accountsA))).toBeTruthy();
+		expect(await readQuotaNotificationState(getQuotaNotificationStatePath(accountsB))).toBeUndefined();
 	});
 
 	it("tears the timer down through the shared shutdown drain", () => {

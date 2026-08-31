@@ -57,6 +57,30 @@ describe("quota notification state", () => {
 		});
 	});
 
+	it("treats an unreadable state file as absent instead of throwing", async () => {
+		directory = await fs.mkdtemp(join(tmpdir(), "quota-state-"));
+		const statePath = join(directory, "state.json");
+		await fs.writeFile(statePath, "{ not json", "utf-8");
+
+		expect(await readQuotaNotificationState(statePath)).toBeUndefined();
+
+		// A corrupt file must not wedge the monitor: the next update overwrites
+		// it with a well-formed state.
+		const written = await updateQuotaNotificationState(statePath, (previous) => {
+			expect(previous).toBeUndefined();
+			return {
+				state: { fiveHour: { lastPercent: 10 }, weekly: {}, updatedAt: 5 },
+				result: "recovered",
+			};
+		});
+
+		expect(written).toBe("recovered");
+		expect(await readQuotaNotificationState(statePath)).toMatchObject({
+			fiveHour: { lastPercent: 10 },
+			updatedAt: 5,
+		});
+	});
+
 	it("rejects the obsolete shared-band state shape", async () => {
 		directory = await fs.mkdtemp(join(tmpdir(), "quota-state-"));
 		const statePath = join(directory, "state.json");
