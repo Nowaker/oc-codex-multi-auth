@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.15.0] - 2026-08-31
+
+### Added
+- **Desktop quota notifications for macOS.** Set `quotaNotifications.enabled: true` (or `CODEX_AUTH_QUOTA_NOTIFICATIONS=1`) and the plugin polls every enabled account on an interval and alerts through Notification Center when the pool's 5-hour or weekly quota crosses 25%, 10%, or 0%. Each line reports the account with the most headroom in that window together with that same account's reset, so the percentage and the reset always describe one real account. A window the plan has switched off is skipped rather than counted as a full quota. Account identities are never shown or persisted. `notifyEveryCheck: true` delivers the same summary after every successful poll instead of only on a crossing, `thresholds: []` turns threshold alerts off, and `intervalMs` defaults to 30 minutes with a 30-second floor. Delivery state is shared across processes working in the same account scope, so concurrent instances produce one routine alert per interval. Delivery uses the built-in `osascript`, with no extra dependency, and the feature is off by default and unavailable on Windows and Linux. (#239)
+
+### Fixed
+- **An unattended quota refresh could kill an account.** The monitor refreshes any account whose access token is near expiry, and a refresh rotates a single-use refresh token durably to disk. The in-process `AccountManager` cache kept the old token and its debounced save overwrote the rotation, after which the next refresh returned `refresh_token_reused` and the account stayed dead until a fresh login. The monitor now drops that cache at the moment a rotation persists, before the account's usage call, rather than after the whole check. The 500 ms save debounce is far shorter than a check over several accounts, so invalidating at the end of the check left the window open. (#239, #240)
+- **A malformed usage document threw instead of reading as empty.** `fetchCodexUsage` casts `response.json()` straight to its declared type, so a `200` carrying the body `null`, a non-array `additional_rate_limits`, or a non-string `limit_name` reached dereferences that assumed the declared shape. The gateway in front of `/wham/usage` is user-configurable through `OPENAI_BASE_URL`, so those are reachable responses. A non-object payload now reads as an empty document and renders as `unavailable`; every field nested inside the payload was already null-tolerant.
+- **A disabled quota window was scored as a full quota.** A window the plan has switched off still reports `used_percent: 0`, so without the `hasUsageWindow` guard it counted as 100% remaining and masked every other account's low quota, and the alert never fired for that user. (#239)
+- **The alert could describe a quota no account had.** The aggregate paired the highest remaining percentage with the earliest reset across different accounts, so a pool could be told it had 60% left and would recover at a time that restores nothing. (#239)
+- **Concurrent processes dropped whole quota checks.** Notification delivery was awaited inside the cross-process state lease, whose retry budget is roughly 660 ms against a 10-second delivery timeout, so a second process exhausted its budget and abandoned a check whose network fetches it had already paid for. Delivery now claims the slot under the lease, delivers outside it, and releases the claim if delivery failed. (#239)
+- **The quota monitor outlived shutdown.** Its only teardown was the `server.instance.disposed` event, so the timer survived `SIGINT`/`SIGTERM` and any host that does not emit it. It now registers with the shared shutdown drain, and it stops polling entirely once it observes the feature switched off, an unsupported platform, or a configuration that can never deliver. (#239, #240)
+- **`quotaNotifications.thresholds: []` was ignored.** An explicitly empty list was replaced by the `[25, 10, 0]` default, so there was no configuration that ran `notifyEveryCheck` on its own. The default now applies only when the key is absent. (#239)
+- **Quota state could leak between projects.** The in-memory threshold state was not keyed by state path, and the path was resolved after the network fetches rather than beside the account load that produced the aggregate, so switching projects mid-check could write one project's thresholds into another project's file. (#239, #240)
+
+### Changed
+- Quota reset times stay on the 24-hour clock. A change to 12-hour formatting would have altered every quota display in the product, left the TUI status line rendering `22:30` where `codex-limits` rendered `10:30 PM`, and forced a 12-hour clock on locales that do not use one. (#239)
+
+### Internal
+- `test/quota-notifications-fetch.test.ts` covers the monitor's default fetch path, which previously had none because every test injected a fake. That gap is how the token-cache ordering defect above reached `main`. (#240)
+- `quotaNotifications` is documented in `docs/development/CONFIG_FIELDS.md`, the notification state file in `AGENTS.md`, and the three new modules in `lib/AGENTS.md`, which the repo treats as a documented contract. (#239)
+
 ## [6.14.4] - 2026-08-30
 
 ### Fixed
