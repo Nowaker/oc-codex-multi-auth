@@ -883,6 +883,24 @@ describe('Plugin Configuration', () => {
 			});
 		});
 
+		it('honors an explicitly empty threshold list', () => {
+			expect(getQuotaNotifications({
+				quotaNotifications: { enabled: true, notifyEveryCheck: true, thresholds: [] },
+			}).thresholds).toEqual([]);
+		});
+
+		it('falls back to the defaults only when thresholds are unset', () => {
+			expect(getQuotaNotifications({
+				quotaNotifications: { enabled: true },
+			}).thresholds).toEqual([25, 10, 0]);
+		});
+
+		it('drops out-of-range thresholds without restoring the defaults', () => {
+			expect(getQuotaNotifications({
+				quotaNotifications: { thresholds: [Number.NaN, 500, -1] },
+			}).thresholds).toEqual([]);
+		});
+
 		it('enables notifications on every successful check', () => {
 			expect(getQuotaNotifications({
 				quotaNotifications: { notifyEveryCheck: true },
