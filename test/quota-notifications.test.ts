@@ -8,10 +8,15 @@ import {
 	aggregateQuotaUsage,
 	createQuotaMonitor,
 	formatQuotaNotification,
-	selectPreferredQuotaWindow,
 	transitionQuotaState,
 	type AccountQuotaSummary,
 } from "../lib/quota-notifications.js";
+import {
+	getQuotaNotificationStatePath,
+	readQuotaNotificationState,
+	updateQuotaNotificationState,
+} from "../lib/quota-notification-state.js";
+import { getCleanupCount } from "../lib/shutdown.js";
 import { setStoragePathDirect } from "../lib/storage/state.js";
 
 function usage(options: {
@@ -19,17 +24,19 @@ function usage(options: {
 	weeklyUsed?: number;
 	fiveHourReset?: number;
 	weeklyReset?: number;
+	fiveHourWindowSeconds?: number;
+	weeklyWindowSeconds?: number;
 }): CodexUsageSummary {
 	return parseCodexUsagePayload({
 		rate_limit: {
 			primary_window: {
 				used_percent: options.fiveHourUsed,
-				limit_window_seconds: 18_000,
+				limit_window_seconds: options.fiveHourWindowSeconds ?? 18_000,
 				reset_at: options.fiveHourReset,
 			},
 			secondary_window: {
 				used_percent: options.weeklyUsed,
-				limit_window_seconds: 604_800,
+				limit_window_seconds: options.weeklyWindowSeconds ?? 604_800,
 				reset_at: options.weeklyReset,
 			},
 		},
@@ -41,7 +48,7 @@ function accountUsage(options: Parameters<typeof usage>[0]): AccountQuotaSummary
 }
 
 describe("quota notification aggregation", () => {
-	it("uses the best remaining quotas and earliest future resets", () => {
+	it("reports the account with the most headroom and that same account's reset", () => {
 		const result = aggregateQuotaUsage(
 			[
 				accountUsage({
@@ -60,15 +67,57 @@ describe("quota notification aggregation", () => {
 			1_000_000,
 		);
 		expect(result).toEqual({
+			// Second account: 60% left, resetting at its own 1_500_000.
 			fiveHour: {
 				remainingPercent: 60,
 				resetAtMs: 1_500_000,
 			},
+			// First account: 70% left, resetting at its own 3_000_000. Taking the
+			// other account's earlier 2_500_000 here would describe a 70% quota
+			// that recovers at a time no account recovers at.
 			weekly: {
 				remainingPercent: 70,
-				resetAtMs: 2_500_000,
+				resetAtMs: 3_000_000,
 			},
 		});
+	});
+
+	it("skips windows the plan has switched off instead of scoring them as full", () => {
+		const result = aggregateQuotaUsage(
+			[
+				// Disabled 5-hour window: reports used_percent 0 with a zero-length
+				// window, which would otherwise read as 100% remaining.
+				accountUsage({
+					fiveHourUsed: 0,
+					fiveHourWindowSeconds: 0,
+					weeklyUsed: 10,
+				}),
+				accountUsage({ fiveHourUsed: 98, weeklyUsed: 20 }),
+			],
+			1_000_000,
+		);
+		expect(result.fiveHour.remainingPercent).toBe(2);
+		expect(result.weekly.remainingPercent).toBe(90);
+	});
+
+	it("reports nothing for a window that is disabled on every account", () => {
+		const result = aggregateQuotaUsage(
+			[accountUsage({ fiveHourUsed: 0, fiveHourWindowSeconds: 0, weeklyUsed: 40 })],
+			1_000_000,
+		);
+		expect(result.fiveHour).toEqual({});
+		expect(result.weekly.remainingPercent).toBe(60);
+	});
+
+	it("prefers the earliest reset when two accounts tie on headroom", () => {
+		const result = aggregateQuotaUsage(
+			[
+				accountUsage({ fiveHourUsed: 50, fiveHourReset: 3_000 }),
+				accountUsage({ fiveHourUsed: 50, fiveHourReset: 1_500 }),
+			],
+			1_000_000,
+		);
+		expect(result.fiveHour).toEqual({ remainingPercent: 50, resetAtMs: 1_500_000 });
 	});
 
 	it("ignores expired reset timestamps", () => {
@@ -98,7 +147,6 @@ describe("quota notification content", () => {
 				resetAtMs: Date.now() + 120_000,
 			},
 		};
-		expect(selectPreferredQuotaWindow(aggregate)?.name).toBe("fiveHour");
 		const lines = formatQuotaNotification(aggregate).split("\n");
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toMatch(/^5h: 8% \| resets .+$/);
@@ -206,6 +254,59 @@ describe("quota threshold transitions", () => {
 		);
 		expect(lowAgain.crossings[0]?.threshold).toBe(25);
 	});
+
+	it("re-arms only when the window rises strictly above the threshold", () => {
+		// A partial recovery to exactly 25 does not re-arm the 25% alert, which
+		// is the documented contract: the window must rise *above* it. The user
+		// was already told about 25 on the way down, and the more severe
+		// thresholds below it still fire normally.
+		const low = transitionQuotaState(
+			undefined,
+			{ fiveHour: { remainingPercent: 20 }, weekly: {} },
+			thresholds,
+		);
+		expect(low.crossings[0]?.threshold).toBe(25);
+
+		const partialRecovery = transitionQuotaState(
+			low.state,
+			{ fiveHour: { remainingPercent: 25 }, weekly: {} },
+			thresholds,
+		);
+		expect(partialRecovery.crossings).toEqual([]);
+
+		const dropAgain = transitionQuotaState(
+			partialRecovery.state,
+			{ fiveHour: { remainingPercent: 20 }, weekly: {} },
+			thresholds,
+		);
+		expect(dropAgain.crossings).toEqual([]);
+
+		const deeper = transitionQuotaState(
+			dropAgain.state,
+			{ fiveHour: { remainingPercent: 9 }, weekly: {} },
+			thresholds,
+		);
+		expect(deeper.crossings[0]?.threshold).toBe(10);
+	});
+
+	it("picks the most severe crossing without assuming the thresholds are sorted", () => {
+		const result = transitionQuotaState(
+			undefined,
+			{ fiveHour: { remainingPercent: 5 }, weekly: {} },
+			[0, 25, 10],
+		);
+		expect(result.crossings[0]?.threshold).toBe(10);
+	});
+
+	it("never alerts when thresholds are explicitly empty", () => {
+		const result = transitionQuotaState(
+			undefined,
+			{ fiveHour: { remainingPercent: 0 }, weekly: { remainingPercent: 0 } },
+			[],
+		);
+		expect(result.crossings).toEqual([]);
+		expect(result.state.fiveHour).toEqual({ lastPercent: 0 });
+	});
 });
 
 describe("quota monitor lifecycle", () => {
@@ -229,6 +330,44 @@ describe("quota monitor lifecycle", () => {
 		monitor.start();
 		await vi.advanceTimersByTimeAsync(10);
 		expect(loadStorage).not.toHaveBeenCalled();
+		monitor.dispose();
+	});
+
+	it("stops rescheduling once it sees the feature switched off", async () => {
+		vi.useFakeTimers();
+		const loadConfig = vi.fn(() => ({
+			enabled: false,
+			intervalMs: 1_000,
+			notifyEveryCheck: false,
+			thresholds: [25, 10, 0],
+		}));
+		const monitor = createQuotaMonitor({ loadConfig, initialDelayMs: 10 });
+
+		monitor.start();
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		// One tick, then no standing timer: a disabled feature must not wake the
+		// host every interval for the life of the process.
+		expect(vi.getTimerCount()).toBe(0);
+		monitor.dispose();
+	});
+
+	it("keeps polling on the configured interval while enabled", async () => {
+		vi.useFakeTimers();
+		const loadStorage = vi.fn().mockResolvedValue(null);
+		const monitor = createQuotaMonitor({
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadStorage,
+			notificationsSupported: () => true,
+			initialDelayMs: 10,
+		});
+
+		monitor.start();
+		await vi.advanceTimersByTimeAsync(10);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.advanceTimersByTimeAsync(1_000);
+
+		expect(loadStorage).toHaveBeenCalledTimes(3);
 		monitor.dispose();
 	});
 
@@ -367,4 +506,127 @@ describe("quota monitor lifecycle", () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
+	it("invalidates the account cache when a refresh rotated a credential", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
+		tempDirectories.push(directory);
+		setStoragePathDirect(join(directory, "accounts.json"));
+		const onCredentialsPersisted = vi.fn();
+		const monitor = createQuotaMonitor({
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadStorage: async () => ({
+				version: 3,
+				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+				activeIndex: 0,
+			}),
+			// A rotation that is durable on disk even though the usage fetch then
+			// fails: the stale cached AccountManager still has to be dropped.
+			fetchSummary: async (_storage, _account, credentialsPersisted) => {
+				credentialsPersisted();
+				return null;
+			},
+			notify: vi.fn().mockResolvedValue(true),
+			notificationsSupported: () => true,
+		});
+
+		await monitor.runNow();
+
+		expect(onCredentialsPersisted).not.toHaveBeenCalled();
+
+		const withCallback = createQuotaMonitor({
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadStorage: async () => ({
+				version: 3,
+				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+				activeIndex: 0,
+			}),
+			fetchSummary: async (_storage, _account, credentialsPersisted) => {
+				credentialsPersisted();
+				return null;
+			},
+			onCredentialsPersisted,
+			notify: vi.fn().mockResolvedValue(true),
+			notificationsSupported: () => true,
+		});
+
+		await withCallback.runNow();
+
+		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
+	});
+
+	it("delivers the notification outside the cross-process state lease", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
+		tempDirectories.push(directory);
+		const storagePath = join(directory, "accounts.json");
+		setStoragePathDirect(storagePath);
+		const statePath = getQuotaNotificationStatePath(storagePath);
+		let leaseWasFree: boolean | undefined;
+
+		const monitor = createQuotaMonitor({
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadStorage: async () => ({
+				version: 3,
+				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+				activeIndex: 0,
+			}),
+			fetchSummary: async () => accountUsage({ fiveHourUsed: 50, weeklyUsed: 50 }),
+			// Stands in for the ~10s osascript call. Another process must be able
+			// to take the lease while this runs.
+			notify: async () => {
+				leaseWasFree = await updateQuotaNotificationState(statePath, (persisted) => ({
+					state: persisted ?? { fiveHour: {}, weekly: {}, updatedAt: 1 },
+					result: true,
+				})).catch(() => false);
+				return true;
+			},
+			notificationsSupported: () => true,
+		});
+
+		await monitor.runNow();
+
+		expect(leaseWasFree).toBe(true);
+	});
+
+	it("re-arms a crossed threshold when delivery fails", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
+		tempDirectories.push(directory);
+		setStoragePathDirect(join(directory, "accounts.json"));
+		const notify = vi.fn().mockResolvedValue(false);
+		const dependencies = {
+			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadStorage: async () => ({
+				version: 3 as const,
+				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+				activeIndex: 0,
+			}),
+			fetchSummary: async () => accountUsage({ fiveHourUsed: 50, weeklyUsed: 80 }),
+			notify,
+			notificationsSupported: () => true,
+			now: () => 1_000,
+		};
+		const monitor = createQuotaMonitor(dependencies);
+
+		await monitor.runNow();
+		await monitor.runNow();
+
+		// Both checks saw weekly at 20%: the first crossing was never delivered,
+		// so the second must try again rather than treat it as already alerted.
+		expect(notify).toHaveBeenCalledTimes(2);
+		expect(await readQuotaNotificationState(getQuotaNotificationStatePath(join(directory, "accounts.json"))))
+			.toMatchObject({ weekly: {}, lastDeliveredAt: undefined });
+	});
+
+	it("tears the timer down through the shared shutdown drain", () => {
+		vi.useFakeTimers();
+		const before = getCleanupCount();
+		const monitor = createQuotaMonitor({
+			loadConfig: () => ({ enabled: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			initialDelayMs: 10,
+		});
+
+		monitor.start();
+		expect(getCleanupCount()).toBe(before + 1);
+
+		monitor.dispose();
+		expect(getCleanupCount()).toBe(before);
+	});
 });

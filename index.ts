@@ -760,7 +760,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			email?: string;
 			accountLabel?: string;
 		};
-		const quotaMonitor = createQuotaMonitor();
 
 		const clearPromptQuotaCache = async (): Promise<void> => {
 			try {
@@ -1661,6 +1660,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
+		// Created here, after `invalidateAccountManagerCache`, because the
+		// monitor refreshes access tokens unattended. A refresh rotates the
+		// single-use refresh token durably on disk, so the cached
+		// AccountManager holding the old one must be dropped or its debounced
+		// save clobbers the rotation (see `reloadCachedAccountManager` above).
+		const quotaMonitor = createQuotaMonitor({
+			onCredentialsPersisted: invalidateAccountManagerCache,
+		});
+
         // Event handler for session recovery and account selection
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
           try {
@@ -1782,9 +1790,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const startupPerProjectAccounts = getPerProjectAccounts(startupPluginConfig);
 	setStoragePath(startupPerProjectAccounts ? process.cwd() : null);
 	await backfillHostOpenAIAuthFromPool();
-	if (process.env.NODE_ENV !== "test" || process.env.TEST_QUOTA_MONITOR === "1") {
-		quotaMonitor.start();
-	}
+	quotaMonitor.start();
 
         return {
                 event: eventHandler,

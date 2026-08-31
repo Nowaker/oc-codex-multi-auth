@@ -213,6 +213,20 @@ vi.mock("../lib/auto-update-checker.js", () => ({
 	checkAndNotify: vi.fn(async () => {}),
 }));
 
+const { quotaMonitorMock } = vi.hoisted(() => ({
+	quotaMonitorMock: {
+		start: vi.fn(),
+		dispose: vi.fn(),
+		runNow: vi.fn(async () => {}),
+	},
+}));
+
+// The factory is a plain function, not a `vi.fn`, so the `resetAllMocks` in the
+// fetch-handler suite cannot reset it to returning `undefined`.
+vi.mock("../lib/quota-notifications.js", () => ({
+	createQuotaMonitor: () => quotaMonitorMock,
+}));
+
 vi.mock("../lib/context-overflow.js", () => ({
 	handleContextOverflow: vi.fn(async () => ({ handled: false })),
 }));
@@ -3562,6 +3576,20 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
 		await plugin.event({ event: { type: "account.select", properties: { index: "not-a-number" } } });
+	});
+
+	it("starts the quota monitor and disposes it when the server instance is disposed", async () => {
+		const mockClient = createMockClient();
+
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+
+		expect(quotaMonitorMock.start).toHaveBeenCalled();
+		expect(quotaMonitorMock.dispose).not.toHaveBeenCalled();
+
+		await plugin.event({ event: { type: "server.instance.disposed" } });
+
+		expect(quotaMonitorMock.dispose).toHaveBeenCalledOnce();
 	});
 
 	it("handles storage errors in codex-switch", async () => {

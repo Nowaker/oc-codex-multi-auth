@@ -21,7 +21,7 @@ describe("quota notification state", () => {
 		directory = await fs.mkdtemp(join(tmpdir(), "quota-state-"));
 		const statePath = join(directory, "state.json");
 		const state = {
-			fiveHour: { lastPercent: 20, activeThreshold: 25 },
+			fiveHour: { lastPercent: 20 },
 			weekly: { lastPercent: 50 },
 			lastDeliveredAt: 100,
 			updatedAt: 123,
@@ -34,6 +34,27 @@ describe("quota notification state", () => {
 
 		expect(result).toBe("written");
 		expect(await readQuotaNotificationState(statePath)).toEqual(state);
+	});
+
+	it("keeps a state file written by an older version that carried activeThreshold", async () => {
+		directory = await fs.mkdtemp(join(tmpdir(), "quota-state-"));
+		const statePath = join(directory, "state.json");
+		await fs.writeFile(
+			statePath,
+			JSON.stringify({
+				fiveHour: { lastPercent: 20, activeThreshold: 25 },
+				weekly: { lastPercent: 50, activeThreshold: 999 },
+				updatedAt: 123,
+			}),
+			"utf-8",
+		);
+
+		expect(await readQuotaNotificationState(statePath)).toEqual({
+			fiveHour: { lastPercent: 20 },
+			weekly: { lastPercent: 50 },
+			lastDeliveredAt: undefined,
+			updatedAt: 123,
+		});
 	});
 
 	it("rejects the obsolete shared-band state shape", async () => {

@@ -6,8 +6,13 @@ import { renameWithWindowsRetry } from "./storage/atomic-write.js";
 import { logDebug, logWarn } from "./logger.js";
 
 export interface QuotaWindowNotificationState {
+	/**
+	 * The remaining-percent reading this window was last seen at. It is the
+	 * only per-window state: which threshold is "armed" is derived from it, so
+	 * storing that separately would let a corrupt extra field invalidate an
+	 * otherwise usable file.
+	 */
 	lastPercent?: number;
-	activeThreshold?: number;
 }
 
 export interface QuotaNotificationState {
@@ -25,7 +30,6 @@ function parseWindowState(value: unknown): QuotaWindowNotificationState | undefi
 	if (typeof value !== "object" || value === null) return undefined;
 	const record = value as Record<string, unknown>;
 	const lastPercent = record.lastPercent;
-	const activeThreshold = record.activeThreshold;
 	if (
 		lastPercent !== undefined &&
 		(typeof lastPercent !== "number" ||
@@ -35,16 +39,9 @@ function parseWindowState(value: unknown): QuotaWindowNotificationState | undefi
 	) {
 		return undefined;
 	}
-	if (
-		activeThreshold !== undefined &&
-		(typeof activeThreshold !== "number" ||
-			!Number.isFinite(activeThreshold) ||
-			activeThreshold < 0 ||
-			activeThreshold > 100)
-	) {
-		return undefined;
-	}
-	return { lastPercent, activeThreshold } as QuotaWindowNotificationState;
+	// Older files may carry an `activeThreshold` key. It is ignored rather than
+	// rejected so an upgrade does not discard a usable state file.
+	return { lastPercent } as QuotaWindowNotificationState;
 }
 
 function parseState(value: unknown): QuotaNotificationState | undefined {
