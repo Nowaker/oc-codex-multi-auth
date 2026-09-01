@@ -94,7 +94,8 @@ function aggregateWindow(
 		const window = select(accountSummary.usage);
 		if (!hasUsageWindow(window)) continue;
 		const remaining = getUsageLeftPercent(window.usedPercent);
-		if (remaining !== undefined && (remainingPercent === undefined || remaining > remainingPercent)) {
+		if (remaining === undefined) continue;
+		if (remainingPercent === undefined || remaining > remainingPercent) {
 			remainingPercent = remaining;
 		}
 		if (

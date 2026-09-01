@@ -118,6 +118,17 @@ describe("quota notification aggregation", () => {
 		expect(result.fiveHour).toEqual({ remainingPercent: 80, resetAtMs: 1_500_000 });
 	});
 
+	it("ignores reset timestamps from windows without valid usage", () => {
+		const result = aggregateQuotaUsage(
+			[
+				accountUsage({ fiveHourUsed: 50, fiveHourReset: 3_000 }),
+				accountUsage({ fiveHourReset: 1_500 }),
+			],
+			1_000_000,
+		);
+		expect(result.fiveHour).toEqual({ remainingPercent: 50, resetAtMs: 3_000_000 });
+	});
+
 	it("ignores expired reset timestamps", () => {
 		const result = aggregateQuotaUsage(
 			[accountUsage({
