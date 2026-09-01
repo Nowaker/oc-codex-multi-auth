@@ -48,7 +48,7 @@ function accountUsage(options: Parameters<typeof usage>[0]): AccountQuotaSummary
 }
 
 describe("quota notification aggregation", () => {
-	it("reports the account with the most headroom and that same account's reset", () => {
+	it("reports the most headroom and earliest reset independently", () => {
 		const result = aggregateQuotaUsage(
 			[
 				accountUsage({
@@ -67,17 +67,15 @@ describe("quota notification aggregation", () => {
 			1_000_000,
 		);
 		expect(result).toEqual({
-			// Second account: 60% left, resetting at its own 1_500_000.
+			// Second account has both the best quota and earliest reset.
 			fiveHour: {
 				remainingPercent: 60,
 				resetAtMs: 1_500_000,
 			},
-			// First account: 70% left, resetting at its own 3_000_000. Taking the
-			// other account's earlier 2_500_000 here would describe a 70% quota
-			// that recovers at a time no account recovers at.
+			// First account has the best quota; second account resets first.
 			weekly: {
 				remainingPercent: 70,
-				resetAtMs: 3_000_000,
+				resetAtMs: 2_500_000,
 			},
 		});
 	});
@@ -109,15 +107,15 @@ describe("quota notification aggregation", () => {
 		expect(result.weekly.remainingPercent).toBe(60);
 	});
 
-	it("prefers the earliest reset when two accounts tie on headroom", () => {
+	it("selects the earliest reset regardless of headroom", () => {
 		const result = aggregateQuotaUsage(
 			[
-				accountUsage({ fiveHourUsed: 50, fiveHourReset: 3_000 }),
+				accountUsage({ fiveHourUsed: 20, fiveHourReset: 3_000 }),
 				accountUsage({ fiveHourUsed: 50, fiveHourReset: 1_500 }),
 			],
 			1_000_000,
 		);
-		expect(result.fiveHour).toEqual({ remainingPercent: 50, resetAtMs: 1_500_000 });
+		expect(result.fiveHour).toEqual({ remainingPercent: 80, resetAtMs: 1_500_000 });
 	});
 
 	it("ignores expired reset timestamps", () => {

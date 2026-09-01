@@ -79,49 +79,34 @@ type MonitorDependencies = {
 };
 
 /**
- * Reduce one quota window across accounts to the single account that has the
- * most room left, reporting that account's own reset time.
- *
- * Two rules matter here:
- *
- *   - A window the plan has switched off is skipped via {@link hasUsageWindow}.
- *     Such a window still reports `used_percent: 0`, so counting it would score
- *     a disabled window as 100% remaining and mask every other account.
- *   - The percentage and the reset time are taken from the *same* account. A
- *     max-percent/min-reset pair describes a quota no account actually has.
+ * Reduce one quota window across accounts to the most remaining quota and the
+ * earliest reset independently. A disabled window is skipped because it can
+ * report `used_percent: 0` and would otherwise mask active windows as 100% full.
  */
 function aggregateWindow(
 	summaries: readonly AccountQuotaSummary[],
 	select: (summary: CodexUsageSummary) => CodexUsageSummary["primary"],
 	now: number,
 ): AggregatedQuotaWindow {
-	let best: { remainingPercent: number; resetAtMs?: number } | undefined;
+	let remainingPercent: number | undefined;
+	let resetAtMs: number | undefined;
 	for (const accountSummary of summaries) {
 		const window = select(accountSummary.usage);
 		if (!hasUsageWindow(window)) continue;
 		const remaining = getUsageLeftPercent(window.usedPercent);
-		if (remaining === undefined) continue;
-		const resetAtMs =
+		if (remaining !== undefined && (remainingPercent === undefined || remaining > remainingPercent)) {
+			remainingPercent = remaining;
+		}
+		if (
 			typeof window.resetAtMs === "number" &&
 			Number.isFinite(window.resetAtMs) &&
-			window.resetAtMs > now
-				? window.resetAtMs
-				: undefined;
-		if (best === undefined || remaining > best.remainingPercent) {
-			best = { remainingPercent: remaining, resetAtMs };
-			continue;
-		}
-		// Tie on headroom: prefer the account that recovers first, and prefer a
-		// known reset over an unknown one.
-		if (
-			remaining === best.remainingPercent &&
-			resetAtMs !== undefined &&
-			(best.resetAtMs === undefined || resetAtMs < best.resetAtMs)
+			window.resetAtMs > now &&
+			(resetAtMs === undefined || window.resetAtMs < resetAtMs)
 		) {
-			best = { remainingPercent: remaining, resetAtMs };
+			resetAtMs = window.resetAtMs;
 		}
 	}
-	return best ? { remainingPercent: best.remainingPercent, resetAtMs: best.resetAtMs } : {};
+	return { remainingPercent, resetAtMs };
 }
 
 export function aggregateQuotaUsage(

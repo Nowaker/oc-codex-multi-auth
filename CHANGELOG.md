@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Quota notifications now show the pool's best availability.** The 5-hour and weekly lines independently select the highest remaining percentage and earliest reset across enabled accounts, rather than showing the reset belonging to the account with the highest remaining percentage.
+
 ## [6.15.0] - 2026-08-31
 
 ### Added
