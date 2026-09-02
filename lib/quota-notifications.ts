@@ -32,8 +32,20 @@ const MAX_CONCURRENCY = 2;
 export type QuotaWindowName = "fiveHour" | "weekly";
 
 export interface AggregatedQuotaWindow {
+	/** Headroom of the enabled account with the most room left in this window. */
 	remainingPercent?: number;
+	/**
+	 * Reset time of the account `remainingPercent` was taken from. Always the
+	 * same account, so the pair describes a quota one account actually has.
+	 */
 	resetAtMs?: number;
+	/**
+	 * Earliest reset across every enabled account with usable usage, set only
+	 * when some other account recovers before {@link resetAtMs}. Reported as its
+	 * own value rather than folded into `resetAtMs`, because a max-percent /
+	 * min-reset pair describes a quota no account holds.
+	 */
+	earliestResetAtMs?: number;
 }
 
 export interface AggregatedQuotaUsage {
@@ -45,7 +57,10 @@ export interface QuotaThresholdCrossing {
 	window: QuotaWindowName;
 	threshold: number;
 	remainingPercent: number;
+	/** Reset of the account `remainingPercent` came from; never a different one. */
 	resetAtMs?: number;
+	/** Earliest reset in the pool, when it is not `resetAtMs`. */
+	earliestResetAtMs?: number;
 }
 
 export interface AccountQuotaSummary {
@@ -80,15 +95,21 @@ type MonitorDependencies = {
 
 /**
  * Reduce one quota window across accounts to the single account that has the
- * most room left, reporting that account's own reset time.
+ * most room left, reporting that account's own reset time, plus the earliest
+ * reset anywhere in the pool.
  *
- * Two rules matter here:
+ * Three rules matter here:
  *
  *   - A window the plan has switched off is skipped via {@link hasUsageWindow}.
  *     Such a window still reports `used_percent: 0`, so counting it would score
  *     a disabled window as 100% remaining and mask every other account.
- *   - The percentage and the reset time are taken from the *same* account. A
- *     max-percent/min-reset pair describes a quota no account actually has.
+ *   - `remainingPercent` and `resetAtMs` are taken from the *same* account. A
+ *     max-percent/min-reset pair describes a quota no account actually has: the
+ *     reader waits for a reset that belongs to a different, exhausted account.
+ *   - The pool's earliest reset is still worth reporting — it is when capacity
+ *     next returns — so it is carried separately in `earliestResetAtMs` and
+ *     rendered under its own label. Only windows with usable usage contribute,
+ *     so a window with a reset but no readable `used_percent` cannot supply one.
  */
 function aggregateWindow(
 	summaries: readonly AccountQuotaSummary[],
@@ -96,6 +117,7 @@ function aggregateWindow(
 	now: number,
 ): AggregatedQuotaWindow {
 	let best: { remainingPercent: number; resetAtMs?: number } | undefined;
+	let earliestResetAtMs: number | undefined;
 	for (const accountSummary of summaries) {
 		const window = select(accountSummary.usage);
 		if (!hasUsageWindow(window)) continue;
@@ -107,6 +129,12 @@ function aggregateWindow(
 			window.resetAtMs > now
 				? window.resetAtMs
 				: undefined;
+		if (
+			resetAtMs !== undefined &&
+			(earliestResetAtMs === undefined || resetAtMs < earliestResetAtMs)
+		) {
+			earliestResetAtMs = resetAtMs;
+		}
 		if (best === undefined || remaining > best.remainingPercent) {
 			best = { remainingPercent: remaining, resetAtMs };
 			continue;
@@ -121,7 +149,16 @@ function aggregateWindow(
 			best = { remainingPercent: remaining, resetAtMs };
 		}
 	}
-	return best ? { remainingPercent: best.remainingPercent, resetAtMs: best.resetAtMs } : {};
+	if (!best) return {};
+	return {
+		remainingPercent: best.remainingPercent,
+		resetAtMs: best.resetAtMs,
+		// Omitted when it is the same instant the best account already reports,
+		// so the message carries one reset unless the pool really has two.
+		...(earliestResetAtMs !== undefined && earliestResetAtMs !== best.resetAtMs
+			? { earliestResetAtMs }
+			: {}),
+	};
 }
 
 export function aggregateQuotaUsage(
@@ -177,6 +214,7 @@ export function transitionQuotaState(
 			threshold: fiveHour.threshold,
 			remainingPercent: usage.fiveHour.remainingPercent,
 			resetAtMs: usage.fiveHour.resetAtMs,
+			earliestResetAtMs: usage.fiveHour.earliestResetAtMs,
 		});
 	}
 	if (weekly.threshold !== undefined && usage.weekly.remainingPercent !== undefined) {
@@ -185,6 +223,7 @@ export function transitionQuotaState(
 			threshold: weekly.threshold,
 			remainingPercent: usage.weekly.remainingPercent,
 			resetAtMs: usage.weekly.resetAtMs,
+			earliestResetAtMs: usage.weekly.earliestResetAtMs,
 		});
 	}
 	return {
@@ -198,14 +237,21 @@ export function transitionQuotaState(
 	};
 }
 
+/**
+ * Render one window. The percentage and the `resets` value come from one
+ * account; the pool's earlier reset, when there is one, gets its own clause so
+ * nothing reads as "this percentage recovers then".
+ */
+function formatQuotaWindow(label: string, window: AggregatedQuotaWindow): string {
+	if (window.remainingPercent === undefined) return `${label}: unavailable`;
+	const reset = formatUsageReset(window.resetAtMs) ?? "unavailable";
+	const earliest = formatUsageReset(window.earliestResetAtMs);
+	const poolClause = earliest ? ` | another account resets ${earliest}` : "";
+	return `${label}: ${window.remainingPercent}% | resets ${reset}${poolClause}`;
+}
+
 export function formatQuotaNotification(usage: AggregatedQuotaUsage): string {
-	const fiveHourLine = usage.fiveHour.remainingPercent !== undefined
-		? `5h: ${usage.fiveHour.remainingPercent}% | resets ${formatUsageReset(usage.fiveHour.resetAtMs) ?? "unavailable"}`
-		: "5h: unavailable";
-	const weeklyLine = usage.weekly.remainingPercent !== undefined
-		? `Weekly: ${usage.weekly.remainingPercent}% | resets ${formatUsageReset(usage.weekly.resetAtMs) ?? "unavailable"}`
-		: "Weekly: unavailable";
-	return `${fiveHourLine}\n${weeklyLine}`;
+	return `${formatQuotaWindow("5h", usage.fiveHour)}\n${formatQuotaWindow("Weekly", usage.weekly)}`;
 }
 
 interface DeliveryClaim {

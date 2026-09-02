@@ -304,12 +304,13 @@ The feature is disabled by default.
 
 Each line reports the enabled account with the most headroom in that window,
 together with that same account's reset time, so the pair always describes a
-quota that one account actually has. Windows a plan has switched off are
-skipped rather than counted as full. Account identities are omitted for
-readability and lock-screen privacy:
+quota that one account actually has. When a different account recovers sooner,
+that reset is appended under its own label rather than folded into the first
+one. Windows a plan has switched off are skipped rather than counted as full.
+Account identities are omitted for readability and lock-screen privacy:
 
 ```text
-5h: 10% | resets 22:30
+5h: 10% | resets 02:00 | another account resets 22:30
 Weekly: 72% | resets 22:30 on Aug 30
 ```
 
