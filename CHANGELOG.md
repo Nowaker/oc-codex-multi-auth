@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- **Quota notifications now surface the pool's earliest reset.** Each 5-hour and weekly line still pairs the highest remaining percentage with that same account's reset, so the pair describes a quota one account actually has. When a different account recovers sooner, that reset is appended as `another account resets ...` rather than replacing the paired one, which would have described a quota no account holds.
-
 ## [6.15.0] - 2026-08-31
 
 ### Added
