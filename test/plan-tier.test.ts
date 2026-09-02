@@ -81,4 +81,28 @@ describe("formatPlanType", () => {
 	it("passes an unrecognized plan type through verbatim rather than guessing", () => {
 		expect(formatPlanType("some_future_plan")).toBe("some_future_plan");
 	});
+
+	// `plan_type` comes off /wham/usage, which fetchCodexUsage casts without
+	// validating and which OPENAI_BASE_URL lets a user put a gateway in front
+	// of; `x-codex-plan-type` is a header from the same place. Every renderer
+	// interpolates the result into a line, and codex-limits and the TUI quota
+	// pane have no width bound, so a control character travelled straight
+	// through: a newline split a codex-list row in two and the second half read
+	// as a line the tool had emitted.
+	it("strips control characters out of an unrecognized plan type", () => {
+		const LF = String.fromCharCode(10);
+		const ESC = String.fromCharCode(27);
+		expect(formatPlanType(`pro${LF}Plan: Enterprise`)).toBe("pro Plan: Enterprise");
+		expect(formatPlanType(`${ESC}[31mred${ESC}[0m`)).toBe("[31mred [0m");
+		expect(formatPlanType(`a${String.fromCharCode(0)}b`)).toBe("a b");
+		expect(formatPlanType(LF)).toBeUndefined();
+	});
+
+	it("bounds an unrecognized plan type so an unbounded renderer cannot be flooded", () => {
+		const named = formatPlanType("x".repeat(4096));
+		expect(named).toBeDefined();
+		expect(named!.length).toBeLessThanOrEqual(32);
+		// The longest slug it knows is 27 chars, so nothing real is truncated.
+		expect(formatPlanType("self_serve_business_prolite")).toBe("Business Premium");
+	});
 });
