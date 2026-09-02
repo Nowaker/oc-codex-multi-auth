@@ -26,15 +26,11 @@ vi.mock("@opencode-ai/plugin/tool", () => {
 });
 
 vi.mock("../lib/auth/auth.js", async () => {
-	// parseAuthorizationInput is pure, so the manual-flow tests run the real
-	// classifier rather than a hand-written stand-in. A stand-in cannot be
-	// type-checked against the module and would silently drift from its
-	// `source` contract, which is what index.ts branches on.
 	const actual = await vi.importActual<typeof import("../lib/auth/auth.js")>(
 		"../lib/auth/auth.js",
 	);
-
 	return {
+		...actual,
 		createAuthorizationFlow: vi.fn(async () => ({
 			pkce: { verifier: "test-verifier", challenge: "test-challenge" },
 			state: "test-state",
@@ -47,7 +43,6 @@ vi.mock("../lib/auth/auth.js", async () => {
 			expires: Date.now() + 3600_000,
 			idToken: "id-token",
 		})),
-		parseAuthorizationInput: vi.fn(actual.parseAuthorizationInput),
 		decodeJWT: vi.fn((token: string) => {
 			try {
 				const payload = token.split(".")[1];
@@ -61,7 +56,6 @@ vi.mock("../lib/auth/auth.js", async () => {
 				return null;
 			}
 		}),
-		REDIRECT_URI: "http://localhost:1455/auth/callback",
 	};
 });
 
@@ -106,7 +100,7 @@ vi.mock("../lib/refresh-queue.js", () => ({
 }));
 
 vi.mock("../lib/auth/browser.js", () => ({
-	openBrowserUrl: vi.fn(),
+	openBrowserUrl: vi.fn(() => true),
 }));
 
 vi.mock("../lib/auth/server.js", () => ({
@@ -744,16 +738,9 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(plugin.tool["codex-import"]).toBeDefined();
 		});
 
-		it("has three auth methods", () => {
-			expect(plugin.auth.methods).toHaveLength(3);
-			expect(plugin.auth.methods[0].label).toBe("Codex OAuth (ChatGPT Plus/Pro)");
-			expect(plugin.auth.methods[1].label).toBe("Codex OAuth (Device Code)");
-			expect(plugin.auth.methods[2].label).toBe("Codex OAuth (Manual URL Paste)");
-		});
-
 		it("rejects manual OAuth callbacks with mismatched state", async () => {
 			const authModule = await import("../lib/auth/auth.js");
-			const manualMethod = plugin.auth.methods[2] as unknown as {
+			const manualMethod = plugin.auth.methods[3] as unknown as {
 				authorize: () => Promise<{
 					validate: (input: string) => string | undefined;
 					callback: (input: string) => Promise<{ type: string; reason?: string; message?: string }>;
@@ -767,31 +754,6 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await flow.callback(invalidInput);
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("invalid_response");
-			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
-		});
-
-		it("tells the user to paste the callback URL when only a bare code is supplied", async () => {
-			const authModule = await import("../lib/auth/auth.js");
-			const manualMethod = plugin.auth.methods[2] as unknown as {
-				authorize: () => Promise<{
-					validate: (input: string) => string | undefined;
-					callback: (input: string) => Promise<{ type: string; reason?: string }>;
-				}>;
-			};
-
-			const flow = await manualMethod.authorize();
-			// A bare code carries no state, so it cannot be bound to this login
-			// attempt. The message has to name the missing part, not just repeat
-			// the generic "missing OAuth state" wording used for callback input.
-			const bareCode = "abc123";
-
-			const message = flow.validate(bareCode);
-			expect(message).toContain("bare authorization code");
-			expect(message).toContain("state");
-			expect(flow.validate("state=test-state")).toContain("No authorization code found");
-
-			const result = await flow.callback(bareCode);
-			expect(result.type).toBe("failed");
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 
@@ -822,7 +784,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("completes device code login and persists the account", async () => {
 			const deviceModule = await import("../lib/auth/device-code.js");
-			const deviceMethod = plugin.auth.methods[1] as unknown as {
+			const deviceMethod = plugin.auth.methods[2] as unknown as {
 				authorize: () => Promise<{
 					instructions: string;
 					callback: () => Promise<{ type: string }>;
@@ -843,6 +805,293 @@ describe("OpenAIOAuthPlugin", () => {
 				accessToken: "device-access-token",
 				accountId: "acc-1",
 			});
+		});
+	});
+
+	describe("four-method OAuth contract", () => {
+		it("plugin.auth.methods has four entries in the four-method order", () => {
+			expect(plugin.auth.methods).toHaveLength(4);
+			expect(plugin.auth.methods[0].label).toBe("Codex OAuth (ChatGPT Plus/Pro)");
+			expect(plugin.auth.methods[1].label).toBe("Codex OAuth (Open URL Manually)");
+			expect(plugin.auth.methods[2].label).toBe("Codex OAuth (Device Code)");
+			expect(plugin.auth.methods[3].label).toBe("Codex OAuth (Manual URL Paste)");
+		});
+
+		it("noBrowser input returns the paste flow instead of launching a browser", async () => {
+			// Programmatic input from a headless caller or script. Ignoring it
+			// would enter the multi-account loop, try to launch a browser, and
+			// bind port 1455 — the opposite of what was asked for.
+			const browserModule = await import("../lib/auth/browser.js");
+			vi.mocked(browserModule.openBrowserUrl).mockClear();
+			const oauthMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{
+					url: string;
+					method: string;
+					validate?: (input: string) => string | undefined;
+				}>;
+			};
+
+			for (const inputs of [{ noBrowser: "true" }, { "no-browser": "true" }]) {
+				const flow = await oauthMethod.authorize(inputs);
+				expect(flow.method).toBe("code");
+				expect(flow.url.length).toBeGreaterThan(0);
+				expect(vi.mocked(browserModule.openBrowserUrl)).not.toHaveBeenCalled();
+			}
+		});
+
+		it("manual-browser method returns a non-empty URL with method:auto and does not open the default browser", async () => {
+			const browserModule = await import("../lib/auth/browser.js");
+			vi.mocked(browserModule.openBrowserUrl).mockClear();
+			const manualBrowserMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					url: string;
+					method: string;
+				}>;
+			};
+			const flow = await manualBrowserMethod.authorize();
+			expect(flow.url.length).toBeGreaterThan(0);
+			expect(flow.method).toBe("auto");
+			expect(vi.mocked(browserModule.openBrowserUrl)).not.toHaveBeenCalled();
+		});
+
+		it("manual-browser method awaits the callback server, exchanges the code, and persists a successful account", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const serverModule = await import("../lib/auth/server.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+			vi.mocked(serverModule.startLocalOAuthServer).mockClear();
+			const manualBrowserMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					callback: () => Promise<{ type: string }>;
+				}>;
+			};
+			const flow = await manualBrowserMethod.authorize();
+			const result = await flow.callback();
+			expect(result.type).toBe("success");
+			expect(vi.mocked(serverModule.startLocalOAuthServer)).toHaveBeenCalled();
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
+				"auth-code",
+				"test-verifier",
+				"http://localhost:1455/auth/callback",
+			);
+			expect(mockStorage.accounts).toHaveLength(1);
+		});
+
+		it("manual-browser method with unavailable listener returns a failed callback naming Device Code and Manual URL Paste and never opens the browser", async () => {
+			const serverModule = await import("../lib/auth/server.js");
+			vi.mocked(serverModule.startLocalOAuthServer).mockResolvedValueOnce({
+				ready: false,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => null),
+				port: 1455,
+			});
+			const browserModule = await import("../lib/auth/browser.js");
+			vi.mocked(browserModule.openBrowserUrl).mockClear();
+			const manualBrowserMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					url: string;
+					callback: () => Promise<{ type: string; message?: string }>;
+				}>;
+			};
+			const flow = await manualBrowserMethod.authorize();
+			expect(vi.mocked(browserModule.openBrowserUrl)).not.toHaveBeenCalled();
+			const result = await flow.callback();
+			expect(result.type).toBe("failed");
+			expect(result.message).toContain("Device Code");
+			expect(result.message).toContain("Manual URL Paste");
+		});
+
+		it("manual paste rejects a raw authorization code with no state", async () => {
+			// The state comparison is this flow's only in-plugin binding between
+			// the pasted value and this login attempt. Accepting a bare code
+			// would delegate that binding entirely to the authorization server's
+			// PKCE enforcement and hand anything a user was talked into pasting
+			// to the exchange with this attempt's verifier.
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+			const manualMethod = plugin.auth.methods[3] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string }>;
+				}>;
+			};
+			const flow = await manualMethod.authorize();
+			const rawCode = "abc123";
+			expect(flow.validate(rawCode)).toContain("state parameter");
+			const result = await flow.callback(rawCode);
+			expect(result.type).toBe("failed");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("manual paste accepts a full callback URL with matching state and calls exchange", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+			const manualMethod = plugin.auth.methods[3] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string }>;
+				}>;
+			};
+			const flow = await manualMethod.authorize();
+			const validUrl = "http://localhost:1455/auth/callback?code=abc123&state=test-state";
+			expect(flow.validate(validUrl)).toBeUndefined();
+			const result = await flow.callback(validUrl);
+			expect(result.type).toBe("success");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
+				"abc123",
+				"test-verifier",
+				"http://localhost:1455/auth/callback",
+			);
+		});
+
+		it("manual paste with mismatched supplied state fails validation and callback without calling exchange", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+			const manualMethod = plugin.auth.methods[3] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string; reason?: string }>;
+				}>;
+			};
+			const flow = await manualMethod.authorize();
+			const mismatchedUrl = "http://localhost:1455/auth/callback?code=abc123&state=wrong-state";
+			expect(flow.validate(mismatchedUrl)).toContain("state mismatch");
+			const result = await flow.callback(mismatchedUrl);
+			expect(result.type).toBe("failed");
+			expect(result.reason).toBe("invalid_response");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			["full callback URL with no state", "http://localhost:1455/auth/callback?code=abc123"],
+			["full callback URL with empty state", "http://localhost:1455/auth/callback?code=abc123&state="],
+			["bare query with no state", "code=abc123"],
+			["bare query with empty state", "code=abc123&state="],
+			["bare fragment with no state", "#code=abc123"],
+			["code#state with empty state", "abc123#"],
+		])(
+			"manual paste rejects structured input carrying no usable state (%s) before exchange",
+			async (_label, input) => {
+				// Given a manual-paste flow and structured input that omits its state
+				const authModule = await import("../lib/auth/auth.js");
+				vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+				const manualMethod = plugin.auth.methods[3] as unknown as {
+					authorize: () => Promise<{
+						validate: (input: string) => string | undefined;
+						callback: (input: string) => Promise<{ type: string; reason?: string }>;
+					}>;
+				};
+				const flow = await manualMethod.authorize();
+
+				// When it is validated and submitted
+				const validation = flow.validate(input);
+				const result = await flow.callback(input);
+
+				// Then both gates refuse it and no exchange is attempted
+				expect(validation).toBeDefined();
+				expect(result.type).toBe("failed");
+				expect(result.reason).toBe("invalid_response");
+				expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+			},
+		);
+
+		it("manual paste accepts a callback URL in the provider's own parameter shape", async () => {
+			// Given a manual-paste flow and the URL shape the provider actually
+			// redirects to: an opaque dotted code, a scope parameter between code
+			// and state, and plus-encoded scope values
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+			const manualMethod = plugin.auth.methods[3] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string }>;
+				}>;
+			};
+			const flow = await manualMethod.authorize();
+			const providerCode = "ac_ZmFrZS1hdXRoLWNvZGU.ZmFrZS1zaWduYXR1cmU";
+			const providerUrl =
+				`http://localhost:1455/auth/callback?code=${providerCode}` +
+				`&scope=openid+profile+email+offline_access&state=test-state`;
+
+			// When it is validated and submitted
+			const validation = flow.validate(providerUrl);
+			const result = await flow.callback(providerUrl);
+
+			// Then the unrelated scope parameter does not defeat the state gate
+			expect(validation).toBeUndefined();
+			expect(result.type).toBe("success");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
+				providerCode,
+				"test-verifier",
+				"http://localhost:1455/auth/callback",
+			);
+		});
+
+		it("manual paste rejects that same provider code pasted on its own", async () => {
+			// Given a manual-paste flow and only the opaque code from that callback
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+			const manualMethod = plugin.auth.methods[3] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string }>;
+				}>;
+			};
+			const flow = await manualMethod.authorize();
+			const providerCode = "ac_ZmFrZS1hdXRoLWNvZGU.ZmFrZS1zaWduYXR1cmU";
+
+			// When it is validated and submitted with no state alongside it
+			const validation = flow.validate(providerCode);
+			const result = await flow.callback(providerCode);
+
+			// Then it is refused: a dotted opaque code is still a code with no
+			// state, and PKCE alone is not this flow's binding to the attempt.
+			expect(validation).toContain("state parameter");
+			expect(result.type).toBe("failed");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("manual paste accepts code#state whose state matches the login attempt", async () => {
+			// Given a manual-paste flow and code#state input for this attempt
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+			const manualMethod = plugin.auth.methods[3] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string }>;
+				}>;
+			};
+			const flow = await manualMethod.authorize();
+
+			// When it is validated and submitted
+			const validation = flow.validate("abc123#test-state");
+			const result = await flow.callback("abc123#test-state");
+
+			// Then it exchanges with this attempt's verifier and redirect URI
+			expect(validation).toBeUndefined();
+			expect(result.type).toBe("success");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
+				"abc123",
+				"test-verifier",
+				"http://localhost:1455/auth/callback",
+			);
+		});
+
+		it("manual paste with no code returns invalid_response without calling exchange", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
+			const manualMethod = plugin.auth.methods[3] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string; reason?: string }>;
+				}>;
+			};
+			const flow = await manualMethod.authorize();
+			const stateOnly = "state=test-state";
+			expect(flow.validate(stateOnly)).toBeDefined();
+			const result = await flow.callback(stateOnly);
+			expect(result.type).toBe("failed");
+			expect(result.reason).toBe("invalid_response");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 	});
 

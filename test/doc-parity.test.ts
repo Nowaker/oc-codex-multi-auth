@@ -143,6 +143,10 @@ function normalizeRepoPathReference(rawValue: string): string | null {
 	return null;
 }
 
+function findMissingLabels(content: string, labels: readonly string[]): string[] {
+	return labels.filter((label) => !content.includes(label));
+}
+
 describe("runtime documentation parity", () => {
 	it("keeps the documented stateless request contract aligned with the runtime transform", async () => {
 		const requestBody: RequestBody = {
@@ -611,6 +615,59 @@ describe("runtime documentation parity", () => {
 		}
 
 		expect(hits).toEqual([]);
+	});
+
+	it("keeps auth-method labels and count in docs aligned with AUTH_LABELS", async () => {
+		const { AUTH_LABELS } = await import("../lib/constants.js");
+		const expectedLabels = [
+			AUTH_LABELS.OAUTH,
+			AUTH_LABELS.OAUTH_MANUAL_BROWSER,
+			AUTH_LABELS.OAUTH_DEVICE_CODE,
+			AUTH_LABELS.OAUTH_MANUAL,
+		];
+
+		const gettingStarted = readRepoFile("docs/getting-started.md");
+		for (const label of expectedLabels) {
+			expect(gettingStarted, `missing label in getting-started.md: ${label}`).toContain(label);
+		}
+		expect(gettingStarted).toContain("four");
+		expect(gettingStarted).not.toContain("**three**");
+
+		const archPublic = readRepoFile("docs/architecture.md");
+		expect(archPublic, "docs/architecture.md must say four OAuth labels only").toContain(
+			"four OAuth labels only",
+		);
+		expect(archPublic).not.toContain("three OAuth labels only");
+		expect(archPublic).toContain("open URL manually");
+		// "manual URL paste", not "URL/code": the flow requires the full
+		// callback URL, because its `state` parameter is the only thing binding
+		// the pasted value to the login attempt.
+		expect(archPublic).toContain("manual URL paste");
+		expect(archPublic).not.toContain("manual URL/code paste");
+
+		const archDev = readRepoFile("docs/development/ARCHITECTURE.md");
+		expect(
+			archDev,
+			"docs/development/ARCHITECTURE.md must include open-URL-manually callback",
+		).toContain("open-URL-manually callback");
+		expect(archDev).toContain("manual URL paste");
+		expect(archDev).not.toContain("manual URL/code paste");
+		expect(archDev).not.toContain("browser callback, device code, manual URL paste");
+
+		const faq = readRepoFile("docs/faq.md");
+		expect(faq, "docs/faq.md must not claim three OAuth methods").not.toContain(
+			"three OAuth methods",
+		);
+		expect(faq).toContain("four OAuth methods");
+		expect(faq).toContain("open URL manually");
+
+		// Drift probe: operate on an in-memory copy only — never modify the actual source file.
+		const labelToRemove = AUTH_LABELS.OAUTH_MANUAL_BROWSER;
+		const gettingStartedWithout = gettingStarted.replaceAll(labelToRemove, "REMOVED");
+		expect(findMissingLabels(gettingStartedWithout, expectedLabels)).toEqual([labelToRemove]);
+		for (const label of expectedLabels.filter((l) => l !== labelToRemove)) {
+			expect(gettingStartedWithout).toContain(label);
+		}
 	});
 
 	it("keeps npm scripts mentioned in current documentation aligned with package.json", () => {

@@ -62,6 +62,7 @@ lib/
 | OAuth scopes | `auth/scopes.ts` | connector scope checks |
 | Browser launch | `auth/browser.ts` | platform-specific open |
 | Callback server | `auth/server.ts` | HTTP on port 1455 |
+| Browser/manual OAuth lifecycle | `auth/loopback-flow.ts` | listener-first shared session, opener handling, callback exchange, close-once cleanup |
 | URL/body transform | `request/request-transformer.ts` | model map, prompt injection, stateless compatibility |
 | Headers + errors | `request/fetch-helpers.ts` | Codex headers, rate limit handling, fallback, refresh |
 | Retry budgets | `request/retry-budget.ts` | bounded retry classes |
