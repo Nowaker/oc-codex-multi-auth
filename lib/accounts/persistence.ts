@@ -297,11 +297,28 @@ export class AccountPersistence {
 	}
 
 	/**
-	 * Removes this manager's shutdown cleanup registration. Call this when
-	 * replacing an `AccountManager` instance (e.g., on cache invalidation)
-	 * to avoid unbounded growth of the global cleanup queue.
+	 * Tears down this manager's process-level side effects. Call this when
+	 * replacing an `AccountManager` instance (e.g., on cache invalidation) to
+	 * avoid unbounded growth of the global cleanup queue.
+	 *
+	 * A queued debounced save is cancelled rather than flushed. Its payload is
+	 * this manager's account snapshot, and `saveToDisk` takes account membership
+	 * from that snapshot wholesale — it adopts newer credentials and longer
+	 * rate-limit blocks from disk, but never disk accounts the snapshot lacks.
+	 * A replaced manager firing 500ms later would therefore delete whatever its
+	 * successor has since loaded or added. What is dropped instead is a rotation
+	 * or `lastUsed` stamp: already last-writer-wins, and rediscovered on the
+	 * next request.
+	 *
+	 * The timer is cleared before the handler guard because the handler is
+	 * one-shot — it clears its own slot when it runs, so a manager whose
+	 * shutdown flush has already fired can still hold an armed timer.
 	 */
 	disposeShutdownHandler(): void {
+		if (this.saveDebounceTimer) {
+			clearTimeout(this.saveDebounceTimer);
+			this.saveDebounceTimer = null;
+		}
 		if (!this.shutdownHandler) return;
 		unregisterCleanup(this.shutdownHandler);
 		this.shutdownHandler = null;
