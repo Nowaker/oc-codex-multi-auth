@@ -1,0 +1,84 @@
+import { describe, it, expect } from "vitest";
+
+import { extractPlanType, formatPlanType } from "../lib/auth/plan-tier.js";
+import { JWT_CLAIM_PATH } from "../lib/constants.js";
+
+/**
+ * Builds an unsigned JWT whose payload decodes to `payload`. The signature is
+ * never verified by `decodeJWT`, which only base64url-decodes the middle part.
+ */
+function makeToken(payload: Record<string, unknown>): string {
+	const encode = (value: unknown) =>
+		Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+	return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.signature`;
+}
+
+function makeAccessToken(planType: string | undefined): string {
+	return makeToken({
+		[JWT_CLAIM_PATH]: {
+			chatgpt_account_id: "05cd9f04-d56a-4256-9934-9cb827989a40",
+			...(planType === undefined ? {} : { chatgpt_plan_type: planType }),
+		},
+	});
+}
+
+describe("extractPlanType", () => {
+	it("returns undefined without a token", () => {
+		expect(extractPlanType(undefined)).toBeUndefined();
+		expect(extractPlanType("")).toBeUndefined();
+	});
+
+	it("returns undefined for a token that is not a JWT", () => {
+		expect(extractPlanType("not-a-jwt")).toBeUndefined();
+	});
+
+	it("returns undefined when the auth claim carries no plan type", () => {
+		expect(extractPlanType(makeAccessToken(undefined))).toBeUndefined();
+	});
+
+	it("reads chatgpt_plan_type from the OpenAI auth claim", () => {
+		expect(extractPlanType(makeAccessToken("pro"))).toBe("pro");
+	});
+
+	it("trims and lowercases the claim so casing never splits a tier", () => {
+		expect(extractPlanType(makeAccessToken("  Pro  "))).toBe("pro");
+	});
+});
+
+describe("formatPlanType", () => {
+	it("returns undefined for an absent or blank plan type", () => {
+		expect(formatPlanType(undefined)).toBeUndefined();
+		expect(formatPlanType("   ")).toBeUndefined();
+	});
+
+	/**
+	 * Correlation table. Every `chatgpt_plan_type` below was read from a real
+	 * ChatGPT OAuth access token and independently confirmed against the same
+	 * account's `plan_type` from the live `/wham/usage` response, then matched
+	 * to the subscription the account owner confirmed they hold.
+	 */
+	const OBSERVED: Array<{ planType: string; expected: string; groundTruth: string }> = [
+		{ planType: "free", expected: "Free", groundTruth: "personal free" },
+		{ planType: "pro", expected: "Pro", groundTruth: "personal $200/mo" },
+		{ planType: "team", expected: "Business", groundTruth: "business seat, 1x allowance" },
+		{
+			planType: "self_serve_business_prolite",
+			expected: "Business Premium",
+			groundTruth: "business seat, premium, 5x allowance",
+		},
+	];
+
+	for (const { planType, expected, groundTruth } of OBSERVED) {
+		it(`maps ${planType} to ${expected} (${groundTruth})`, () => {
+			expect(formatPlanType(planType)).toBe(expected);
+		});
+	}
+
+	it("maps plus to Plus", () => {
+		expect(formatPlanType("plus")).toBe("Plus");
+	});
+
+	it("passes an unrecognized plan type through verbatim rather than guessing", () => {
+		expect(formatPlanType("some_future_plan")).toBe("some_future_plan");
+	});
+});

@@ -37,6 +37,7 @@ export interface ManagedAccount {
 	organizationId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
+	planType?: string;
 	accountTags?: string[];
 	accountNote?: string;
 	email?: string;
@@ -354,6 +355,7 @@ export class AccountState {
 						organizationId: account.organizationId,
 						accountIdSource: account.accountIdSource,
 						accountLabel: account.accountLabel,
+						planType: account.planType,
 						accountTags: account.accountTags,
 						accountNote: missingOAuthScopes.length > 0
 							? appendReauthNote(account.accountNote, missingOAuthScopes)

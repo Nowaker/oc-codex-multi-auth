@@ -11,8 +11,10 @@ import {
 // re-export it.
 import {
 	extractAccountUserId,
-	relabelCandidateForAccountId,
+	formatChatGptAccountLabel,
+	isGeneratedAccountLabel,
 } from "./token-utils.js";
+import { extractPlanType } from "./plan-tier.js";
 import { logInfo } from "../logger.js";
 import { normalizeScope } from "./scopes.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
@@ -37,6 +39,7 @@ type MergeableAccountRecord = {
 	organizationId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
+	planType?: string;
 	email?: string;
 	lastSwitchReason?: string;
 	rateLimitResetTimes?: Record<string, number | undefined>;
@@ -133,6 +136,8 @@ export function mergeStoredAccountPair<T extends MergeableAccountRecord>(
 		accessToken: newer.accessToken ?? older.accessToken,
 		expiresAt: newer.expiresAt ?? older.expiresAt,
 		oauthScope: newer.oauthScope ?? older.oauthScope,
+		// Follows the access token it was read from, so an upgrade is not pinned stale.
+		planType: newer.planType ?? older.planType,
 		// Follows the token fields: the rotation stamp must describe the
 		// refreshToken that actually survived the merge. No fallback to the
 		// older stamp when the newer token wins — attaching an old timestamp
@@ -159,6 +164,7 @@ export type TokenSuccessWithAccount = TokenSuccess & {
 	organizationIdOverride?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
+	planType?: string;
 };
 
 export type AccountSelectionResult = {
@@ -186,6 +192,7 @@ const createSelectionVariant = (
 		organizationId?: string;
 		source?: AccountIdSource;
 		label?: string;
+		planType?: string;
 	},
 ): TokenSuccessWithAccount => ({
 	...tokens,
@@ -193,9 +200,11 @@ const createSelectionVariant = (
 	organizationIdOverride: candidate.organizationId,
 	accountIdSource: candidate.source,
 	accountLabel: candidate.label,
+	planType: candidate.planType,
 });
 
 export function resolveAccountSelection(tokens: TokenSuccess): AccountSelectionResult {
+	const planType = extractPlanType(tokens.access);
 	const override = (process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
 	if (override) {
 		const suffix = override.length > 6 ? override.slice(-6) : override;
@@ -205,6 +214,7 @@ export function resolveAccountSelection(tokens: TokenSuccess): AccountSelectionR
 			accountIdOverride: override,
 			accountIdSource: "manual" as const,
 			accountLabel: `Override [id:${suffix}]`,
+			planType,
 		};
 		return {
 			primary,
@@ -214,17 +224,19 @@ export function resolveAccountSelection(tokens: TokenSuccess): AccountSelectionR
 
 	const candidates = getAccountIdCandidates(tokens.access, tokens.idToken);
 	if (candidates.length === 0) {
+		const primary = { ...tokens, planType };
 		return {
-			primary: tokens,
-			variantsForPersistence: [tokens],
+			primary,
+			variantsForPersistence: [primary],
 		};
 	}
 
 	const choice = selectBestAccountCandidate(candidates);
 	if (!choice) {
+		const primary = { ...tokens, planType };
 		return {
-			primary: tokens,
-			variantsForPersistence: [tokens],
+			primary,
+			variantsForPersistence: [primary],
 		};
 	}
 
@@ -242,9 +254,17 @@ export function resolveAccountSelection(tokens: TokenSuccess): AccountSelectionR
 	// `chatgpt_account_id` claim, so per-entry tokens are what give per-entry
 	// quotas: bind to the token-scoped id and let a second `auth login` under
 	// the other workspace append a separate account carrying its own token.
-	// The chosen workspace's name and organization id ride along as metadata -
+	// The chosen workspace's organization id rides along as metadata -
 	// `organizationId` is display/dedupe-only and is not sent as a header unless
 	// CODEX_AUTH_SEND_ORGANIZATION_HEADER=1 (see lib/request/fetch-helpers.ts).
+	//
+	// The candidate's *name* is deliberately not used as the label. With
+	// `id_token_add_organizations=true` those candidates enumerate the user's
+	// API-platform organizations, not their ChatGPT workspaces, so naming an
+	// account after one reported an unrelated org ("<api org> (role:owner)")
+	// for a personal ChatGPT subscription. A ChatGPT credential carries no
+	// workspace name at all, so the label is built from the identity it does
+	// carry: the account email and the routing account id.
 	const routingCandidate =
 		candidates.find((candidate) => candidate.source === "token") ??
 		candidates.find((candidate) => candidate.source === "id_token") ??
@@ -253,10 +273,11 @@ export function resolveAccountSelection(tokens: TokenSuccess): AccountSelectionR
 		accountId: routingCandidate.accountId,
 		organizationId: choice.organizationId,
 		source: routingCandidate.source ?? "token",
-		label:
-			routingCandidate === choice
-				? choice.label
-				: relabelCandidateForAccountId(choice.label, routingCandidate.accountId),
+		label: formatChatGptAccountLabel(
+			sanitizeEmail(extractAccountEmail(tokens.access, tokens.idToken)),
+			routingCandidate.accountId,
+		),
+		planType,
 	});
 
 	return {
@@ -686,6 +707,7 @@ export async function persistAccountPool(
 						(result.accountIdOverride ? "manual" : "token")
 					: undefined;
 			const accountLabel = result.accountLabel;
+			const planType = result.planType ?? extractPlanType(result.access);
 			const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
 			// A blank scope must never reach storage: it is indistinguishable from
 			// "granted nothing" at load time, and `?? existing.oauthScope` below
@@ -777,6 +799,7 @@ export async function persistAccountPool(
 					organizationId,
 					accountIdSource,
 					accountLabel,
+					planType,
 					email: accountEmail,
 					refreshToken: result.refresh,
 					accessToken: result.access,
@@ -807,9 +830,12 @@ export async function persistAccountPool(
 				: normalizedAccountId
 					? accountIdSource ?? existing.accountIdSource
 					: existing.accountIdSource;
-			const nextAccountLabel = preserveOrgIdentity
-				? existing.accountLabel ?? accountLabel
-				: accountLabel ?? existing.accountLabel;
+			// A label someone chose is theirs to keep. Only a generated one is
+			// refreshed, so re-logging in replaces a stale label that named an
+			// API organization without overwriting a name a user typed.
+			const nextAccountLabel = isGeneratedAccountLabel(existing.accountLabel)
+				? accountLabel ?? existing.accountLabel
+				: existing.accountLabel;
 			accounts[existingIndex] = {
 				...existing,
 				accountId: nextAccountId,
@@ -817,6 +843,7 @@ export async function persistAccountPool(
 				organizationId: nextOrganizationId,
 				accountIdSource: nextAccountIdSource,
 				accountLabel: nextAccountLabel,
+				planType: planType ?? existing.planType,
 				email: nextEmail,
 				refreshToken: result.refresh,
 				accessToken: result.access,

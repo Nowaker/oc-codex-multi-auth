@@ -594,9 +594,41 @@ describe("login-runner account and quota identities", () => {
 		expect(selection.variantsForPersistence[0]).toBe(selection.primary);
 		expect(selection.primary.accountIdOverride).toBe("chatgpt-team-account");
 		expect(selection.primary.accountIdSource).toBe("token");
-		// The active workspace still supplies the name and org id.
+		// The active organization still supplies the org id used for dedupe.
 		expect(selection.primary.organizationIdOverride).toBe("org-acme");
-		expect(selection.primary.accountLabel).toBe("Acme [id:ccount]");
+		// ...but not the label: those organizations are the API-platform orgs
+		// `id_token_add_organizations=true` returns, not ChatGPT workspaces.
+		expect(selection.primary.accountLabel).toBe("id:ccount");
+		expect(selection.primary.accountLabel).not.toContain("Acme");
+	});
+
+	it("labels an account by its ChatGPT identity, never by an API organization", () => {
+		const selection = resolveAccountSelection({
+			type: "success",
+			access: encodeJwt({
+				[JWT_CLAIM_PATH]: {
+					chatgpt_account_id: "2aae3eeb-f7fd-4b2d-96c1-413d33c487c4",
+					chatgpt_plan_type: "pro",
+				},
+				email: "oferty@nowaker.net",
+			}),
+			refresh: "refresh-personal",
+			expires: Date.now() + 60_000,
+			idToken: idTokenFor([
+				{
+					organization_id: "org-yRC81tihk0WYRlMQpBEW4A2Q",
+					name: "DreamHost API",
+					role: "owner",
+					is_default: true,
+					is_personal: false,
+				},
+			]),
+		});
+
+		expect(selection.primary.accountLabel).toBe("oferty@nowaker.net id:c487c4");
+		expect(selection.primary.accountLabel).not.toContain("DreamHost API");
+		expect(selection.primary.accountLabel).not.toContain("role:");
+		expect(selection.primary.planType).toBe("pro");
 	});
 
 	it("gives each workspace login its own entry, token and quota", async () => {

@@ -263,6 +263,8 @@ Most of these also run as a **direct CLI** with no agent/model involvement (no t
 - unsupported-model handling is strict by default, with opt-in fallback controls
 - TUI quota status follows the account/workspace used by the latest request
 - Business workspace memberships and Personal accounts keep separate usage and quota windows. Business members sharing one workspace are distinguished by their member/seat identity, so their usage is not collapsed into one row.
+- An account is labeled `<email> id:<last 6 of account id>` from its own ChatGPT credential. The OAuth id_token also lists the API-platform organizations the login belongs to; those are not ChatGPT workspaces and are never used to name an account. A label you set with `codex-label` is always kept.
+- The ChatGPT plan (`Free`, `Plus`, `Pro`, `Business`, `Business Premium`) is read from the access token and shown by `codex-list` and `codex-status`. An unrecognized plan is reported verbatim rather than renamed.
 
 ---
 

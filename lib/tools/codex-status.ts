@@ -21,6 +21,7 @@ import {
 	formatUiSection,
 } from "../ui/format.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
+import { formatPlanType } from "../auth/plan-tier.js";
 import type { ToolContext } from "./index.js";
 
 export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
@@ -142,6 +143,8 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 						}),
 						enabled: account.enabled !== false,
 						isActive: index === activeIndex,
+						planType: account.planType ?? null,
+						plan: formatPlanType(account.planType) ?? null,
 						rateLimit: formatRateLimitEntry(account, now) ?? null,
 						cooldown: formatCooldown(account, now) ?? null,
 						lastUsedAgeMs:

@@ -14,8 +14,10 @@ import {
 	shouldUpdateAccountIdFromToken,
 	resolveRequestAccountId,
 	sanitizeEmail,
+	formatChatGptAccountLabel,
+	isGeneratedAccountLabel,
 } from "../lib/auth/token-utils.js";
-import { JWT_CLAIM_PATH } from "../lib/constants.js";
+import { JWT_CLAIM_PATH, JWT_PROFILE_CLAIM_PATH } from "../lib/constants.js";
 
 const mockedDecodeJWT = vi.mocked(decodeJWT);
 
@@ -132,6 +134,17 @@ describe("Token Utils Module", () => {
 				},
 			});
 			expect(extractAccountEmail("access_token")).toBe("nested@example.com");
+		});
+
+		it("should extract email from the profile claim when no id_token exists", () => {
+			mockedDecodeJWT.mockReturnValue({
+				[JWT_PROFILE_CLAIM_PATH]: {
+					email: "profile@example.com",
+					email_verified: true,
+					name: "Profile Owner",
+				},
+			});
+			expect(extractAccountEmail("access_token")).toBe("profile@example.com");
 		});
 
 		it("should extract email from chatgpt_user_email field", () => {
@@ -1028,6 +1041,75 @@ describe("Token Utils Module", () => {
 
 		it("should handle mixed case and whitespace", () => {
 			expect(sanitizeEmail("  User@Example.COM  ")).toBe("user@example.com");
+		});
+	});
+
+	describe("formatChatGptAccountLabel", () => {
+		it("renders email and the account id suffix", () => {
+			expect(
+				formatChatGptAccountLabel(
+					"oferty@nowaker.net",
+					"2aae3eeb-f7fd-4b2d-96c1-413d33c487c4",
+				),
+			).toBe("oferty@nowaker.net id:c487c4");
+		});
+
+		it("falls back to the id alone when no email is known", () => {
+			expect(
+				formatChatGptAccountLabel(undefined, "2aae3eeb-f7fd-4b2d-96c1-413d33c487c4"),
+			).toBe("id:c487c4");
+		});
+
+		it("falls back to the email alone when no account id is known", () => {
+			expect(formatChatGptAccountLabel("user@example.com", undefined)).toBe(
+				"user@example.com",
+			);
+		});
+
+		it("returns undefined when neither identity is known", () => {
+			expect(formatChatGptAccountLabel(undefined, undefined)).toBeUndefined();
+			expect(formatChatGptAccountLabel("  ", "  ")).toBeUndefined();
+		});
+
+		it("uses a short account id verbatim", () => {
+			expect(formatChatGptAccountLabel("user@example.com", "abc")).toBe(
+				"user@example.com id:abc",
+			);
+		});
+
+		it("keeps two seats of one workspace distinguishable by email", () => {
+			const workspace = "05cd9f04-d56a-4256-9934-9cb827989a40";
+			expect(formatChatGptAccountLabel("oferty@nowaker.net", workspace)).not.toBe(
+				formatChatGptAccountLabel("nowaker@virtkick.com", workspace),
+			);
+		});
+	});
+
+	describe("isGeneratedAccountLabel", () => {
+		// Legacy generated shape: "<api org name> (role:<role>) [id:<suffix>]".
+		it.each([
+			"DreamHost API (role:owner) [id:c487c4]",
+			"Personal (role:owner) [id:989a40]",
+			"Token account [id:c487c4]",
+			"ID token account [id:c487c4]",
+			"Workspace [id:c487c4]",
+			"Override [id:c487c4]",
+		])("treats %s as machine generated", (label) => {
+			expect(isGeneratedAccountLabel(label)).toBe(true);
+		});
+
+		it.each([
+			"oferty@nowaker.net id:c487c4",
+			"nowaker@virtkick.com id:8830b3",
+			"My work account",
+			"billing [team]",
+		])("treats %s as user supplied", (label) => {
+			expect(isGeneratedAccountLabel(label)).toBe(false);
+		});
+
+		it("treats an absent or blank label as not user supplied", () => {
+			expect(isGeneratedAccountLabel(undefined)).toBe(true);
+			expect(isGeneratedAccountLabel("   ")).toBe(true);
 		});
 	});
 });

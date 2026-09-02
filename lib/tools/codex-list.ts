@@ -16,6 +16,7 @@ import {
 	paintUiText,
 } from "../ui/format.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
+import { formatPlanType } from "../auth/plan-tier.js";
 import type { ToolContext } from "./index.js";
 
 export function createCodexListTool(ctx: ToolContext): ToolDefinition {
@@ -178,6 +179,8 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 							}),
 							enabled: account.enabled !== false,
 							isActive: index === activeIndex,
+							planType: account.planType ?? null,
+							plan: formatPlanType(account.planType) ?? null,
 							rateLimit: rateLimit ?? null,
 							cooldown: cooldown ?? null,
 							tags: Array.isArray(account.accountTags)
@@ -221,6 +224,8 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 					if (badges.length === 0) {
 						badges.push(formatUiBadge(ui, "ok", "success"));
 					}
+					const plan = formatPlanType(account.planType);
+					if (plan) badges.push(formatUiBadge(ui, plan, "muted"));
 
 					lines.push(
 						formatUiItem(ui, `${label} ${badges.join(" ")}`.trim()),
@@ -273,6 +278,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 				columns: [
 					{ header: "#", width: 3 },
 					{ header: "Label", width: 42 },
+					{ header: "Plan", width: 18 },
 					{ header: "Status", width: 20 },
 				],
 			};
@@ -299,7 +305,12 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 					statuses.length > 0 ? statuses.join(", ") : "ok";
 				lines.push(
 					buildTableRow(
-						[String(index + 1), label, statusText],
+						[
+							String(index + 1),
+							label,
+							formatPlanType(account.planType) ?? "unknown",
+							statusText,
+						],
 						listTableOptions,
 					),
 				);

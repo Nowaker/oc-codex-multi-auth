@@ -6156,9 +6156,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts[0]?.accountId).toBe("token-personal");
 		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
-		// The selected workspace's name survives, re-suffixed with the id that
-		// actually identifies the entry.
-		expect(mockStorage.accounts[0]?.accountLabel).toBe("Workspace Alpha [id:rsonal]");
+		// The candidate name is an API-platform organization, not a ChatGPT
+		// workspace, so the label is built from the identity the credential
+		// actually carries.
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("user@example.com id:rsonal");
 		// organizationId is display/dedupe metadata only - it is not sent as a
 		// header unless CODEX_AUTH_SEND_ORGANIZATION_HEADER=1.
 		expect(mockStorage.accounts[0]?.organizationId).toBe("org-default");
@@ -6197,9 +6198,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			"token-first",
 		]);
 		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
-		// The preferred workspace still names the entry and supplies its org id.
+		// The preferred organization still supplies the org id, but not the name.
 		expect(mockStorage.accounts[0]?.organizationId).toBe("org-preferred");
-		expect(mockStorage.accounts[0]?.accountLabel).toBe("Org Preferred [id:-first]");
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("user@example.com id:-first");
 	});
 
 	it("collapses duplicate organization candidates onto the single token account", async () => {
@@ -6246,7 +6247,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts[0]?.accountId).toBe("token-personal");
 		expect(mockStorage.accounts[0]?.organizationId).toBe("organization-shared");
-		expect(mockStorage.accounts[0]?.accountLabel).toBe("Org Shared A [id:rsonal]");
+		expect(mockStorage.accounts[0]?.accountLabel).toBe("user@example.com id:rsonal");
 	});
 
 	it("persists a single token-scoped entry when a login yields org and token candidates", async () => {
@@ -6300,8 +6301,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts[0]?.organizationId).toBe(
 			"org-QA1bZCn6zb57FT6TXLZWMPO3",
 		);
+		// "Personal (role:owner)" is the API org's own name and role, which named
+		// every ChatGPT account this way regardless of its real subscription.
 		expect(mockStorage.accounts[0]?.accountLabel).toBe(
-			"Personal (role:owner) [id:3c2a4a]",
+			"user@example.com id:3c2a4a",
 		);
 		expect(mockStorage.accounts[0]?.refreshToken).toBe("refresh-holly-shared");
 	});

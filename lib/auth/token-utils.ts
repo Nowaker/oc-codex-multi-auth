@@ -4,7 +4,7 @@
  */
 
 import { decodeJWT } from "./auth.js";
-import { JWT_CLAIM_PATH } from "../constants.js";
+import { JWT_CLAIM_PATH, JWT_PROFILE_CLAIM_PATH } from "../constants.js";
 import { isRecord } from "../utils.js";
 import type { AccountIdSource, JWTPayload } from "../types.js";
 
@@ -57,6 +57,41 @@ function formatAccountIdSuffix(accountId: string): string {
 function formatTokenCandidateLabel(prefix: string, accountId: string): string {
 	const suffix = formatAccountIdSuffix(accountId);
 	return `${prefix} [id:${suffix}]`;
+}
+
+/**
+ * Trailing `[id:…]` marks a label this plugin generated. A user-supplied label
+ * never carries one, which is what lets a login refresh a stale generated
+ * label without overwriting a name someone chose.
+ */
+const GENERATED_LABEL_PATTERN = /\s\[id:[^\]]*\]$/;
+
+/**
+ * The account label for a ChatGPT-backed credential.
+ *
+ * A ChatGPT OAuth token names no workspace: it carries `chatgpt_account_id`
+ * (the workspace) and `chatgpt_account_user_id` (the seat), and nothing else
+ * that identifies either. Email plus the account id suffix is therefore the
+ * most identifying label the credential supports, and it keeps two seats of
+ * one Business workspace distinguishable.
+ */
+export function formatChatGptAccountLabel(
+	email: string | undefined,
+	accountId: string | undefined,
+): string | undefined {
+	const normalizedEmail = toStringValue(email);
+	const normalizedAccountId = toStringValue(accountId);
+	if (normalizedAccountId) {
+		const suffix = `id:${formatAccountIdSuffix(normalizedAccountId)}`;
+		return normalizedEmail ? `${normalizedEmail} ${suffix}` : suffix;
+	}
+	return normalizedEmail;
+}
+
+export function isGeneratedAccountLabel(label: string | undefined): boolean {
+	const normalized = toStringValue(label);
+	if (!normalized) return true;
+	return GENERATED_LABEL_PATTERN.test(normalized);
 }
 
 /**
@@ -448,9 +483,16 @@ export function extractAccountEmail(accessToken?: string, idToken?: string): str
 	if (!accessToken) return undefined;
 	const decoded = decodeJWT(accessToken);
 	const nested = decoded?.[JWT_CLAIM_PATH] as Record<string, unknown> | undefined;
+	// The profile claim is the only email an access token carries on its own, so
+	// it is what keeps the address recoverable on a refresh that returns no
+	// id_token.
+	const profile = decoded?.[JWT_PROFILE_CLAIM_PATH] as
+		| Record<string, unknown>
+		| undefined;
 	const candidate =
 		(nested?.email as string | undefined) ??
 		(nested?.chatgpt_user_email as string | undefined) ??
+		(profile?.email as string | undefined) ??
 		(decoded?.email as string | undefined) ??
 		(decoded?.preferred_username as string | undefined);
 	if (typeof candidate === "string" && candidate.includes("@") && candidate.trim()) {
@@ -499,26 +541,6 @@ export function getAccountIdCandidates(
 	}
 
 	return uniqueCandidates(candidates);
-}
-
-/**
- * Re-point a candidate label at the account id that actually routes requests.
- *
- * Candidate labels embed their own `[id:…]` suffix, and for an org candidate
- * that suffix is the organization id - which the Codex backend ignores when it
- * meters quota. Swapping in the routing account's suffix keeps the workspace
- * name a user recognises while identifying the entry the same way every other
- * surface does.
- */
-export function relabelCandidateForAccountId(
-	label: string | undefined,
-	accountId: string,
-): string | undefined {
-	if (!label) return undefined;
-	const base = label.replace(/\s*\[id:[^\]]*\]\s*$/, "").trim();
-	return base
-		? `${base} [id:${formatAccountIdSuffix(accountId)}]`
-		: formatTokenCandidateLabel("Workspace", accountId);
 }
 
 /**
