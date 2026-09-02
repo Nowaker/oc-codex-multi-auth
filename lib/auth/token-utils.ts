@@ -60,34 +60,21 @@ function formatTokenCandidateLabel(prefix: string, accountId: string): string {
 }
 
 /**
- * Trailing `[id:…]` marks a label this plugin generated. A user-supplied label
- * never carries one, which is what lets a login refresh a stale generated
- * label without overwriting a name someone chose.
+ * Trailing `[id:…]` marks a label this plugin generated — the shape every
+ * generator here emits, via {@link formatTokenCandidateLabel} or the `Override
+ * [id:…]` branch in `resolveAccountSelection`. A user-supplied label never
+ * carries one, which is what lets a login clear a stale generated label
+ * without overwriting a name someone chose with `codex-label`.
  */
 const GENERATED_LABEL_PATTERN = /\s\[id:[^\]]*\]$/;
 
 /**
- * The account label for a ChatGPT-backed credential.
+ * Whether a stored label may be replaced by a login.
  *
- * A ChatGPT OAuth token names no workspace: it carries `chatgpt_account_id`
- * (the workspace) and `chatgpt_account_user_id` (the seat), and nothing else
- * that identifies either. Email plus the account id suffix is therefore the
- * most identifying label the credential supports, and it keeps two seats of
- * one Business workspace distinguishable.
+ * A blank label counts as generated so an account that never had one can pick
+ * one up. Anything that does not carry the `[id:…]` marker is treated as a
+ * name a user chose and is left alone.
  */
-export function formatChatGptAccountLabel(
-	email: string | undefined,
-	accountId: string | undefined,
-): string | undefined {
-	const normalizedEmail = toStringValue(email);
-	const normalizedAccountId = toStringValue(accountId);
-	if (normalizedAccountId) {
-		const suffix = `id:${formatAccountIdSuffix(normalizedAccountId)}`;
-		return normalizedEmail ? `${normalizedEmail} ${suffix}` : suffix;
-	}
-	return normalizedEmail;
-}
-
 export function isGeneratedAccountLabel(label: string | undefined): boolean {
 	const normalized = toStringValue(label);
 	if (!normalized) return true;

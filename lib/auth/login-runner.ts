@@ -11,7 +11,6 @@ import {
 // re-export it.
 import {
 	extractAccountUserId,
-	formatChatGptAccountLabel,
 	isGeneratedAccountLabel,
 } from "./token-utils.js";
 import { extractPlanType } from "./plan-tier.js";
@@ -262,9 +261,17 @@ export function resolveAccountSelection(tokens: TokenSuccess): AccountSelectionR
 	// `id_token_add_organizations=true` those candidates enumerate the user's
 	// API-platform organizations, not their ChatGPT workspaces, so naming an
 	// account after one reported an unrelated org ("<api org> (role:owner)")
-	// for a personal ChatGPT subscription. A ChatGPT credential carries no
-	// workspace name at all, so the label is built from the identity it does
-	// carry: the account email and the routing account id.
+	// for a personal ChatGPT subscription.
+	//
+	// No label is generated in its place either. A ChatGPT credential carries
+	// no workspace name at all, only `chatgpt_account_id` and the account
+	// email — and every display surface already renders both, the email
+	// through `resolveDisplayEmail` so `maskEmail` applies. Restating them in
+	// the label would print each identity twice and, because the label is
+	// rendered verbatim, would put the unmasked address back on screen. The
+	// login clears the stale org-derived label instead (see
+	// `persistAccountPool`) and the account identifies itself as
+	// "<email>, id:<suffix>".
 	const routingCandidate =
 		candidates.find((candidate) => candidate.source === "token") ??
 		candidates.find((candidate) => candidate.source === "id_token") ??
@@ -273,10 +280,6 @@ export function resolveAccountSelection(tokens: TokenSuccess): AccountSelectionR
 		accountId: routingCandidate.accountId,
 		organizationId: choice.organizationId,
 		source: routingCandidate.source ?? "token",
-		label: formatChatGptAccountLabel(
-			sanitizeEmail(extractAccountEmail(tokens.access, tokens.idToken)),
-			routingCandidate.accountId,
-		),
 		planType,
 	});
 
@@ -831,10 +834,14 @@ export async function persistAccountPool(
 					? accountIdSource ?? existing.accountIdSource
 					: existing.accountIdSource;
 			// A label someone chose is theirs to keep. Only a generated one is
-			// refreshed, so re-logging in replaces a stale label that named an
-			// API organization without overwriting a name a user typed.
+			// replaced, so re-logging in drops a stale label that named an API
+			// organization without overwriting a name a user typed.
+			//
+			// No `?? existing.accountLabel` fallback: the ChatGPT path now
+			// produces no label at all, and falling back would pin exactly the
+			// wrong org-derived label this is meant to clear.
 			const nextAccountLabel = isGeneratedAccountLabel(existing.accountLabel)
-				? accountLabel ?? existing.accountLabel
+				? accountLabel
 				: existing.accountLabel;
 			accounts[existingIndex] = {
 				...existing,

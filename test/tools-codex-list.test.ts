@@ -63,7 +63,6 @@ const REAL_POOL: AccountStorageV3 = {
 	accounts: [
 		{
 			email: "oferty@nowaker.net",
-			accountLabel: "oferty@nowaker.net id:c487c4",
 			planType: "pro",
 			refreshToken: "r1",
 			addedAt: 1,
@@ -71,7 +70,6 @@ const REAL_POOL: AccountStorageV3 = {
 		},
 		{
 			email: "nowaker@virtkick.com",
-			accountLabel: "nowaker@virtkick.com id:989a40",
 			planType: "team",
 			refreshToken: "r2",
 			addedAt: 2,
@@ -79,7 +77,6 @@ const REAL_POOL: AccountStorageV3 = {
 		},
 		{
 			email: "oferty@nowaker.net",
-			accountLabel: "oferty@nowaker.net id:989a40",
 			planType: "self_serve_business_prolite",
 			refreshToken: "r3",
 			addedAt: 3,
@@ -87,7 +84,6 @@ const REAL_POOL: AccountStorageV3 = {
 		},
 		{
 			email: "nowaker@virtkick.com",
-			accountLabel: "nowaker@virtkick.com id:8830b3",
 			planType: "free",
 			refreshToken: "r4",
 			addedAt: 4,

@@ -14,7 +14,6 @@ import {
 	shouldUpdateAccountIdFromToken,
 	resolveRequestAccountId,
 	sanitizeEmail,
-	formatChatGptAccountLabel,
 	isGeneratedAccountLabel,
 } from "../lib/auth/token-utils.js";
 import { JWT_CLAIM_PATH, JWT_PROFILE_CLAIM_PATH } from "../lib/constants.js";
@@ -1044,47 +1043,6 @@ describe("Token Utils Module", () => {
 		});
 	});
 
-	describe("formatChatGptAccountLabel", () => {
-		it("renders email and the account id suffix", () => {
-			expect(
-				formatChatGptAccountLabel(
-					"oferty@nowaker.net",
-					"2aae3eeb-f7fd-4b2d-96c1-413d33c487c4",
-				),
-			).toBe("oferty@nowaker.net id:c487c4");
-		});
-
-		it("falls back to the id alone when no email is known", () => {
-			expect(
-				formatChatGptAccountLabel(undefined, "2aae3eeb-f7fd-4b2d-96c1-413d33c487c4"),
-			).toBe("id:c487c4");
-		});
-
-		it("falls back to the email alone when no account id is known", () => {
-			expect(formatChatGptAccountLabel("user@example.com", undefined)).toBe(
-				"user@example.com",
-			);
-		});
-
-		it("returns undefined when neither identity is known", () => {
-			expect(formatChatGptAccountLabel(undefined, undefined)).toBeUndefined();
-			expect(formatChatGptAccountLabel("  ", "  ")).toBeUndefined();
-		});
-
-		it("uses a short account id verbatim", () => {
-			expect(formatChatGptAccountLabel("user@example.com", "abc")).toBe(
-				"user@example.com id:abc",
-			);
-		});
-
-		it("keeps two seats of one workspace distinguishable by email", () => {
-			const workspace = "05cd9f04-d56a-4256-9934-9cb827989a40";
-			expect(formatChatGptAccountLabel("oferty@nowaker.net", workspace)).not.toBe(
-				formatChatGptAccountLabel("nowaker@virtkick.com", workspace),
-			);
-		});
-	});
-
 	describe("isGeneratedAccountLabel", () => {
 		// Legacy generated shape: "<api org name> (role:<role>) [id:<suffix>]".
 		it.each([
@@ -1110,6 +1068,44 @@ describe("Token Utils Module", () => {
 		it("treats an absent or blank label as not user supplied", () => {
 			expect(isGeneratedAccountLabel(undefined)).toBe(true);
 			expect(isGeneratedAccountLabel("   ")).toBe(true);
+		});
+
+		// Coupled to the generator on purpose. The classification only does its
+		// job — clearing a stale generated label while keeping a name a user
+		// typed — while it agrees with what the plugin actually emits, and a
+		// generator whose output failed this check would pin its own labels
+		// permanently.
+		it("classifies every label the candidate generator emits as generated", () => {
+			mockedDecodeJWT.mockImplementation((token) => {
+				if (token === "access_token") {
+					return {
+						[JWT_CLAIM_PATH]: {
+							chatgpt_account_id: "2aae3eeb-f7fd-4b2d-96c1-413d33c487c4",
+							organizations: [
+								{
+									id: "org-yRC81tihk0WYRlMQpBEW4A2Q",
+									name: "DreamHost API",
+									role: "owner",
+									is_default: true,
+								},
+							],
+						},
+					};
+				}
+				if (token === "id_token") {
+					return { chatgpt_account_id: "05cd9f04-d56a-4256-9934-9cb827989a40" };
+				}
+				return null;
+			});
+
+			const labels = getAccountIdCandidates("access_token", "id_token")
+				.map((candidate) => candidate.label)
+				.filter((label): label is string => !!label);
+
+			expect(labels.length).toBeGreaterThan(0);
+			for (const label of labels) {
+				expect(isGeneratedAccountLabel(label)).toBe(true);
+			}
 		});
 	});
 });

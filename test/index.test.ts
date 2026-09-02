@@ -1382,6 +1382,24 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("Active index by model family");
 		});
 
+		it("shows the plan in the default output, not only in JSON", async () => {
+			// README documents the plan as shown by codex-list AND codex-status.
+			// It reached only the JSON payload, so the default view contradicted
+			// the documented capability.
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "user@example.com",
+					accountId: "acc-1",
+					planType: "self_serve_business_prolite",
+				},
+			];
+			mockStorage.activeIndexByFamily = { codex: 0 };
+			const result = (await plugin.tool["codex-status"].execute()) as string;
+			expect(result).toContain("Business Premium");
+			expect(result).not.toContain("self_serve_business_prolite");
+		});
+
 		it("returns json output for account status", async () => {
 			mockStorage.accounts = [
 				{ refreshToken: "r1", email: "user@example.com", accountId: "acc-1" },
@@ -1472,7 +1490,9 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("5h limit: 87% left");
 			expect(result).toContain("Weekly limit: 64% left");
 			expect(result).toContain("Code review: 100% left");
-			expect(result).toContain("Plan: team");
+			// Named, not echoed: the same seat must not read "Business" in
+			// codex-list and "team" here.
+			expect(result).toContain("Plan: Business");
 			expect(result).toContain("Credits: unlimited");
 			expect(globalThis.fetch).toHaveBeenCalledWith(
 				"https://chatgpt.com/backend-api/wham/usage",
@@ -6157,9 +6177,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts[0]?.accountId).toBe("token-personal");
 		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
 		// The candidate name is an API-platform organization, not a ChatGPT
-		// workspace, so the label is built from the identity the credential
-		// actually carries.
-		expect(mockStorage.accounts[0]?.accountLabel).toBe("user@example.com id:rsonal");
+		// workspace, so no label is generated from it. Email and account id are
+		// already stored as their own fields and rendered from there, masked.
+		expect(mockStorage.accounts[0]?.accountLabel).toBeUndefined();
+		expect(mockStorage.accounts[0]?.email).toBe("user@example.com");
 		// organizationId is display/dedupe metadata only - it is not sent as a
 		// header unless CODEX_AUTH_SEND_ORGANIZATION_HEADER=1.
 		expect(mockStorage.accounts[0]?.organizationId).toBe("org-default");
@@ -6200,7 +6221,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts[0]?.accountIdSource).toBe("token");
 		// The preferred organization still supplies the org id, but not the name.
 		expect(mockStorage.accounts[0]?.organizationId).toBe("org-preferred");
-		expect(mockStorage.accounts[0]?.accountLabel).toBe("user@example.com id:-first");
+		expect(mockStorage.accounts[0]?.accountLabel).toBeUndefined();
 	});
 
 	it("collapses duplicate organization candidates onto the single token account", async () => {
@@ -6247,7 +6268,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts[0]?.accountId).toBe("token-personal");
 		expect(mockStorage.accounts[0]?.organizationId).toBe("organization-shared");
-		expect(mockStorage.accounts[0]?.accountLabel).toBe("user@example.com id:rsonal");
+		expect(mockStorage.accounts[0]?.accountLabel).toBeUndefined();
 	});
 
 	it("persists a single token-scoped entry when a login yields org and token candidates", async () => {
@@ -6302,10 +6323,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			"org-QA1bZCn6zb57FT6TXLZWMPO3",
 		);
 		// "Personal (role:owner)" is the API org's own name and role, which named
-		// every ChatGPT account this way regardless of its real subscription.
-		expect(mockStorage.accounts[0]?.accountLabel).toBe(
-			"user@example.com id:3c2a4a",
-		);
+		// every ChatGPT account this way regardless of its real subscription. No
+		// label replaces it: the email and account id fields already carry the
+		// identity, and every surface renders them.
+		expect(mockStorage.accounts[0]?.accountLabel).toBeUndefined();
 		expect(mockStorage.accounts[0]?.refreshToken).toBe("refresh-holly-shared");
 	});
 

@@ -38,8 +38,13 @@ export function extractPlanType(accessToken?: string): string | undefined {
 /**
  * An unrecognized slug is returned verbatim: a plan we cannot name is still
  * worth showing, and inventing a name for it would misreport the subscription.
+ *
+ * Accepts `null` so the live `/wham/usage` and `x-codex-plan-type` readings —
+ * which type their absent plan as `null`, not `undefined` — go through the same
+ * naming as the copy stored at login. Without that, one seat printed "Business"
+ * in `codex-list` and `team` in `codex-limits` and the TUI.
  */
-export function formatPlanType(planType: string | undefined): string | undefined {
+export function formatPlanType(planType: string | null | undefined): string | undefined {
 	if (!planType) return undefined;
 	const normalized = planType.trim().toLowerCase();
 	if (!normalized) return undefined;

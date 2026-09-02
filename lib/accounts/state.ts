@@ -25,6 +25,7 @@ import {
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "../auth/token-utils.js";
+import { extractPlanType } from "../auth/plan-tier.js";
 import { getMissingRequiredOAuthScopes, normalizeScope } from "../auth/scopes.js";
 import { getHealthTracker, getTokenTracker } from "../rotation.js";
 import { remapRateLimitBackoffAfterRemoval } from "../request/rate-limit-backoff.js";
@@ -636,6 +637,15 @@ export class AccountState {
 		const scope = getAuthScope(auth);
 		if (scope) {
 			account.oauthScope = scope;
+		}
+		// Re-read from the token that just arrived. Reading it only at login
+		// would pin the tier a Plus -> Pro upgrade left behind until the user
+		// re-authenticated, while the live `x-codex-plan-type` header already
+		// reported the new one. A token that carries no claim leaves the stored
+		// value alone rather than erasing it.
+		const planType = extractPlanType(auth.access);
+		if (planType) {
+			account.planType = planType;
 		}
 		if (previousRefreshToken !== account.refreshToken) {
 			// Stamp the rotation so a concurrent process persisting a stale

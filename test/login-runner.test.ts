@@ -598,11 +598,10 @@ describe("login-runner account and quota identities", () => {
 		expect(selection.primary.organizationIdOverride).toBe("org-acme");
 		// ...but not the label: those organizations are the API-platform orgs
 		// `id_token_add_organizations=true` returns, not ChatGPT workspaces.
-		expect(selection.primary.accountLabel).toBe("id:ccount");
-		expect(selection.primary.accountLabel).not.toContain("Acme");
+		expect(selection.primary.accountLabel).toBeUndefined();
 	});
 
-	it("labels an account by its ChatGPT identity, never by an API organization", () => {
+	it("never names an account after an API organization", () => {
 		const selection = resolveAccountSelection({
 			type: "success",
 			access: encodeJwt({
@@ -625,9 +624,14 @@ describe("login-runner account and quota identities", () => {
 			]),
 		});
 
-		expect(selection.primary.accountLabel).toBe("oferty@nowaker.net id:c487c4");
-		expect(selection.primary.accountLabel).not.toContain("DreamHost API");
-		expect(selection.primary.accountLabel).not.toContain("role:");
+		// No label at all: "DreamHost API (role:owner)" named an API-platform
+		// organization rather than the ChatGPT subscription, and restating the
+		// email and account id here would print each identity twice and put the
+		// unmasked address back on every surface that renders a label verbatim.
+		expect(selection.primary.accountLabel).toBeUndefined();
+		expect(selection.primary.accountIdOverride).toBe(
+			"2aae3eeb-f7fd-4b2d-96c1-413d33c487c4",
+		);
 		expect(selection.primary.planType).toBe("pro");
 	});
 

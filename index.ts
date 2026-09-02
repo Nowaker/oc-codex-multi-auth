@@ -35,6 +35,7 @@ import {
         parseAuthorizationInput,
         REDIRECT_URI,
 } from "./lib/auth/auth.js";
+import { formatPlanType } from "./lib/auth/plan-tier.js";
 import {
 	buildDeviceCodeInstructions,
 	completeDeviceCodeSession,
@@ -3546,7 +3547,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										parts.push(`${limit.name} ${formatUsageLimitSummary(limit.window)}`);
 									}
 								}
-								if (usage.planType) parts.push(`plan:${usage.planType}`);
+								const planLabel = formatPlanType(usage.planType);
+								if (planLabel) parts.push(`plan:${planLabel}`);
 								if (usage.credits) parts.push(`credits:${usage.credits}`);
 								return parts.length > 0 ? parts.join(", ") : "quota unavailable";
 							};

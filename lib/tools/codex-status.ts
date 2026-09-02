@@ -219,6 +219,8 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 						badges.push(formatUiBadge(ui, "cooldown", "warning"));
 					if (badges.length === 0)
 						badges.push(formatUiBadge(ui, "ok", "success"));
+					const plan = formatPlanType(account.planType);
+					if (plan) badges.push(formatUiBadge(ui, plan, "muted"));
 
 					lines.push(
 						formatUiItem(ui, `${label} ${badges.join(" ")}`.trim()),
@@ -294,6 +296,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 				columns: [
 					{ header: "#", width: 3 },
 					{ header: "Label", width: 42 },
+					{ header: "Plan", width: 18 },
 					{ header: "Active", width: 6 },
 					{ header: "Rate Limit", width: 16 },
 					{ header: "Cooldown", width: 16 },
@@ -322,6 +325,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 						[
 							String(index + 1),
 							label,
+							formatPlanType(account.planType) ?? "unknown",
 							active,
 							rateLimit,
 							cooldown,
