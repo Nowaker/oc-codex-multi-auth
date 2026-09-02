@@ -32,6 +32,12 @@ export class AccountPersistence {
 	private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingSave: Promise<void> | null = null;
 	private shutdownHandler: (() => Promise<void>) | null = null;
+	/**
+	 * Set by {@link disposeShutdownHandler}. From that point this manager has
+	 * been replaced, so its account list is no longer authoritative and every
+	 * further write degrades to {@link mergeVolatileState}.
+	 */
+	private disposed = false;
 
 	constructor(private readonly state: AccountState) {}
 
@@ -86,6 +92,17 @@ export class AccountPersistence {
 		// account permanently. Adopt any newer on-disk credentials before
 		// persisting.
 		await withAccountStorageTransaction(async (current, persist) => {
+			if (this.disposed) {
+				// Disposal landed while this save was already in flight — after
+				// the timer had fired, so cancelling the timer could not stop it.
+				// Its account list belongs to a manager that has been replaced,
+				// so persisting it wholesale would delete whatever the successor
+				// has since loaded or added. Degrade to the volatile merge, which
+				// keeps the rate-limit and cooldown state this snapshot carries
+				// without touching membership.
+				if (current) await persist(this.mergeVolatileState(current));
+				return;
+			}
 			if (current) {
 				// Before adoptNewerDiskCredentials: for records without workspace
 				// ids the refresh token participates in the identity key, and
@@ -96,6 +113,67 @@ export class AccountPersistence {
 			}
 			await persist(storage);
 		});
+	}
+
+	/**
+	 * Persist only the volatile rotation state this manager holds: rate-limit
+	 * blocks, cooldowns, and last-used stamps, each resolved to whichever side
+	 * runs longer or later.
+	 *
+	 * Account membership, credentials, and the active-index routing are taken
+	 * from `disk` untouched. That is what makes the write safe for a manager
+	 * that has already been replaced: a 429 recorded on it still reaches disk,
+	 * and it cannot delete an account its successor loaded or added.
+	 *
+	 * Live in-memory state is left alone for the same reason
+	 * {@link adoptLongerDiskRateLimits} leaves it alone: a missing block is
+	 * self-correcting from the next response's quota headers.
+	 */
+	private mergeVolatileState(disk: AccountStorageV3): AccountStorageV3 {
+		const now = nowMs();
+		const mineByIdentity = new Map<string, AccountState["accounts"][number]>();
+		for (const account of this.state.accounts) {
+			mineByIdentity.set(getWorkspaceIdentityKey(account), account);
+		}
+
+		return {
+			...disk,
+			accounts: disk.accounts.map((record) => {
+				const mine = mineByIdentity.get(getWorkspaceIdentityKey(record));
+				if (!mine) return record;
+				const merged: AccountMetadataV3 = { ...record };
+
+				// Longest-block-wins per quota key, matching adoptLongerDiskRateLimits.
+				// Only blocks still in the future are carried, so an entry this
+				// manager never pruned cannot resurrect an expired block.
+				let resets: Record<string, number | undefined> | undefined;
+				for (const [key, mineReset] of Object.entries(mine.rateLimitResetTimes ?? {})) {
+					if (typeof mineReset !== "number" || !Number.isFinite(mineReset) || mineReset <= now) {
+						continue;
+					}
+					const theirReset = record.rateLimitResetTimes?.[key];
+					if (typeof theirReset === "number" && theirReset >= mineReset) continue;
+					resets = { ...(resets ?? record.rateLimitResetTimes ?? {}), [key]: mineReset };
+				}
+				if (resets) merged.rateLimitResetTimes = resets;
+
+				if (
+					typeof mine.coolingDownUntil === "number" &&
+					mine.coolingDownUntil > now &&
+					mine.coolingDownUntil > (record.coolingDownUntil ?? 0)
+				) {
+					merged.coolingDownUntil = mine.coolingDownUntil;
+					merged.cooldownReason = mine.cooldownReason;
+				}
+
+				if (typeof mine.lastUsed === "number" && mine.lastUsed > (record.lastUsed ?? 0)) {
+					merged.lastUsed = mine.lastUsed;
+					merged.lastSwitchReason = mine.lastSwitchReason ?? record.lastSwitchReason;
+				}
+
+				return merged;
+			}),
+		};
 	}
 
 	/**
@@ -216,8 +294,17 @@ export class AccountPersistence {
 		}
 	}
 
+	/**
+	 * A disposed manager still accepts saves. `index.ts` hands the request
+	 * pipeline a manager reference and swaps the cached instance underneath it,
+	 * so an in-flight request records its 429 block on the outgoing manager
+	 * after the reload has already flushed and disposed it. Refusing the write
+	 * there would lose the block entirely — the account would be handed straight
+	 * back to rotation for another 429. `saveToDisk` routes it through
+	 * {@link mergeVolatileState} instead, which is safe to run at any time.
+	 */
 	saveToDiskDebounced(delayMs = 500): void {
-		this.ensureShutdownFlushRegistered();
+		if (!this.disposed) this.ensureShutdownFlushRegistered();
 		if (this.saveDebounceTimer) {
 			clearTimeout(this.saveDebounceTimer);
 		}
@@ -301,24 +388,28 @@ export class AccountPersistence {
 	 * replacing an `AccountManager` instance (e.g., on cache invalidation) to
 	 * avoid unbounded growth of the global cleanup queue.
 	 *
-	 * A queued debounced save is cancelled rather than flushed. Its payload is
-	 * this manager's account snapshot, and `saveToDisk` takes account membership
-	 * from that snapshot wholesale — it adopts newer credentials and longer
-	 * rate-limit blocks from disk, but never disk accounts the snapshot lacks.
-	 * A replaced manager firing 500ms later would therefore delete whatever its
-	 * successor has since loaded or added. What is dropped instead is a rotation
-	 * or `lastUsed` stamp: already last-writer-wins, and rediscovered on the
-	 * next request.
+	 * From here on this manager's account list is no longer authoritative.
+	 * `saveToDisk` takes membership from that list wholesale — it adopts newer
+	 * credentials and longer rate-limit blocks from disk, but never disk
+	 * accounts the list lacks — so a replaced manager writing it 500ms later
+	 * would delete whatever its successor has since loaded or added.
 	 *
-	 * The timer is cleared before the handler guard because the handler is
-	 * one-shot — it clears its own slot when it runs, so a manager whose
-	 * shutdown flush has already fired can still hold an armed timer.
+	 * Neither the queued timer nor an already-started save is cancelled, which
+	 * would drop real state: the only save a cancel can still reach is one
+	 * armed *after* the caller's flush, and that is the fresh rate-limit or
+	 * cooldown block an in-flight request just recorded, not a stale rotation
+	 * stamp. Both paths are marked instead, and `saveToDisk` degrades them to
+	 * {@link mergeVolatileState}: the block lands, membership stays as the
+	 * successor left it. Marking rather than cancelling is also what covers the
+	 * save that had already begun by the time this ran, which a `clearTimeout`
+	 * cannot touch at all.
+	 *
+	 * The flag is set before the handler guard because the handler is one-shot —
+	 * it clears its own slot when it runs, so a manager whose shutdown flush has
+	 * already fired must still be marked here.
 	 */
 	disposeShutdownHandler(): void {
-		if (this.saveDebounceTimer) {
-			clearTimeout(this.saveDebounceTimer);
-			this.saveDebounceTimer = null;
-		}
+		this.disposed = true;
 		if (!this.shutdownHandler) return;
 		unregisterCleanup(this.shutdownHandler);
 		this.shutdownHandler = null;
