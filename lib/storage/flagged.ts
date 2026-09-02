@@ -129,6 +129,11 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
         ),
       accountIdSource,
       accountLabel: typeof rawAccount.accountLabel === "string" ? rawAccount.accountLabel : undefined,
+      // Carried like accountLabel: this normalizer rebuilds records field by
+      // field, so a field it does not name is dropped on the way through
+      // quarantine and the restored account reports an unknown plan until the
+      // next login or token refresh.
+      planType: typeof rawAccount.planType === "string" ? rawAccount.planType : undefined,
       accountTags,
       accountNote,
       email: typeof rawAccount.email === "string" ? rawAccount.email : undefined,

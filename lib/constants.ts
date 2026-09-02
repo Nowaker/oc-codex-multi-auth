@@ -63,6 +63,9 @@ export const URL_PATHS = {
 /** JWT claim path for ChatGPT account ID */
 export const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
 
+/** JWT claim path carrying the signed-in user's email; present on access tokens. */
+export const JWT_PROFILE_CLAIM_PATH = "https://api.openai.com/profile" as const;
+
 /** Error messages */
 export const ERROR_MESSAGES = {
 	NO_ACCOUNT_ID: "Failed to extract accountId from token",

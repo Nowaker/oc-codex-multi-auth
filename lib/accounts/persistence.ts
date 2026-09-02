@@ -58,6 +58,7 @@ export class AccountPersistence {
 				organizationId: account.organizationId,
 				accountIdSource: account.accountIdSource,
 				accountLabel: account.accountLabel,
+				planType: account.planType,
 				accountTags: account.accountTags,
 				accountNote: account.accountNote,
 				email: account.email,

@@ -1,5 +1,6 @@
 import type { Config } from "@opencode-ai/sdk/v2";
 import { getEffortSuffix } from "./request/helpers/effort-suffix.js";
+import { formatPlanType } from "./auth/plan-tier.js";
 
 export type ReasoningVariant =
 	| "none"
@@ -450,7 +451,10 @@ export function formatQuotaDetailsText(
 	for (const limit of quota.limits) {
 		lines.push(formatDetailsLimit(limit));
 	}
-	if (quota.planType) lines.push(`Plan: ${quota.planType}`);
+	// Named through formatPlanType like the stored copy, so one seat does not
+	// print "Business" in codex-list and "team" here in the same session.
+	const planLabel = formatPlanType(quota.planType);
+	if (planLabel) lines.push(`Plan: ${planLabel}`);
 	if (
 		typeof quota.activeLimit === "number" &&
 		Number.isFinite(quota.activeLimit)

@@ -130,6 +130,7 @@ export const AccountMetadataV3Schema = z.object({
 	organizationId: z.string().optional(),
 	accountIdSource: AccountIdSourceSchema.optional(),
 	accountLabel: z.string().optional(),
+	planType: z.string().optional(),
 	accountTags: AccountTagsSchema,
 	accountNote: AccountNoteSchema,
 	email: z.string().optional(),

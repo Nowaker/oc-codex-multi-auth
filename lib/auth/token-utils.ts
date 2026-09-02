@@ -4,7 +4,7 @@
  */
 
 import { decodeJWT } from "./auth.js";
-import { JWT_CLAIM_PATH } from "../constants.js";
+import { JWT_CLAIM_PATH, JWT_PROFILE_CLAIM_PATH } from "../constants.js";
 import { isRecord } from "../utils.js";
 import type { AccountIdSource, JWTPayload } from "../types.js";
 
@@ -57,6 +57,28 @@ function formatAccountIdSuffix(accountId: string): string {
 function formatTokenCandidateLabel(prefix: string, accountId: string): string {
 	const suffix = formatAccountIdSuffix(accountId);
 	return `${prefix} [id:${suffix}]`;
+}
+
+/**
+ * Trailing `[id:…]` marks a label this plugin generated — the shape every
+ * generator here emits, via {@link formatTokenCandidateLabel} or the `Override
+ * [id:…]` branch in `resolveAccountSelection`. A user-supplied label never
+ * carries one, which is what lets a login clear a stale generated label
+ * without overwriting a name someone chose with `codex-label`.
+ */
+const GENERATED_LABEL_PATTERN = /\s\[id:[^\]]*\]$/;
+
+/**
+ * Whether a stored label may be replaced by a login.
+ *
+ * A blank label counts as generated so an account that never had one can pick
+ * one up. Anything that does not carry the `[id:…]` marker is treated as a
+ * name a user chose and is left alone.
+ */
+export function isGeneratedAccountLabel(label: string | undefined): boolean {
+	const normalized = toStringValue(label);
+	if (!normalized) return true;
+	return GENERATED_LABEL_PATTERN.test(normalized);
 }
 
 /**
@@ -448,9 +470,16 @@ export function extractAccountEmail(accessToken?: string, idToken?: string): str
 	if (!accessToken) return undefined;
 	const decoded = decodeJWT(accessToken);
 	const nested = decoded?.[JWT_CLAIM_PATH] as Record<string, unknown> | undefined;
+	// The profile claim is the only email an access token carries on its own, so
+	// it is what keeps the address recoverable on a refresh that returns no
+	// id_token.
+	const profile = decoded?.[JWT_PROFILE_CLAIM_PATH] as
+		| Record<string, unknown>
+		| undefined;
 	const candidate =
 		(nested?.email as string | undefined) ??
 		(nested?.chatgpt_user_email as string | undefined) ??
+		(profile?.email as string | undefined) ??
 		(decoded?.email as string | undefined) ??
 		(decoded?.preferred_username as string | undefined);
 	if (typeof candidate === "string" && candidate.includes("@") && candidate.trim()) {
@@ -499,26 +528,6 @@ export function getAccountIdCandidates(
 	}
 
 	return uniqueCandidates(candidates);
-}
-
-/**
- * Re-point a candidate label at the account id that actually routes requests.
- *
- * Candidate labels embed their own `[id:…]` suffix, and for an org candidate
- * that suffix is the organization id - which the Codex backend ignores when it
- * meters quota. Swapping in the routing account's suffix keeps the workspace
- * name a user recognises while identifying the entry the same way every other
- * surface does.
- */
-export function relabelCandidateForAccountId(
-	label: string | undefined,
-	accountId: string,
-): string | undefined {
-	if (!label) return undefined;
-	const base = label.replace(/\s*\[id:[^\]]*\]\s*$/, "").trim();
-	return base
-		? `${base} [id:${formatAccountIdSuffix(accountId)}]`
-		: formatTokenCandidateLabel("Workspace", accountId);
 }
 
 /**

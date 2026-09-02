@@ -73,6 +73,7 @@ export interface JWTPayload {
 	"https://api.openai.com/auth"?: {
 		chatgpt_account_id?: string;
 		chatgpt_account_user_id?: string;
+		chatgpt_plan_type?: string;
 		organizations?: unknown;
 		email?: string;
 		chatgpt_user_email?: string;

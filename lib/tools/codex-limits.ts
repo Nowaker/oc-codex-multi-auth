@@ -25,6 +25,7 @@ import {
 	formatUiKeyValue,
 } from "../ui/format.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
+import { formatPlanType } from "../auth/plan-tier.js";
 import type { ToolContext } from "./index.js";
 
 /**
@@ -234,9 +235,10 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 								`  ${formatUiKeyValue(ui, limit.name, formatUsageLimitSummary(limit.window), "muted")}`,
 							);
 						}
-						if (usage.planType) {
+						const planLabel = formatPlanType(usage.planType);
+						if (planLabel) {
 							lines.push(
-								`  ${formatUiKeyValue(ui, "Plan", usage.planType, "muted")}`,
+								`  ${formatUiKeyValue(ui, "Plan", planLabel, "muted")}`,
 							);
 						}
 						if (usage.credits) {
@@ -262,8 +264,9 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 								`  ${limit.name}: ${formatUsageLimitSummary(limit.window)}`,
 							);
 						}
-						if (usage.planType) {
-							lines.push(`  Plan: ${usage.planType}`);
+						const planLabel = formatPlanType(usage.planType);
+						if (planLabel) {
+							lines.push(`  Plan: ${planLabel}`);
 						}
 						if (usage.credits) {
 							lines.push(`  Credits: ${usage.credits}`);

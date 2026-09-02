@@ -220,7 +220,9 @@ describe("TUI prompt status helpers", () => {
 
 		expect(details).toContain("Account: [neil@example.com] (Account 2");
 		expect(details).toContain("5h: 88% left");
-		expect(details).toContain("Plan: plus");
+		// Named the same way the stored plan is, so one seat does not read
+		// "Plus" in codex-list and "plus" here.
+		expect(details).toContain("Plan: Plus");
 		expect(details).toContain("Active limit: 40");
 		expect(details).toContain("Source: response headers");
 		expect(details).toContain("Updated: just now");
