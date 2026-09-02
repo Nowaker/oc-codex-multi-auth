@@ -22,10 +22,13 @@
  *      NOT misfire on rate-limit / entitlement / server bodies.
  */
 
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, afterAll, afterEach, beforeAll, vi } from "vitest";
 
 import { AccountManager } from "../../lib/accounts.js";
-import type { AccountStorageV3 } from "../../lib/storage.js";
+import { setStoragePathDirect, type AccountStorageV3 } from "../../lib/storage.js";
 import { ACCOUNT_LIMITS } from "../../lib/constants.js";
 import { isInvalidatedAuthTokenError } from "../../lib/request/fetch-helpers.js";
 import type { ModelFamily } from "../../lib/prompts/codex.js";
@@ -33,6 +36,15 @@ import { MODEL_FAMILIES } from "../../lib/prompts/codex.js";
 
 const FAMILY: ModelFamily = "codex";
 const COOLDOWN = ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS;
+
+// These scenarios drive the REAL AccountManager and end in
+// saveToDiskDebounced(), which without this override replaces the developer's
+// own ~/.opencode account pool with this file's fixture. Pid-scoped so
+// concurrent checkouts do not share one file.
+const TEST_STORAGE_PATH = join(
+	tmpdir(),
+	`oc-codex-multi-auth-auth-invalidated-401-${process.pid}-${Date.now()}.json`,
+);
 
 const INVALIDATED_401_BODY = {
 	error: {
@@ -133,6 +145,19 @@ function simulateRestart(manager: AccountManager): AccountManager {
 }
 
 describe("chaos/auth-invalidated-401 — real manager + real detector (issue #171)", () => {
+	beforeAll(() => {
+		setStoragePathDirect(TEST_STORAGE_PATH);
+	});
+
+	afterAll(async () => {
+		setStoragePathDirect(null);
+		try {
+			await fs.unlink(TEST_STORAGE_PATH);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	});
+
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.useRealTimers();
