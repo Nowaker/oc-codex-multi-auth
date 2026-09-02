@@ -7,8 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **Quota notifications now show the pool's best availability.** The 5-hour and weekly lines independently select the highest remaining percentage and earliest reset across enabled accounts, rather than showing the reset belonging to the account with the highest remaining percentage.
+### Added
+- **Quota notifications now surface the pool's earliest reset.** Each 5-hour and weekly line still pairs the highest remaining percentage with that same account's reset, so the pair describes a quota one account actually has. When a different account recovers sooner, that reset is appended as `another account resets ...` rather than replacing the paired one, which would have described a quota no account holds.
 
 ## [6.15.0] - 2026-08-31
 

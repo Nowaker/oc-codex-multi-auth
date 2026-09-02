@@ -270,12 +270,13 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 Quota notifications query each distinct enabled account with bounded
 concurrency. The 5-hour and weekly windows are tracked independently, and each
 threshold alerts once until that window rises above it after a reset. Each line
-reports the most headroom across enabled accounts in that window plus the
-earliest reset across those accounts. The percentage and reset may come from
-different accounts. A window the plan has switched off reports
-`used_percent: 0` and is skipped rather than scored as a full quota. Account
-identities are omitted from alerts and are never persisted in notification
-state.
+reports the account with the most headroom in that window plus that same
+account's reset time, so the percentage and the reset it is printed with always
+come from one account. When another account recovers earlier, that reset is
+appended as a separate `another account resets ...` clause instead of replacing
+the first one. A window the plan has switched off reports `used_percent: 0` and
+is skipped rather than scored as a full quota. Account identities are omitted
+from alerts and are never persisted in notification state.
 Set `notifyEveryCheck` to `true` to deliver the aggregate message after every
 successful poll interval even when no threshold was crossed. Set
 `thresholds` to `[]` to disable threshold alerts entirely; omitting the key

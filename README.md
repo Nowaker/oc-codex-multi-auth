@@ -300,13 +300,15 @@ running, it checks all enabled accounts and alerts through Notification Center
 when the best remaining 5-hour or weekly pool quota crosses 25%, 10%, or 0%.
 The feature is disabled by default.
 
-Each line reports the most headroom available across enabled accounts in that
-window together with the earliest reset across those accounts. Windows a plan
-has switched off are skipped rather than counted as full. Account identities
-are omitted for readability and lock-screen privacy:
+Each line reports the enabled account with the most headroom in that window,
+together with that same account's reset time, so the pair always describes a
+quota that one account actually has. When a different account recovers sooner,
+that reset is appended under its own label rather than folded into the first
+one. Windows a plan has switched off are skipped rather than counted as full.
+Account identities are omitted for readability and lock-screen privacy:
 
 ```text
-5h: 10% | resets 22:30
+5h: 10% | resets 02:00 | another account resets 22:30
 Weekly: 72% | resets 22:30 on Aug 30
 ```
 
