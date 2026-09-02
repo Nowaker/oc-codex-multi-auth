@@ -22,10 +22,13 @@
  *      NOT misfire on rate-limit / entitlement / server bodies.
  */
 
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, afterAll, afterEach, beforeAll, vi } from "vitest";
 
 import { AccountManager } from "../../lib/accounts.js";
-import type { AccountStorageV3 } from "../../lib/storage.js";
+import { setStoragePathDirect, type AccountStorageV3 } from "../../lib/storage.js";
 import { ACCOUNT_LIMITS } from "../../lib/constants.js";
 import { isInvalidatedAuthTokenError } from "../../lib/request/fetch-helpers.js";
 import type { ModelFamily } from "../../lib/prompts/codex.js";
@@ -33,6 +36,30 @@ import { MODEL_FAMILIES } from "../../lib/prompts/codex.js";
 
 const FAMILY: ModelFamily = "codex";
 const COOLDOWN = ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS;
+
+// These scenarios drive the REAL AccountManager and end in
+// saveToDiskDebounced(), which without this override replaces the developer's
+// own ~/.opencode account pool with this file's fixture. Pid-scoped so
+// concurrent checkouts do not share one file.
+const TEST_STORAGE_PATH = join(
+	tmpdir(),
+	`oc-codex-multi-auth-auth-invalidated-401-${process.pid}-${Date.now()}.json`,
+);
+
+/**
+ * Every manager this file builds, so `afterEach` can drain its debounced saves
+ * before the storage override is cleared. Redirecting the path is not enough on
+ * its own: `saveToDisk` resolves `getStoragePath()` inside the transaction, so
+ * a save still in flight when `setStoragePathDirect(null)` runs would land on
+ * the developer's real `~/.opencode` account file.
+ */
+const managers: AccountManager[] = [];
+
+function createManager(storage: AccountStorageV3): AccountManager {
+	const manager = new AccountManager(undefined, storage);
+	managers.push(manager);
+	return manager;
+}
 
 const INVALIDATED_401_BODY = {
 	error: {
@@ -129,19 +156,38 @@ function simulateRestart(manager: AccountManager): AccountManager {
 			cooldownReason: a.cooldownReason,
 		})),
 	};
-	return new AccountManager(undefined, storage);
+	return createManager(storage);
 }
 
 describe("chaos/auth-invalidated-401 — real manager + real detector (issue #171)", () => {
-	afterEach(() => {
+	beforeAll(() => {
+		setStoragePathDirect(TEST_STORAGE_PATH);
+	});
+
+	afterAll(async () => {
+		setStoragePathDirect(null);
+		try {
+			await fs.unlink(TEST_STORAGE_PATH);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	});
+
+	afterEach(async () => {
 		vi.restoreAllMocks();
+		// Real timers first: these cases run on fake timers, and the debounced
+		// save below never fires while the clock is frozen.
 		vi.useRealTimers();
+		for (const manager of managers.splice(0)) {
+			manager.disposeShutdownHandler();
+			await manager.flushPendingSave();
+		}
 	});
 
 	it("A: 401 on the pinned slot cools it down and rotation returns a different healthy account", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date(1_700_000_000_000));
-		const manager = new AccountManager(undefined, makeTwoAccountStorage());
+		const manager = createManager(makeTwoAccountStorage());
 
 		const dead = manager.getCurrentOrNextForFamilyHybrid(FAMILY, "gpt-5.1");
 		expect(dead).not.toBeNull();
@@ -166,7 +212,7 @@ describe("chaos/auth-invalidated-401 — real manager + real detector (issue #17
 	it("B: after success on the healthy account, persisted family routing points at it (self-heals across restart)", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date(1_700_000_000_000));
-		const manager = new AccountManager(undefined, makeTwoAccountStorage());
+		const manager = createManager(makeTwoAccountStorage());
 
 		// Family is pinned to the dead slot (index 0) initially — the #171 bug.
 		expect(manager.getActiveIndexForFamily(FAMILY)).toBe(0);
@@ -195,7 +241,7 @@ describe("chaos/auth-invalidated-401 — real manager + real detector (issue #17
 	});
 
 	it("C: clearAuthFailures on success prevents stale-count accumulation toward removal", async () => {
-		const manager = new AccountManager(undefined, makeTwoAccountStorage());
+		const manager = createManager(makeTwoAccountStorage());
 		const dead = manager.getCurrentOrNextForFamilyHybrid(FAMILY, "gpt-5.1")!;
 
 		// Two 401s (below the threshold of 3).
@@ -218,7 +264,7 @@ describe("chaos/auth-invalidated-401 — real manager + real detector (issue #17
 	});
 
 	it("D: reaching MAX_AUTH_FAILURES_BEFORE_REMOVAL removes the dead refresh-token group", async () => {
-		const manager = new AccountManager(undefined, makeTwoAccountStorage());
+		const manager = createManager(makeTwoAccountStorage());
 		const dead = manager.getCurrentOrNextForFamilyHybrid(FAMILY, "gpt-5.1")!;
 
 		let last = { removed: 0, cooledCount: 0, failures: 0 };
@@ -239,7 +285,7 @@ describe("chaos/auth-invalidated-401 — real manager + real detector (issue #17
 	it("E: single standalone account 401 exercises the cooledCount fallback and cools the lone account", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date(1_700_000_000_000));
-		const manager = new AccountManager(undefined, makeSingleAccountStorage());
+		const manager = createManager(makeSingleAccountStorage());
 		const solo = manager.getCurrentOrNextForFamilyHybrid(FAMILY, "gpt-5.1")!;
 		expect(solo.refreshToken).toBe("rt-solo");
 
@@ -268,7 +314,7 @@ describe("chaos/auth-invalidated-401 — real manager + real detector (issue #17
 	it("E2: explicit fallback — markAccountCoolingDown fires when no token group matches", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date(1_700_000_000_000));
-		const manager = new AccountManager(undefined, makeSingleAccountStorage());
+		const manager = createManager(makeSingleAccountStorage());
 		const solo = manager.getCurrentOrNextForFamilyHybrid(FAMILY, "gpt-5.1")!;
 
 		// Simulate the cooledCount<=0 branch directly: a token with no live match.
