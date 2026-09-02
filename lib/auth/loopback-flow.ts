@@ -4,11 +4,18 @@
  * One typed session shared by the automatic-browser and manual-browser
  * choices: the listener is bound BEFORE any browser is opened, so the browser
  * choice cannot land on a redirect_uri nobody is listening on. Manual mode
- * (`openBrowser=false`) never opens a browser. If the listener cannot bind,
- * the browser is never opened and a typed `unavailable` lifecycle marker is
+ * (`openBrowser=false`) never opens a browser. If the listener cannot bind —
+ * whether it reports itself unready or `startLocalOAuthServer` throws — the
+ * browser is never opened and a typed `unavailable` lifecycle marker is
  * returned; the caller maps that marker to user-facing guidance (label names,
  * fallback instructions) because those belong at the auth-method boundary in
  * index.ts, not inside this primitive.
+ *
+ * A browser that will not launch is NOT a terminal condition. The listener is
+ * already bound and its deadline already running, so the session comes back
+ * ready with `browserOpened: false` and the caller prints the URL for the user
+ * to open. Ending the session there would strand every host with no opener on
+ * PATH, which is the ordinary case on Linux and WSL.
  *
  * A ready session starts its callback observation IMMEDIATELY, so the
  * listener's existing five-minute deadline runs from session creation rather
@@ -85,6 +92,14 @@ export interface LoopbackFlowReady {
 	 */
 	url: string;
 	/**
+	 * `false` when `openBrowser` was asked for and the launch failed — no
+	 * `xdg-open` on PATH, an opener that threw. The session stays live: the
+	 * listener is bound and the deadline is running, so printing `url` is all
+	 * the user needs to finish the login in a browser they open themselves.
+	 * Always `true` in manual mode, where no browser was ever going to open.
+	 */
+	browserOpened: boolean;
+	/**
 	 * Idempotent listener close. Safe to call more than once; safe to call
 	 * before `waitAndExchange()` starts, which then completes without a
 	 * second close.
@@ -104,11 +119,13 @@ export interface LoopbackFlowUnavailable {
 	type: "unavailable";
 	/**
 	 * `listener_unavailable`: the callback port could not be bound, so no
-	 * browser was opened. `browser_open_failed`: the listener was ready but
-	 * the default browser could not be launched, so the session was closed
-	 * rather than left waiting on a page the user never saw.
+	 * browser was opened and there is no URL worth handing back.
+	 *
+	 * A browser that will not launch is deliberately NOT one of these. The
+	 * session is still usable then, and closing it would strand a user who was
+	 * one paste away from finishing — see {@link LoopbackFlowReady.browserOpened}.
 	 */
-	lifecycle: "listener_unavailable" | "browser_open_failed";
+	lifecycle: "listener_unavailable";
 }
 
 export interface LoopbackFlowCancelled {
@@ -146,11 +163,21 @@ export async function startLoopbackFlow(
 	const flow = await deps.createAuthorizationFlow(
 		options.forceNewLogin ? { forceNewLogin: true } : undefined,
 	);
-	const server = await deps.startLocalOAuthServer({ state: flow.state });
+	// A throw is the same outcome as a listener that never bound, and this
+	// module's contract is a typed marker rather than an exception: without the
+	// catch, an `http.createServer` failure escapes the OpenCode auth method as
+	// an unhandled rejection instead of the "retry with Device Code / Manual URL
+	// Paste" guidance the caller maps `listener_unavailable` to.
+	let server: OAuthServerInfo | null = null;
+	try {
+		server = await deps.startLocalOAuthServer({ state: flow.state });
+	} catch {
+		server = null;
+	}
 
-	if (!server.ready) {
+	if (!server?.ready) {
 		try {
-			server.close();
+			server?.close();
 		} catch {
 			// listener never bound: close is best-effort and non-fatal
 		}
@@ -159,13 +186,14 @@ export async function startLoopbackFlow(
 			lifecycle: "listener_unavailable",
 		};
 	}
+	const readyServer = server;
 
 	let closed = false;
 	const closeOnce = (): void => {
 		if (closed) return;
 		closed = true;
 		try {
-			server.close();
+			readyServer.close();
 		} catch {
 			// a listener that will not close must not mask the outcome the
 			// caller is waiting on; the close contract is best-effort
@@ -174,7 +202,7 @@ export async function startLoopbackFlow(
 
 	const callbackOutcome: Promise<CallbackObservation> = (async () => {
 		try {
-			const callback = await server.waitForCode(flow.state);
+			const callback = await readyServer.waitForCode(flow.state);
 			return callback
 				? { type: "code", code: callback.code }
 				: { type: "cancelled" };
@@ -185,19 +213,17 @@ export async function startLoopbackFlow(
 		}
 	})();
 
+	// A failed launch does not end the session. The listener is bound and its
+	// deadline is already running, so the user can still finish by opening the
+	// URL themselves — which is exactly what happens on a Linux/WSL box with no
+	// `xdg-open` on PATH, where `openBrowserUrl` returns false for every login.
+	// Closing here would take that away and leave nothing to retry with.
+	let browserOpened = true;
 	if (options.openBrowser) {
-		let opened: boolean;
 		try {
-			opened = deps.openBrowserUrl(flow.url);
+			browserOpened = deps.openBrowserUrl(flow.url);
 		} catch {
-			opened = false;
-		}
-		if (!opened) {
-			closeOnce();
-			return {
-				type: "unavailable",
-				lifecycle: "browser_open_failed",
-			};
+			browserOpened = false;
 		}
 	}
 
@@ -226,6 +252,7 @@ export async function startLoopbackFlow(
 	return {
 		type: "ready",
 		url: flow.url,
+		browserOpened,
 		close: closeOnce,
 		waitAndExchange,
 	};

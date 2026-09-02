@@ -17,13 +17,14 @@
  *      and state so the winning login cannot be replayed by the loser.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 
 import {
 	createAuthorizationFlow,
 	refreshAccessToken,
 } from "../../lib/auth/auth.js";
 import { startLocalOAuthServer } from "../../lib/auth/server.js";
+import { acquireOAuthPortLock } from "../helpers/oauth-port-lock.js";
 import { AccountManager } from "../../lib/accounts.js";
 import type { AccountStorageV3 } from "../../lib/storage.js";
 
@@ -143,6 +144,19 @@ describe("chaos/auth-faults — real fault injection", () => {
 			null;
 		let secondServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null =
 			null;
+		// The collision under test is the one this scenario creates itself. A
+		// sibling file binding 1455 in a parallel worker produces the same
+		// symptom for an unrelated reason, so hold the port for the scenario.
+		let releasePort: (() => Promise<void>) | null = null;
+
+		beforeAll(async () => {
+			releasePort = await acquireOAuthPortLock();
+		});
+
+		afterAll(async () => {
+			await releasePort?.();
+			releasePort = null;
+		});
 
 		afterEach(() => {
 			// Defensive: tear servers down in both orderings so a half-bound

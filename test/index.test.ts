@@ -817,6 +817,28 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(plugin.auth.methods[3].label).toBe("Codex OAuth (Manual URL Paste)");
 		});
 
+		it("noBrowser input returns the paste flow instead of launching a browser", async () => {
+			// Programmatic input from a headless caller or script. Ignoring it
+			// would enter the multi-account loop, try to launch a browser, and
+			// bind port 1455 — the opposite of what was asked for.
+			const browserModule = await import("../lib/auth/browser.js");
+			vi.mocked(browserModule.openBrowserUrl).mockClear();
+			const oauthMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{
+					url: string;
+					method: string;
+					validate?: (input: string) => string | undefined;
+				}>;
+			};
+
+			for (const inputs of [{ noBrowser: "true" }, { "no-browser": "true" }]) {
+				const flow = await oauthMethod.authorize(inputs);
+				expect(flow.method).toBe("code");
+				expect(flow.url.length).toBeGreaterThan(0);
+				expect(vi.mocked(browserModule.openBrowserUrl)).not.toHaveBeenCalled();
+			}
+		});
+
 		it("manual-browser method returns a non-empty URL with method:auto and does not open the default browser", async () => {
 			const browserModule = await import("../lib/auth/browser.js");
 			vi.mocked(browserModule.openBrowserUrl).mockClear();
@@ -878,7 +900,12 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.message).toContain("Manual URL Paste");
 		});
 
-		it("manual paste accepts a raw authorization code and calls exchange with the flow verifier", async () => {
+		it("manual paste rejects a raw authorization code with no state", async () => {
+			// The state comparison is this flow's only in-plugin binding between
+			// the pasted value and this login attempt. Accepting a bare code
+			// would delegate that binding entirely to the authorization server's
+			// PKCE enforcement and hand anything a user was talked into pasting
+			// to the exchange with this attempt's verifier.
 			const authModule = await import("../lib/auth/auth.js");
 			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
 			const manualMethod = plugin.auth.methods[3] as unknown as {
@@ -889,14 +916,10 @@ describe("OpenAIOAuthPlugin", () => {
 			};
 			const flow = await manualMethod.authorize();
 			const rawCode = "abc123";
-			expect(flow.validate(rawCode)).toBeUndefined();
+			expect(flow.validate(rawCode)).toContain("state parameter");
 			const result = await flow.callback(rawCode);
-			expect(result.type).toBe("success");
-			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
-				"abc123",
-				"test-verifier",
-				"http://localhost:1455/auth/callback",
-			);
+			expect(result.type).toBe("failed");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 
 		it("manual paste accepts a full callback URL with matching state and calls exchange", async () => {
@@ -1003,7 +1026,7 @@ describe("OpenAIOAuthPlugin", () => {
 			);
 		});
 
-		it("manual paste accepts that same provider code pasted on its own", async () => {
+		it("manual paste rejects that same provider code pasted on its own", async () => {
 			// Given a manual-paste flow and only the opaque code from that callback
 			const authModule = await import("../lib/auth/auth.js");
 			vi.mocked(authModule.exchangeAuthorizationCode).mockClear();
@@ -1020,14 +1043,11 @@ describe("OpenAIOAuthPlugin", () => {
 			const validation = flow.validate(providerCode);
 			const result = await flow.callback(providerCode);
 
-			// Then the dotted opaque code stays raw and PKCE still binds it
-			expect(validation).toBeUndefined();
-			expect(result.type).toBe("success");
-			expect(vi.mocked(authModule.exchangeAuthorizationCode)).toHaveBeenCalledWith(
-				providerCode,
-				"test-verifier",
-				"http://localhost:1455/auth/callback",
-			);
+			// Then it is refused: a dotted opaque code is still a code with no
+			// state, and PKCE alone is not this flow's binding to the attempt.
+			expect(validation).toContain("state parameter");
+			expect(result.type).toBe("failed");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 
 		it("manual paste accepts code#state whose state matches the login attempt", async () => {

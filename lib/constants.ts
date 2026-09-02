@@ -92,12 +92,10 @@ export const AUTH_LABELS = {
 	OAUTH_DEVICE_CODE: "Codex OAuth (Device Code)",
 	OAUTH_MANUAL: "Codex OAuth (Manual URL Paste)",
 	API_KEY: "Manual API Key (Advanced)",
-	INSTRUCTIONS:
-		"Opening the default browser to complete sign-in. If nothing opens, copy the URL and open it in any browser.",
 	INSTRUCTIONS_MANUAL_BROWSER:
 		"Open this URL in any browser to sign in; sign-in completes automatically through the localhost callback on port 1455.",
 	INSTRUCTIONS_MANUAL:
-		"After logging in, paste either the full redirect URL or the raw authorization code here.",
+		"After logging in, copy the full redirect URL and paste it here. It carries the state parameter that ties the code to this login attempt.",
 } as const;
 
 /** Multi-account configuration */

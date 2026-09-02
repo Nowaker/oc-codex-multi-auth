@@ -225,7 +225,7 @@ Failed to access Codex API
      choose **`Codex OAuth (Open URL Manually)`** - it prints the URL after the listener is ready; open it in any browser; login completes automatically through localhost
    - **If localhost is not reachable** (containers, restricted networks):
      choose **`Codex OAuth (Device Code)`** - follow the verification link and one-time code;
-     if device code is unavailable, fall back to **`Codex OAuth (Manual URL Paste)`** - paste the full callback URL or raw authorization code
+     if device code is unavailable, fall back to **`Codex OAuth (Manual URL Paste)`** - paste the full callback URL, including its `state` parameter
 
 2. **Check port 1455 availability:**
    ```bash

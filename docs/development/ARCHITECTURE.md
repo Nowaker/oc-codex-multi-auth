@@ -43,7 +43,7 @@ OpenCode runtime
   | loads plugin package
   v
 index.ts
-  |- auth loader: default-browser callback, open-URL-manually callback, device code, manual URL/code paste
+  |- auth loader: default-browser callback, open-URL-manually callback, device code, manual URL paste
   |- account manager + V3 storage + optional keychain
   |- custom provider fetch pipeline
   |- runtime metrics, retry budgets, circuit breaker, recovery hooks
@@ -95,7 +95,7 @@ tui.ts
 | Installer CLI | `scripts/install-oc-codex-multi-auth.js`, `scripts/install-oc-codex-multi-auth-core.js` | npm bin; config merge; cache cleanup; modern/full/legacy catalog selection; standalone doctor/status/list/limits/dashboard/health/diag/warm; TUI plugin enablement |
 | OpenCode plugin entry | `index.ts` | auth loader, runtime wiring, custom fetch pipeline, account manager lifecycle, `ToolContext`, OpenCode plugin export |
 | TUI plugin entry | `tui.ts`, `lib/tui-status.ts`, `lib/tui-quota-cache.ts`, `lib/codex-usage.ts` | prompt quota status, account-aware quota snapshots, usage refresh, details rendering |
-| Auth flow | `lib/auth/auth.ts`, `lib/auth/loopback-flow.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts`, `lib/auth/scopes.ts` | PKCE OAuth, callback server, default-browser and open-URL-manually listener flows, device code, manual URL/code paste, workspace/account selection, scope validation |
+| Auth flow | `lib/auth/auth.ts`, `lib/auth/loopback-flow.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts`, `lib/auth/scopes.ts` | PKCE OAuth, callback server, default-browser and open-URL-manually listener flows, device code, manual URL paste, workspace/account selection, scope validation |
 | Account manager | `lib/accounts.ts`, `lib/accounts/` | account state facade, persistence, rotation, recovery, rate-limit tracking, workspace identity preservation, warm |
 | Storage | `lib/storage.ts`, `lib/storage/` | V3 JSON storage, atomic writes, migrations, per-project paths, backups, import/export, keychain opt-in, flagged accounts |
 | Request bridge | `lib/request/fetch-helpers.ts`, `lib/request/request-transformer.ts`, `lib/request/response-handler.ts`, `lib/request/retry-budget.ts`, `lib/request/rate-limit-backoff.ts`, `lib/request/helpers/` | URL/body/header shaping, Codex invariants, responses-lite, client identity, SSE conversion, retry budgets, backoff, error mapping |

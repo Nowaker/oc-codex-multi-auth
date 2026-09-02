@@ -2,15 +2,29 @@
  * Integration test for OAuth server flow
  * Tests the local HTTP callback server used for OAuth authentication
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterAll, afterEach, beforeAll } from "vitest";
 import http from "node:http";
 import { startLocalOAuthServer } from "../lib/auth/server.js";
 import { REDIRECT_URI } from "../lib/auth/auth.js";
 import { startLoopbackFlow } from "../lib/auth/loopback-flow.js";
+import { acquireOAuthPortLock } from "./helpers/oauth-port-lock.js";
 
 describe("OAuth Server Integration", () => {
 	let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
 	let openSession: { close: () => void } | null = null;
+	// This suite binds the real port 1455, and so does test/chaos/auth-faults.
+	// Vitest schedules files in parallel, so without the lock whichever suite
+	// loses the race sees ready=false and fails.
+	let releasePort: (() => Promise<void>) | null = null;
+
+	beforeAll(async () => {
+		releasePort = await acquireOAuthPortLock();
+	});
+
+	afterAll(async () => {
+		await releasePort?.();
+		releasePort = null;
+	});
 
 	afterEach(() => {
 		if (serverInfo) {

@@ -448,8 +448,9 @@ describe("startLoopbackFlow", () => {
 		}
 	});
 
-	it("closes and reports browser_open_failed when the opener returns false", async () => {
-		// Given a ready listener whose default browser will not launch
+	it("stays usable when the opener returns false", async () => {
+		// Given a ready listener whose default browser will not launch — an
+		// ordinary Linux/WSL box with no xdg-open on PATH
 		const log: CallLog = { events: [] };
 		const server = makeDeferredServer(log);
 		const openBrowserUrl = vi.fn(() => false);
@@ -465,16 +466,22 @@ describe("startLoopbackFlow", () => {
 			},
 		});
 
-		// Then it fails immediately with a typed marker and releases the port
-		expect(session.type).toBe("unavailable");
-		if (session.type === "unavailable") {
-			expect(session.lifecycle).toBe("browser_open_failed");
-		}
+		// Then the session is still live, flagged so the caller can say what to
+		// do, and the listener is still holding the port for the callback
+		assertReady(session);
+		expect(session.browserOpened).toBe(false);
+		expect(session.url).toBe(makeFlow().url);
 		expect(openBrowserUrl).toHaveBeenCalledTimes(1);
-		expect(server.closeMock).toHaveBeenCalledTimes(1);
+		expect(server.closeMock).not.toHaveBeenCalled();
+
+		// And a code pasted into a browser the user opened still completes it
+		server.resolveWith({ code: "manual-code" });
+		await expect(session.waitAndExchange()).resolves.toMatchObject({
+			type: "success",
+		});
 	});
 
-	it("closes and reports browser_open_failed when the opener throws", async () => {
+	it("stays usable when the opener throws", async () => {
 		// Given a ready listener whose opener throws
 		const log: CallLog = { events: [] };
 		const server = makeDeferredServer(log);
@@ -493,12 +500,52 @@ describe("startLoopbackFlow", () => {
 			},
 		});
 
-		// Then the throw is mapped to the same typed marker and cleanup
+		// Then the throw reads the same as a false return
+		assertReady(session);
+		expect(session.browserOpened).toBe(false);
+		expect(server.closeMock).not.toHaveBeenCalled();
+	});
+
+	it("reports listener_unavailable when starting the server throws", async () => {
+		// Given a listener that cannot even be constructed
+		const session = await startLoopbackFlow({
+			openBrowser: true,
+			deps: {
+				createAuthorizationFlow: async () => makeFlow(),
+				startLocalOAuthServer: async () => {
+					throw new Error("createServer boom");
+				},
+				openBrowserUrl: () => true,
+				exchangeAuthorizationCode: async () => makeTokenResult(),
+			},
+		});
+
+		// Then it is the same typed marker as a listener that reports unready,
+		// not an exception escaping the OpenCode auth method
 		expect(session.type).toBe("unavailable");
 		if (session.type === "unavailable") {
-			expect(session.lifecycle).toBe("browser_open_failed");
+			expect(session.lifecycle).toBe("listener_unavailable");
 		}
-		expect(server.closeMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("reports the browser as opened in manual mode, which never launches one", async () => {
+		const log: CallLog = { events: [] };
+		const server = makeDeferredServer(log);
+		const openBrowserUrl = vi.fn(() => false);
+
+		const session = await startLoopbackFlow({
+			openBrowser: false,
+			deps: {
+				createAuthorizationFlow: async () => makeFlow(),
+				startLocalOAuthServer: async () => server,
+				openBrowserUrl,
+				exchangeAuthorizationCode: async () => makeTokenResult(),
+			},
+		});
+
+		assertReady(session);
+		expect(openBrowserUrl).not.toHaveBeenCalled();
+		expect(session.browserOpened).toBe(true);
 	});
 
 	it("lets an external close win over a callback that arrives afterwards", async () => {

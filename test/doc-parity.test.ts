@@ -639,14 +639,19 @@ describe("runtime documentation parity", () => {
 		);
 		expect(archPublic).not.toContain("three OAuth labels only");
 		expect(archPublic).toContain("open URL manually");
-		expect(archPublic).toContain("manual URL/code paste");
+		// "manual URL paste", not "URL/code": the flow requires the full
+		// callback URL, because its `state` parameter is the only thing binding
+		// the pasted value to the login attempt.
+		expect(archPublic).toContain("manual URL paste");
+		expect(archPublic).not.toContain("manual URL/code paste");
 
 		const archDev = readRepoFile("docs/development/ARCHITECTURE.md");
 		expect(
 			archDev,
 			"docs/development/ARCHITECTURE.md must include open-URL-manually callback",
 		).toContain("open-URL-manually callback");
-		expect(archDev).toContain("manual URL/code paste");
+		expect(archDev).toContain("manual URL paste");
+		expect(archDev).not.toContain("manual URL/code paste");
 		expect(archDev).not.toContain("browser callback, device code, manual URL paste");
 
 		const faq = readRepoFile("docs/faq.md");

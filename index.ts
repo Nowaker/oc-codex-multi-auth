@@ -641,10 +641,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			`OAuth callback timed out or was cancelled. ` +
 			`If you are on SSH, WSL, or a headless machine, retry with "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}".`;
 
+		// The login is still live when this fires: the listener is bound and
+		// waiting, so opening the URL printed above finishes it. That is the
+		// whole recovery path on a host with no opener on PATH.
 		const browserOpenFailedMessage = (): string =>
-			`Could not launch your default browser. ` +
-			`Retry with "${AUTH_LABELS.OAUTH_MANUAL_BROWSER}" to print the URL and open it in the browser of your choice, ` +
-			`or use "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}".`;
+			`Could not launch your default browser. Open the OAuth URL above in any browser to finish signing in; ` +
+			`this login is still waiting on the localhost callback. ` +
+			`"${AUTH_LABELS.OAUTH_MANUAL_BROWSER}" does the same thing without trying to launch a browser, ` +
+			`and "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}" avoid the callback entirely.`;
 
 		const unavailableMessage = (
 			lifecycle: LoopbackFlowUnavailable["lifecycle"],
@@ -652,8 +656,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			switch (lifecycle) {
 				case "listener_unavailable":
 					return listenerUnavailableMessage();
-				case "browser_open_failed":
-					return browserOpenFailedMessage();
 				default: {
 					const unreachable: never = lifecycle;
 					return unreachable;
@@ -662,30 +664,36 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		};
 
 		/**
-		 * The asymmetry is deliberate: a raw code carries no state to compare
-		 * and PKCE still binds it to this attempt's verifier, whereas
-		 * structured input reproduces the callback's own parameters, so a
-		 * missing or empty state there means the paste did not come from this
-		 * attempt and must not reach the exchange.
+		 * Every accepted paste must carry this attempt's `state`, a raw code
+		 * included.
+		 *
+		 * That comparison is the manual flow's only in-plugin binding between
+		 * the pasted value and this login. Accepting a bare code delegates the
+		 * binding entirely to the authorization server's PKCE enforcement, and
+		 * hands anything a user is talked into pasting to
+		 * `exchangeAuthorizationCode` with this attempt's verifier — which is
+		 * the shape of the attack the state check exists to stop. The raw
+		 * branch of `parseAuthorizationInput` also returns the whole trimmed
+		 * input as the code, so a noisy paste would be forwarded verbatim.
 		 */
 		const manualInputRejection = (
 			parsed: AuthorizationInputParseResult,
 			expectedState: string,
 		): string | undefined => {
 			if (!parsed.code) {
-				return "No authorization code found. Paste the raw code, or the full callback URL (e.g., http://localhost:1455/auth/callback?code=...). If browser callback keeps failing, retry with Device Code.";
+				return "No authorization code found. Paste the full callback URL (e.g., http://localhost:1455/auth/callback?code=...&state=...). If browser callback keeps failing, retry with Device Code.";
 			}
 			switch (parsed.source) {
 				case "raw":
-					return undefined;
+					return "That is a bare authorization code. This flow needs the full callback URL, including the state parameter (e.g., http://localhost:1455/auth/callback?code=...&state=...), which is what ties the code to this login attempt. If needed, retry with Device Code.";
 				case "url":
 				case "query":
 				case "fragment":
 					if (!parsed.state) {
-						return "That callback URL carries no OAuth state, so it cannot be matched to this login attempt. Paste the complete callback URL including its state parameter, paste the raw code on its own, or retry with Device Code.";
+						return "That callback URL carries no OAuth state, so it cannot be matched to this login attempt. Paste the complete callback URL including its state parameter, or retry with Device Code.";
 					}
 					if (parsed.state !== expectedState) {
-						return "OAuth state mismatch. Restart login and paste the code or callback URL generated for this login attempt, or retry with Device Code.";
+						return "OAuth state mismatch. Restart login and paste the callback URL generated for this login attempt, or retry with Device Code.";
 					}
 					return undefined;
 				default: {
@@ -751,6 +759,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				};
 			}
 			logInfo(`OAuth URL: ${session.url}`);
+			// Printed first, so the recovery instruction points at a URL the
+			// user can already see. The session stays open either way.
+			if (!session.browserOpened) {
+				logWarn(`\n[${PLUGIN_NAME}] ${browserOpenFailedMessage()}\n`);
+			}
 			const result = await session.waitAndExchange();
 			if (result.type === "cancelled") {
 				return {
@@ -3515,6 +3528,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							setStoragePath(authPerProjectAccounts ? process.cwd() : null);
 
 							const accounts: TokenSuccessWithAccount[] = [];
+							// Programmatic input, not a menu choice: a headless caller or
+							// script passes it to say "never launch a browser". Ignoring it
+							// would silently do the opposite — enter the multi-account loop,
+							// try to launch a browser, and bind port 1455 — and would also
+							// drop the replaceAll semantics the manual path carries.
+							const noBrowser =
+								inputs?.noBrowser === "true" ||
+								inputs?.["no-browser"] === "true";
 							const explicitLoginMode =
 								inputs?.loginMode === "fresh" || inputs?.loginMode === "add"
 									? inputs.loginMode
@@ -4270,6 +4291,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							let targetCount = Math.max(1, Math.min(normalizedRequested, availableSlots));
 							if (refreshAccountIndex !== undefined) {
 								targetCount = 1;
+							}
+							if (noBrowser) {
+								targetCount = 1;
+								// Paste-the-code, not the loopback listener: this is the one
+								// path that needs neither a browser on this host nor a
+								// reachable localhost:1455 from wherever the browser runs.
+								const { pkce, state, url } = await createAuthorizationFlow();
+								return buildManualOAuthFlow(pkce, url, state, startFresh);
 							}
 
 							const explicitCountProvided =
