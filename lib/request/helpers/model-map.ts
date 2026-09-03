@@ -27,6 +27,21 @@ export const GPT_56_SOL_MODEL_ID = "gpt-5.6-sol" as const;
 export const GPT_56_TERRA_MODEL_ID = "gpt-5.6-terra" as const;
 export const GPT_56_LUNA_MODEL_ID = "gpt-5.6-luna" as const;
 
+/** GPT-6 Astra, OpenAI's frontier model as of the 2026-09-03 launch. */
+export const GPT_6_ASTRA_MODEL_ID = "gpt-6-astra" as const;
+
+/**
+ * Daybreak cyber tiers, verified in the Codex model catalog
+ * (openai/codex `codex-rs/models-manager/models.json`, rust-v0.153.0+):
+ * `gpt-daybreak-blue-latest` (`model_specialty: cyber`, defensive) and
+ * `gpt-daybreak-red-latest` (cyber-permissive, for authorized research).
+ *
+ * Both carry `visibility: "hide"`, so Codex does not list them in its model
+ * picker. They are opt-in ids, never a default and never a fallback target.
+ */
+export const DAYBREAK_BLUE_MODEL_ID = "gpt-daybreak-blue-latest" as const;
+export const DAYBREAK_RED_MODEL_ID = "gpt-daybreak-red-latest" as const;
+
 /**
  * Effort suffixes each GPT-5.6 tier accepts, per the Codex model catalog
  * (openai/codex `codex-rs/models-manager/models.json`).
@@ -35,7 +50,7 @@ export const GPT_56_LUNA_MODEL_ID = "gpt-5.6-luna" as const;
  * three accept `none` or `minimal`. Press coverage claiming `max`/`ultra` are
  * Sol-exclusive contradicts the catalog — the catalog wins.
  */
-const GPT_56_SOL_TERRA_EFFORT_SUFFIXES = [
+const LOW_TO_ULTRA_EFFORT_SUFFIXES = [
 	"",
 	"-low",
 	"-medium",
@@ -44,6 +59,7 @@ const GPT_56_SOL_TERRA_EFFORT_SUFFIXES = [
 	"-max",
 	"-ultra",
 ] as const;
+const GPT_56_SOL_TERRA_EFFORT_SUFFIXES = LOW_TO_ULTRA_EFFORT_SUFFIXES;
 const GPT_56_LUNA_EFFORT_SUFFIXES = [
 	"",
 	"-low",
@@ -59,16 +75,84 @@ function expandDatedAliases(prefix: string, target: string): Record<string, stri
 	);
 }
 
-function expandEffortAliases(
+/**
+ * Expand `<prefix><suffix>` keys onto `target`.
+ *
+ * Use when the selector a user types is an alias for a different canonical id
+ * (for example `gpt-6-astra-pro-high` -> `gpt-6-astra`).
+ */
+function expandAliasEfforts(
+	prefix: string,
 	target: string,
 	suffixes: readonly string[],
 ): Record<string, string> {
 	return Object.fromEntries(
-		suffixes.map((suffix) => [`${target}${suffix}`, target]),
+		suffixes.map((suffix) => [`${prefix}${suffix}`, target]),
 	);
 }
 
+function expandEffortAliases(
+	target: string,
+	suffixes: readonly string[],
+): Record<string, string> {
+	return expandAliasEfforts(target, target, suffixes);
+}
+
 export const MODEL_MAP: Record<string, string> = {
+	// ============================================================================
+	// GPT-6 Astra (frontier family, launched 2026-09-03)
+	//
+	// Opt-in only, exactly like the 5.6 tiers below: `gpt-5` and normalizeModel's
+	// default still resolve to 5.5/5.4. Astra rolled out first to a limited set
+	// of organizations (OpenAI's Daybreak Access program) and only then to Plus/
+	// Pro/Business/Enterprise, so making it a default would 400 every account
+	// still outside the rollout.
+	//
+	// Efforts are low/medium/high/xhigh/max/ultra per OpenAI's Codex model list
+	// (developers.openai.com/codex/models, which lists Astra with Light through
+	// Ultra). The API reference page for `gpt-6-astra` stops at `max` and omits
+	// `ultra`; that same page-vs-catalog split already exists for `gpt-5.6-sol`
+	// (the API page claims `none`, which no Codex 5.6 tier accepts), and this
+	// plugin routes over the Codex backend, so the Codex list wins.
+	//
+	// `-none` and `-minimal` are intentionally absent: Astra accepts neither.
+	// ============================================================================
+	...expandEffortAliases(GPT_6_ASTRA_MODEL_ID, LOW_TO_ULTRA_EFFORT_SUFFIXES),
+	// Plugin-side convenience alias. OpenAI does not publish a bare `gpt-6`
+	// alias, so this is ours, pointing at the only shipped GPT-6 tier.
+	"gpt-6": GPT_6_ASTRA_MODEL_ID,
+	// GPT-6 Astra Pro is press-reported for Pro/Business/Enterprise but is
+	// absent from OpenAI's Codex model list, so it is not a routable Codex id.
+	// Collapse it onto the base tier rather than emitting an unknown slug — the
+	// same treatment `gpt-5.5-pro` gets for being ChatGPT-only.
+	...expandAliasEfforts(
+		"gpt-6-astra-pro",
+		GPT_6_ASTRA_MODEL_ID,
+		LOW_TO_ULTRA_EFFORT_SUFFIXES,
+	),
+
+	// ============================================================================
+	// Daybreak cyber tiers (catalog-verified, `visibility: "hide"`)
+	//
+	// Blue is the defensive-security tier; Red is the cyber-permissive tier for
+	// authorized security research. Both are opt-in ids that a user must type,
+	// and neither is ever a fallback target — degrading a cyber-specialty
+	// request onto a general model would silently change the model's behavior.
+	// ============================================================================
+	...expandEffortAliases(DAYBREAK_BLUE_MODEL_ID, LOW_TO_ULTRA_EFFORT_SUFFIXES),
+	...expandEffortAliases(DAYBREAK_RED_MODEL_ID, LOW_TO_ULTRA_EFFORT_SUFFIXES),
+	// Short forms, since the canonical ids carry a `-latest` tail.
+	...expandAliasEfforts(
+		"gpt-daybreak-blue",
+		DAYBREAK_BLUE_MODEL_ID,
+		LOW_TO_ULTRA_EFFORT_SUFFIXES,
+	),
+	...expandAliasEfforts(
+		"gpt-daybreak-red",
+		DAYBREAK_RED_MODEL_ID,
+		LOW_TO_ULTRA_EFFORT_SUFFIXES,
+	),
+
 	// ============================================================================
 	// GPT-5.6 Models (Sol / Terra / Luna)
 	//

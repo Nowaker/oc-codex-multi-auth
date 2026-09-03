@@ -72,7 +72,7 @@ This field differs slightly between the modern and legacy shipped templates.
 
 ### Modern template fields
 
-Modern templates define 12 base model families and expose 53 presets through `variants`.
+Modern templates define 15 base model families and expose 71 presets through `variants`.
 
 Example:
 
@@ -192,6 +192,10 @@ Examples:
 | `openai/gpt-5.6` | `gpt-5.6-sol` |
 | `openai/gpt-5.6-terra-medium` | `gpt-5.6-terra` |
 | `openai/gpt-5.6-luna-max` | `gpt-5.6-luna` |
+| `openai/gpt-6-astra-ultra` | `gpt-6-astra` |
+| `openai/gpt-6` | `gpt-6-astra` |
+| `openai/gpt-6-astra-pro-high` | `gpt-6-astra` (Astra Pro is not a Codex-routable id) |
+| `openai/gpt-daybreak-blue-xhigh` | `gpt-daybreak-blue-latest` |
 | `openai/gpt-5.4-mini-xhigh` | `gpt-5.4-mini` |
 | `openai/gpt-5.1-codex-high` | `gpt-5-codex` |
 | `openai/gpt-5.1-codex-max-high` | `gpt-5.1-codex-max` |
@@ -205,7 +209,7 @@ the family actually sent to the backend are therefore not always the same
 string; `MODEL_MAP` in `lib/request/helpers/model-map.ts` is the authoritative
 mapping.
 
-This normalization is why legacy aliases and snapshot-like IDs can still route to a stable family while preserving the user-facing config surface. GPT-5.6 tiers also trigger the responses-lite request shape after normalization.
+This normalization is why legacy aliases and snapshot-like IDs can still route to a stable family while preserving the user-facing config surface. GPT-6 Astra, the Daybreak tiers and the GPT-5.6 tiers all trigger the responses-lite request shape after normalization.
 
 ## Plugin Runtime Config
 

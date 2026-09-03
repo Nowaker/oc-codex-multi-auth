@@ -245,16 +245,75 @@ describe("runtime documentation parity", () => {
 		}
 	});
 
+	// Counts are derived from the shipped templates rather than hardcoded.
+	// They were hardcoded once, and adding GPT-6 Astra plus the two Daybreak
+	// tiers moved the real catalog from 12/53 to 15/71 while this test kept
+	// asserting 12/53 and passing — the installer went on advertising numbers
+	// the templates no longer had. Deriving them makes that drift impossible.
+	function readTemplateCounts(): {
+		bases: number;
+		variants: number;
+		legacyEntries: number;
+	} {
+		const modern = JSON.parse(readRepoFile("config/opencode-modern.json")) as {
+			provider: {
+				openai: { models: Record<string, { variants?: Record<string, unknown> }> };
+			};
+		};
+		const legacy = JSON.parse(readRepoFile("config/opencode-legacy.json")) as {
+			provider: { openai: { models: Record<string, unknown> } };
+		};
+		const modernModels = modern.provider.openai.models;
+		return {
+			bases: Object.keys(modernModels).length,
+			variants: Object.values(modernModels).reduce(
+				(total, entry) => total + Object.keys(entry.variants ?? {}).length,
+				0,
+			),
+			legacyEntries: Object.keys(legacy.provider.openai.models).length,
+		};
+	}
+
 	it("keeps installer help catalog counts aligned with shipped templates", () => {
 		const installerHelp = readRepoFile("scripts/install-oc-codex-multi-auth-core.js");
-		expect(installerHelp).toContain("12 base OAuth models");
-		expect(installerHelp).toContain("53 explicit selector entries");
-		expect(installerHelp).toContain("53 preset model entries");
-		expect(installerHelp).toContain("12 base OAuth model entries");
-		expect(installerHelp).toContain("53 explicit preset entries");
-		expect(installerHelp).not.toContain("9 base OAuth models");
-		expect(installerHelp).not.toContain("36 explicit selector entries");
-		expect(installerHelp).not.toContain("36 preset model entries");
+		const { bases, variants, legacyEntries } = readTemplateCounts();
+
+		expect(installerHelp).toContain(`${bases} base OAuth models`);
+		expect(installerHelp).toContain(`${variants} explicit selector entries`);
+		expect(installerHelp).toContain(`${legacyEntries} preset model entries`);
+		expect(installerHelp).toContain(`${bases} base OAuth model entries`);
+		expect(installerHelp).toContain(`${legacyEntries} explicit preset entries`);
+	});
+
+	it("keeps documented catalog counts aligned with shipped templates", () => {
+		const { bases, variants, legacyEntries } = readTemplateCounts();
+		// The legacy template lists one explicit id per modern variant, so a
+		// drift between the two templates is itself a bug.
+		expect(legacyEntries).toBe(variants);
+
+		// Any base/variant count quoted in current docs must be the live one.
+		// Matches "12 base models", "12 bases", "12 base OAuth model families".
+		//
+		// The `(?<![\d.])` guard keeps model names out of the match: without it
+		// "GPT-5.5 variant" reads as the number 5 followed by "variant".
+		const basePattern = /(?<![\d.])(\d+) (?:modern )?bases?\b|(?<![\d.])(\d+) base (?:OAuth )?model/g;
+		const variantPattern = /(?<![\d.])(\d+) variants?\b/g;
+		for (const relativePath of collectCurrentDocumentationFiles()) {
+			const contents = readRepoFile(relativePath);
+			for (const match of contents.matchAll(basePattern)) {
+				const quoted = Number(match[1] ?? match[2]);
+				expect(
+					quoted,
+					`${relativePath} quotes ${quoted} base models; templates ship ${bases}`,
+				).toBe(bases);
+			}
+			for (const match of contents.matchAll(variantPattern)) {
+				expect(
+					Number(match[1]),
+					`${relativePath} quotes ${match[1]} variants; templates ship ${variants}`,
+				).toBe(variants);
+			}
+		}
 	});
 
 	it("keeps the documented tool layout aligned with the live registry", () => {

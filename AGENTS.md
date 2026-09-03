@@ -5,7 +5,7 @@ Package version: see `package.json` (`version` field).
 
 ## OVERVIEW
 
-`oc-codex-multi-auth` is an OpenCode plugin for ChatGPT Plus/Pro OAuth, Codex/GPT-5 request routing (including GPT-5.6 Sol/Terra/Luna responses-lite), multi-account rotation, account switching, health checks, quota status, diagnostics, and recovery tools. The npm bin is an installer that manages OpenCode provider/TUI config and also runs standalone CLI commands (`doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm`). OpenCode loads `index.ts` as the provider plugin and `tui.ts` as the prompt quota status plugin. Runtime account state stays local under `~/.opencode` with per-project pools enabled by default.
+`oc-codex-multi-auth` is an OpenCode plugin for ChatGPT Plus/Pro OAuth, Codex/GPT-5/GPT-6 request routing (including GPT-6 Astra, Daybreak, and GPT-5.6 Sol/Terra/Luna responses-lite), multi-account rotation, account switching, health checks, quota status, diagnostics, and recovery tools. The npm bin is an installer that manages OpenCode provider/TUI config and also runs standalone CLI commands (`doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm`). OpenCode loads `index.ts` as the provider plugin and `tui.ts` as the prompt quota status plugin. Runtime account state stays local under `~/.opencode` with per-project pools enabled by default.
 
 ## STRUCTURE
 
@@ -37,8 +37,8 @@ Package version: see `package.json` (`version` field).
 | Multi-account rotation | `lib/accounts.ts`, `lib/accounts/`, `lib/rotation.ts` | `rotationStrategy` hybrid/sticky/round-robin, health scoring, cooldowns, token bucket, recovery |
 | Account storage | `lib/storage.ts`, `lib/storage/` | V3 facade, per-project/global paths, keychain, backup/import/export |
 | Request transformation | `lib/request/request-transformer.ts` | model normalization, prompt injection, stateless compatibility |
-| Responses-lite (GPT-5.6) | `lib/request/helpers/responses-lite.ts` | lite body reshape + header for Sol/Terra/Luna |
-| Client identity | `lib/request/helpers/client-identity.ts` | default `opencode` for 5.6, `codex_cli_rs` otherwise |
+| Responses-lite | `lib/request/helpers/responses-lite.ts` | lite body reshape + header for GPT-6 Astra, Daybreak Blue/Red, and Sol/Terra/Luna |
+| Client identity | `lib/request/helpers/client-identity.ts` | default `opencode` for responses-lite models, `codex_cli_rs` otherwise |
 | Headers + rate limits | `lib/request/fetch-helpers.ts` | Codex headers, error mapping, fallback, token refresh |
 | Retry budgets | `lib/request/retry-budget.ts`, `lib/request/rate-limit-backoff.ts` | bounded retry classes, exponential backoff |
 | SSE to JSON | `lib/request/response-handler.ts` | stream parsing and empty-response detection |
@@ -60,9 +60,9 @@ Package version: see `package.json` (`version` field).
 - Canonical package/plugin name is `oc-codex-multi-auth`.
 - The npm bin is an installer and thin standalone CLI, not a long-running runtime daemon.
 - OpenCode loads the provider plugin and TUI plugin from built package exports.
-- Default installer mode only registers plugin entries and preserves `provider.openai`; `--modern` writes compact config (12 bases / 53 variants), `--full` adds 53 explicit selector IDs, and `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
+- Default installer mode only registers plugin entries and preserves `provider.openai`; `--modern` writes compact config (15 bases / 71 variants), `--full` adds 71 explicit selector IDs, and `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
 - Runtime requests preserve Codex stateless requirements: `store: false` and `reasoning.encrypted_content`.
-- GPT-5.6 uses responses-lite shaping and default client identity `opencode`; other models default to `codex_cli_rs`.
+- GPT-6 Astra, Daybreak and GPT-5.6 use responses-lite shaping and default client identity `opencode`; other models default to `codex_cli_rs`. Astra's lite membership is inferred rather than catalog-read; `CODEX_AUTH_ASTRA_RESPONSES_LITE` overrides it.
 - Account selection uses `rotationStrategy` (`hybrid` default) with health scoring in `lib/rotation.ts`.
 - Per-project account storage is enabled by default.
 - Optional OS keychain backend is opt-in with `CODEX_KEYCHAIN=1`.
@@ -114,9 +114,9 @@ oc-codex-multi-auth doctor
 - Flagged accounts: `~/.opencode/oc-codex-multi-auth-flagged-accounts.json`.
 - Quota notification state: `oc-codex-multi-auth-quota-notifications.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
 - Request logs: `~/.opencode/logs/codex-plugin/` when logging is enabled.
-- Model catalog: 12 modern bases / 53 variants; legacy 53 explicit.
-- Bases: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-fast`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`.
-- Prompt templates sync from Codex CLI GitHub releases with ETag caching; 5.6 instructions come from the Codex model catalog.
+- Model catalog: 15 modern bases / 71 variants; legacy 71 explicit.
+- Bases: `gpt-6-astra`, `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-fast`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`.
+- Prompt templates sync from Codex CLI GitHub releases with ETag caching; 5.6 and Daybreak instructions come from the Codex model catalog. `gpt-6-astra` is registered as a catalog slug but has no entry yet, so it reads the prompt file until openai/codex publishes one.
 - 5xx server errors trigger account rotation and health penalty like network errors.
 - API deprecation/sunset headers (RFC 8594) are logged as warnings.
 - StorageError preserves original stack traces via `cause` parameter.

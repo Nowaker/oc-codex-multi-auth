@@ -165,7 +165,7 @@ oc-codex-multi-auth warm
 | Flag | Effect |
 |------|--------|
 | (default) / `--plugin-only` | Register plugin/TUI entries without changing `provider.openai` |
-| `--modern` | Install compact modern config (12 bases + variants) |
+| `--modern` | Install compact modern config (15 bases + variants) |
 | `--full` | Compact bases plus explicit selector entries |
 | `--legacy` | Explicit-only catalog (53 entries) |
 | `--dry-run` | Show changed config paths without values or writes |

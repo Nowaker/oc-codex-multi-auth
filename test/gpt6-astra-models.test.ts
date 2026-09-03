@@ -1,0 +1,306 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { getNormalizedModel, MODEL_MAP } from "../lib/request/helpers/model-map.js";
+import {
+	getEffortSuffix,
+	stripEffortSuffix,
+} from "../lib/request/helpers/effort-suffix.js";
+import {
+	extractCatalogInstructions,
+	getModelFamily,
+	MODEL_FAMILIES,
+} from "../lib/prompts/codex.js";
+import { normalizeModel, getReasoningConfig } from "../lib/request/request-transformer.js";
+import { DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN } from "../lib/request/fetch-helpers.js";
+import { usesResponsesLite } from "../lib/request/helpers/responses-lite.js";
+import { resolveClientIdentity } from "../lib/request/helpers/client-identity.js";
+
+/**
+ * GPT-6 Astra (launched 2026-09-03) and the Daybreak cyber tiers.
+ *
+ * Effort support for Daybreak mirrors openai/codex
+ * `codex-rs/models-manager/models.json`, where both tiers list low..ultra.
+ * Astra's range comes from OpenAI's Codex model list, which shows Light
+ * through Ultra; its API reference page stops at `max`, the same page-vs-
+ * catalog split `gpt-5.6-sol` already has.
+ */
+describe("GPT-6 Astra and Daybreak Model Support", () => {
+	const ASTRA = "gpt-6-astra";
+	const BLUE = "gpt-daybreak-blue-latest";
+	const RED = "gpt-daybreak-red-latest";
+	const ALL = [ASTRA, BLUE, RED] as const;
+	const FULL_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+
+	describe("normalization", () => {
+		it("normalizes each canonical id", () => {
+			for (const model of ALL) {
+				expect(normalizeModel(model)).toBe(model);
+				expect(getNormalizedModel(model)).toBe(model);
+			}
+		});
+
+		it("normalizes every effort variant, ultra included", () => {
+			for (const model of ALL) {
+				for (const effort of FULL_EFFORTS) {
+					expect(normalizeModel(`${model}-${effort}`)).toBe(model);
+					expect(getNormalizedModel(`${model}-${effort}`)).toBe(model);
+				}
+			}
+		});
+
+		it("maps the bare gpt-6 alias to Astra", () => {
+			expect(normalizeModel("gpt-6")).toBe(ASTRA);
+			expect(getNormalizedModel("gpt-6")).toBe(ASTRA);
+		});
+
+		// Astra Pro is press-reported for Pro/Business/Enterprise but absent from
+		// OpenAI's Codex model list, so it is not a routable Codex slug. Emitting
+		// it verbatim would 400; collapsing keeps the request alive on the tier
+		// that does exist. Same treatment gpt-5.5-pro gets.
+		it("collapses Astra Pro onto the base tier rather than emitting it", () => {
+			expect(normalizeModel("gpt-6-astra-pro")).toBe(ASTRA);
+			expect(normalizeModel("gpt-6-astra-pro-high")).toBe(ASTRA);
+			expect(getNormalizedModel("gpt-6-astra-pro-ultra")).toBe(ASTRA);
+		});
+
+		it("accepts the Daybreak short forms without the -latest tail", () => {
+			expect(normalizeModel("gpt-daybreak-blue")).toBe(BLUE);
+			expect(normalizeModel("gpt-daybreak-red")).toBe(RED);
+			expect(getNormalizedModel("gpt-daybreak-blue-xhigh")).toBe(BLUE);
+			expect(getNormalizedModel("gpt-daybreak-red-max")).toBe(RED);
+		});
+
+		it("strips a provider prefix", () => {
+			expect(normalizeModel("openai/gpt-6-astra-ultra")).toBe(ASTRA);
+			expect(normalizeModel("openai/gpt-daybreak-red-latest-high")).toBe(RED);
+		});
+
+		it("resolves verbose display names through the pattern fallback", () => {
+			expect(normalizeModel("GPT 6 Astra (OAuth)")).toBe(ASTRA);
+			expect(normalizeModel("Daybreak Blue (OAuth)")).toBe(BLUE);
+			expect(normalizeModel("Daybreak Red (OAuth)")).toBe(RED);
+		});
+
+		it("never exposes none/minimal aliases", () => {
+			for (const model of ALL) {
+				expect(MODEL_MAP[`${model}-none`]).toBeUndefined();
+				expect(MODEL_MAP[`${model}-minimal`]).toBeUndefined();
+			}
+			expect(MODEL_MAP["gpt-6-astra-none"]).toBeUndefined();
+		});
+
+		it("does not claim gpt-7 or other future ids", () => {
+			expect(getNormalizedModel("gpt-7")).toBeUndefined();
+			expect(getNormalizedModel("gpt-7-astra")).toBeUndefined();
+		});
+	});
+
+	describe("model family", () => {
+		it("gives each model an isolated family", () => {
+			expect(getModelFamily(ASTRA)).toBe("gpt-6-astra");
+			expect(getModelFamily(BLUE)).toBe("gpt-daybreak-blue");
+			expect(getModelFamily(RED)).toBe("gpt-daybreak-red");
+		});
+
+		it("registers the new families for per-family rotation state", () => {
+			expect(MODEL_FAMILIES).toContain("gpt-6-astra");
+			expect(MODEL_FAMILIES).toContain("gpt-daybreak-blue");
+			expect(MODEL_FAMILIES).toContain("gpt-daybreak-red");
+		});
+
+		it("routes bare gpt-6 to the Astra family", () => {
+			expect(getModelFamily("gpt-6")).toBe("gpt-6-astra");
+		});
+
+		// The `codex` catch-all in getModelFamily matches any name containing
+		// "codex" and runs before the 5.6 branches. Astra and Daybreak are
+		// matched ahead of it so a display name carrying "Codex" cannot drag
+		// them into the wrong prompt family.
+		it("is not swallowed by the codex catch-all", () => {
+			expect(getModelFamily("GPT 6 Astra (Codex OAuth)")).toBe("gpt-6-astra");
+			expect(getModelFamily("Daybreak Red Codex")).toBe("gpt-daybreak-red");
+		});
+
+		it("keeps Astra out of the 5.6 and 5.1 families", () => {
+			expect(getModelFamily(ASTRA)).not.toBe("gpt-5.6-sol");
+			expect(getModelFamily(ASTRA)).not.toBe("gpt-5.1");
+		});
+	});
+
+	describe("reasoning effort", () => {
+		it("passes max through", () => {
+			for (const model of ALL) {
+				expect(getReasoningConfig(model, { reasoningEffort: "max" }).effort).toBe(
+					"max",
+				);
+			}
+		});
+
+		// Codex rewrites Ultra -> Max client-side
+		// (codex-rs/core/src/client.rs `reasoning_effort_for_request`), so ultra
+		// must never reach the backend.
+		it("collapses ultra to max", () => {
+			for (const model of ALL) {
+				expect(
+					getReasoningConfig(model, { reasoningEffort: "ultra" }).effort,
+				).toBe("max");
+			}
+		});
+
+		it("supports xhigh directly", () => {
+			for (const model of ALL) {
+				expect(
+					getReasoningConfig(model, { reasoningEffort: "xhigh" }).effort,
+				).toBe("xhigh");
+			}
+		});
+
+		it("upgrades none and minimal to low, since neither is accepted", () => {
+			for (const model of ALL) {
+				expect(getReasoningConfig(model, { reasoningEffort: "none" }).effort).toBe(
+					"low",
+				);
+				expect(
+					getReasoningConfig(model, { reasoningEffort: "minimal" }).effort,
+				).toBe("low");
+			}
+		});
+
+		it("never emits none, minimal or ultra at any requested effort", () => {
+			const requested = [
+				"none",
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max",
+				"ultra",
+			] as const;
+			for (const model of ALL) {
+				for (const effort of requested) {
+					const resolved = getReasoningConfig(model, {
+						reasoningEffort: effort,
+					}).effort;
+					expect(resolved).not.toBe("none");
+					expect(resolved).not.toBe("minimal");
+					expect(resolved).not.toBe("ultra");
+				}
+			}
+		});
+
+		it("resolves effort through the bare gpt-6 alias too", () => {
+			expect(getReasoningConfig("gpt-6", { reasoningEffort: "ultra" }).effort).toBe(
+				"max",
+			);
+			expect(getReasoningConfig("gpt-6", { reasoningEffort: "none" }).effort).toBe(
+				"low",
+			);
+		});
+	});
+
+	describe("effort suffix parsing", () => {
+		it("reads suffixes on the new ids", () => {
+			expect(getEffortSuffix("gpt-6-astra-max")).toBe("max");
+			expect(getEffortSuffix("gpt-6-astra-ultra")).toBe("ultra");
+			expect(stripEffortSuffix("gpt-6-astra-max")).toBe(ASTRA);
+			expect(stripEffortSuffix("gpt-daybreak-red-latest-ultra")).toBe(RED);
+		});
+
+		// The canonical Daybreak ids end in `-latest`, which is not an effort.
+		it("does not treat the -latest tail as an effort suffix", () => {
+			expect(getEffortSuffix(BLUE)).toBeUndefined();
+			expect(stripEffortSuffix(BLUE)).toBe(BLUE);
+		});
+	});
+
+	describe("responses-lite shaping", () => {
+		afterEach(() => {
+			delete process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE;
+		});
+
+		// Both Daybreak entries are `use_responses_lite: true` in the catalog.
+		it("puts both Daybreak tiers on the lite path", () => {
+			expect(usesResponsesLite(BLUE)).toBe(true);
+			expect(usesResponsesLite(RED)).toBe(true);
+			expect(usesResponsesLite("openai/gpt-daybreak-blue-xhigh")).toBe(true);
+		});
+
+		it("defaults Astra to the lite path", () => {
+			expect(usesResponsesLite(ASTRA)).toBe(true);
+			expect(usesResponsesLite("gpt-6")).toBe(true);
+			expect(usesResponsesLite("openai/gpt-6-astra-ultra")).toBe(true);
+		});
+
+		// Astra's lite membership is inferred, not read from a catalog entry, so
+		// it stays overridable until openai/codex publishes one.
+		it("honors CODEX_AUTH_ASTRA_RESPONSES_LITE=0 for Astra only", () => {
+			process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE = "0";
+			expect(usesResponsesLite(ASTRA)).toBe(false);
+			expect(usesResponsesLite("gpt-6")).toBe(false);
+			expect(usesResponsesLite(BLUE)).toBe(true);
+			expect(usesResponsesLite("gpt-5.6-sol")).toBe(true);
+		});
+
+		it("treats any other value as lite", () => {
+			process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE = "1";
+			expect(usesResponsesLite(ASTRA)).toBe(true);
+		});
+	});
+
+	describe("client identity", () => {
+		// Lite models present the host identity, the originator this plugin has
+		// evidence of passing the newest tier with (#196).
+		it("sends the opencode originator for the new lite models", () => {
+			for (const model of ALL) {
+				expect(resolveClientIdentity(model).originator).toBe("opencode");
+			}
+		});
+	});
+
+	describe("unsupported-model fallback", () => {
+		it("degrades Astra into the 5.6 tiers and out to 5.5", () => {
+			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[ASTRA]).toEqual([
+				"gpt-5.6-sol",
+				"gpt-5.6-terra",
+				"gpt-5.6-luna",
+				"gpt-5.5",
+			]);
+		});
+
+		// Degrading a cyber-specialty request onto a general model would answer
+		// a security-research prompt with a model nobody asked for.
+		it("gives the Daybreak tiers no fallback chain", () => {
+			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[BLUE]).toBeUndefined();
+			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[RED]).toBeUndefined();
+		});
+
+		it("does not make Astra a fallback target of any other model", () => {
+			for (const targets of Object.values(
+				DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN,
+			)) {
+				expect(targets).not.toContain(ASTRA);
+			}
+		});
+	});
+
+	describe("catalog-sourced instructions", () => {
+		const catalog = JSON.stringify({
+			models: [
+				{ slug: BLUE, base_instructions: "BLUE PROMPT" },
+				{ slug: RED, base_instructions: "RED PROMPT" },
+			],
+		});
+
+		it("extracts base_instructions for the Daybreak slugs", () => {
+			expect(extractCatalogInstructions(catalog, BLUE)).toBe("BLUE PROMPT");
+			expect(extractCatalogInstructions(catalog, RED)).toBe("RED PROMPT");
+		});
+
+		// Astra postdates the catalog's last refresh. Absence must degrade to the
+		// prompt file rather than throw, so Astra picks up real instructions on
+		// the first release that publishes them with no code change.
+		it("returns null for Astra while the catalog has no entry for it", () => {
+			expect(extractCatalogInstructions(catalog, ASTRA)).toBeNull();
+		});
+	});
+});

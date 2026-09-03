@@ -29,9 +29,12 @@
  * honored.
  */
 import {
+	DAYBREAK_BLUE_MODEL_ID,
+	DAYBREAK_RED_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
+	GPT_6_ASTRA_MODEL_ID,
 	getNormalizedModel,
 } from "./model-map.js";
 import { stripEffortSuffix } from "./effort-suffix.js";
@@ -42,7 +45,34 @@ const RESPONSES_LITE_MODELS: ReadonlySet<string> = new Set([
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
+	// Both Daybreak tiers are `use_responses_lite: true`, `tool_mode:
+	// "code_mode_only"` in the catalog — read directly from models.json.
+	DAYBREAK_BLUE_MODEL_ID,
+	DAYBREAK_RED_MODEL_ID,
 ]);
+
+/**
+ * Env override for Astra's request shape.
+ *
+ * Unlike every other id in {@link RESPONSES_LITE_MODELS}, Astra's lite
+ * membership is inferred, not read: OpenAI shipped GPT-6 Astra on 2026-09-03
+ * and the public Codex catalog has carried no `gpt-6-astra` entry since its
+ * 2026-08-20 refresh, so `use_responses_lite` cannot be verified for it.
+ *
+ * The inference: every catalog model of the 5.6 generation and later — sol,
+ * terra, luna, and both Daybreak tiers — is `use_responses_lite: true` with
+ * `tool_mode: "code_mode_only"`, and Astra exposes `ultra`, which the catalog
+ * only ever pairs with `multi_agent_version: "v2"` lite models. Defaulting
+ * Astra to lite therefore matches every neighbour it has.
+ *
+ * Getting this wrong strands tool definitions in either direction, so the guess
+ * is overridable: `CODEX_AUTH_ASTRA_RESPONSES_LITE=0` sends Astra the classic
+ * shape, `=1` forces lite. Drop this switch and hardcode membership once a
+ * catalog entry for `gpt-6-astra` lands.
+ */
+function astraUsesResponsesLite(): boolean {
+	return process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE?.trim() !== "0";
+}
 
 /** Header Codex sets on every responses-lite request. */
 export const RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite";
@@ -62,6 +92,7 @@ export function usesResponsesLite(model: string | undefined): boolean {
 		: trimmed;
 	const stripped = stripEffortSuffix(withoutPrefix).toLowerCase();
 	const canonical = getNormalizedModel(stripped) ?? stripped;
+	if (canonical === GPT_6_ASTRA_MODEL_ID) return astraUsesResponsesLite();
 	return RESPONSES_LITE_MODELS.has(canonical);
 }
 

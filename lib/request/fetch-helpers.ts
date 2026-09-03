@@ -20,10 +20,13 @@ import {
 	upsertBackendModelIdentityMessage,
 } from "./request-transformer.js";
 import {
+	DAYBREAK_BLUE_MODEL_ID,
+	DAYBREAK_RED_MODEL_ID,
 	GPT_55_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
+	GPT_6_ASTRA_MODEL_ID,
 } from "./helpers/model-map.js";
 import { stripEffortSuffix } from "./helpers/effort-suffix.js";
 import {
@@ -109,6 +112,21 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
+	// GPT-6 Astra launched 2026-09-03 to a limited set of organizations first,
+	// reaching Plus/Pro/Business/Enterprise only "in the coming days", so an
+	// entitlement 400 is the expected result for most accounts today. Degrade
+	// into the 5.6 tiers, which are the closest thing in capability.
+	//
+	// The Daybreak tiers are deliberately absent from this table. They are
+	// cyber-specialty models (`model_specialty: "cyber"`); silently degrading a
+	// Daybreak request onto a general model would answer a security-research
+	// prompt with a model that was never asked for. They fail loudly instead.
+	[GPT_6_ASTRA_MODEL_ID]: [
+		GPT_56_SOL_MODEL_ID,
+		GPT_56_TERRA_MODEL_ID,
+		GPT_56_LUNA_MODEL_ID,
+		GPT_55_MODEL_ID,
+	],
 	// GPT-5.6 shipped as a limited preview. Accounts outside it get
 	// `model_not_supported_with_chatgpt_account`, so degrade down the 5.6 tiers
 	// and then out to the generally-available 5.5 family.
@@ -144,6 +162,8 @@ const DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV: Record<string, string> = {
 	[GPT_56_SOL_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK",
 	[GPT_56_TERRA_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK",
 	[GPT_56_LUNA_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK",
+	// Astra is mid-rollout, so the same reasoning applies one generation up.
+	[GPT_6_ASTRA_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK",
 };
 
 const DEFAULT_AUTO_FALLBACK_CONTINUATION_MODELS = new Set([
@@ -214,6 +234,24 @@ function canonicalizeModelName(model: string | undefined): string | undefined {
 	// keyed as `gpt-5.6` need the same collapse for chain lookups to work.
 	if (withoutEffort === "gpt-5.6") {
 		return GPT_56_SOL_MODEL_ID;
+	}
+
+	// Same collapse for the GPT-6 aliases: bare `gpt-6`, and `gpt-6-astra-pro`,
+	// which is not a Codex-routable id and rides the base tier's chain.
+	if (
+		withoutEffort === "gpt-6" ||
+		withoutEffort === "gpt-6-astra-pro"
+	) {
+		return GPT_6_ASTRA_MODEL_ID;
+	}
+
+	// Daybreak short forms collapse onto the catalog's `-latest` slugs so a
+	// custom chain keyed either way resolves to the same node.
+	if (withoutEffort === "gpt-daybreak-blue") {
+		return DAYBREAK_BLUE_MODEL_ID;
+	}
+	if (withoutEffort === "gpt-daybreak-red") {
+		return DAYBREAK_RED_MODEL_ID;
 	}
 
 	return withoutEffort;
@@ -862,7 +900,8 @@ export function createCodexHeaders(
 	headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
 	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 
-	// GPT-5.6 models are served over the responses-lite path.
+	// GPT-5.6, GPT-6 Astra and the Daybreak tiers are served over the
+	// responses-lite path.
 	if (usesResponsesLite(opts?.model)) {
 		headers.set(RESPONSES_LITE_HEADER, RESPONSES_LITE_HEADER_VALUE);
 	} else {

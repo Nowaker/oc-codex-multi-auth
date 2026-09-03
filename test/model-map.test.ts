@@ -325,8 +325,14 @@ describe("Model Map Module", () => {
 
     it("returns undefined for unknown models", () => {
       expect(getNormalizedModel("unknown-model")).toBeUndefined();
-      expect(getNormalizedModel("gpt-6")).toBeUndefined();
+      expect(getNormalizedModel("gpt-7")).toBeUndefined();
       expect(getNormalizedModel("")).toBeUndefined();
+    });
+
+    // `gpt-6` used to be this suite's stand-in for "a model that does not
+    // exist". It exists now, so it moved from the negative case to a real one.
+    it("maps the bare gpt-6 alias to Astra", () => {
+      expect(getNormalizedModel("gpt-6")).toBe("gpt-6-astra");
     });
 
     it("handles legacy model mapping", () => {
@@ -367,10 +373,17 @@ describe("Model Map Module", () => {
       expect(isKnownModel("gpt-5.4-mini")).toBe(true);
     });
     it("returns false for unknown models", () => {
-      expect(isKnownModel("gpt-6")).toBe(false);
+      expect(isKnownModel("gpt-7")).toBe(false);
       expect(isKnownModel("claude-3")).toBe(false);
       expect(isKnownModel("unknown")).toBe(false);
       expect(isKnownModel("")).toBe(false);
+    });
+
+    it("recognizes the GPT-6 and Daybreak ids", () => {
+      expect(isKnownModel("gpt-6")).toBe(true);
+      expect(isKnownModel("GPT-6-ASTRA-ULTRA")).toBe(true);
+      expect(isKnownModel("gpt-daybreak-blue-latest")).toBe(true);
+      expect(isKnownModel("gpt-daybreak-red-high")).toBe(true);
     });
   });
 
@@ -412,6 +425,9 @@ describe("Model Map Module", () => {
         "gpt-5.4-pro",
         "gpt-5.4-mini",
         "gpt-5.4-nano",
+        "gpt-6-astra",
+        "gpt-daybreak-blue-latest",
+        "gpt-daybreak-red-latest",
       ]);
 
       for (const [key, value] of Object.entries(MODEL_MAP)) {

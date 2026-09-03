@@ -49,7 +49,7 @@ That file controls plugin behavior such as retry policy, rotation strategy, begi
 
 1. Load the selected template set:
    - default / `--plugin-only`: preserve `provider.openai`
-   - `--modern`: `config/opencode-modern.json` (compact 12 bases / 53 variants)
+   - `--modern`: `config/opencode-modern.json` (compact 15 bases / 71 variants)
    - `--full`: modern bases merged with `config/opencode-legacy.json` explicit entries
    - `--legacy`: `config/opencode-legacy.json` only (53 explicit IDs)
 2. Back up an existing `~/.config/opencode/opencode.json` only when the merged result changes.
@@ -84,11 +84,14 @@ Important detail:
 
 It currently ships:
 
-- 12 base model families
+- 15 base model families
 - 53 total variants
+- GPT-6 Astra (responses-lite path)
+- Daybreak Blue / Red cyber tiers (responses-lite path)
 - GPT-5.6 Sol / Terra / Luna (responses-lite path)
 - `gpt-5.5` and `gpt-5.5-fast` at 1,050,000 context / 128,000 output
-- GPT-5.6 tiers at 1,050,000 context / 128,000 output
+- GPT-6 Astra and the GPT-5.6 tiers at 1,050,000 context / 128,000 output
+- Daybreak Blue at 872,000 and Daybreak Red at 372,000 context / 128,000 output
 - `gpt-5.4-mini`, `gpt-5.4-nano`, and Codex families at 400,000 context / 128,000 output
 - `gpt-5.1` at 272,000 context / 128,000 output
 - `store: false` plus `include: ["reasoning.encrypted_content"]`
@@ -96,6 +99,9 @@ It currently ships:
 Base families:
 
 ```text
+gpt-6-astra
+gpt-daybreak-blue-latest
+gpt-daybreak-red-latest
 gpt-5.6-sol
 gpt-5.6-terra
 gpt-5.6-luna
@@ -121,7 +127,7 @@ It preserves `provider.openai` exactly.
 
 ### Modern installer mode
 
-`--modern` writes the 12 modern base model entries from `config/opencode-modern.json`. Reasoning presets are selected through the separate variant picker.
+`--modern` writes the 15 modern base model entries from `config/opencode-modern.json`. Reasoning presets are selected through the separate variant picker.
 
 Example shape:
 
@@ -170,7 +176,7 @@ opencode run "task" --model=openai/gpt-5.6-sol --variant=high
 
 `--full` combines:
 
-- the 12 modern base model entries from `config/opencode-modern.json`
+- the 15 modern base model entries from `config/opencode-modern.json`
 - the 53 explicit preset entries from `config/opencode-legacy.json`
 
 Use it when scripts require direct selector IDs:
@@ -206,7 +212,7 @@ At runtime, OpenCode passes `provider.openai.options` and `provider.openai.model
 2. Reads per-model definitions.
 3. Applies request-shaping behavior (`native` by default, `legacy` when explicitly enabled).
 4. Normalizes selected model IDs to canonical upstream Codex/ChatGPT model families before the final API call.
-5. For GPT-5.6 Sol/Terra/Luna, applies the responses-lite request shape and default `opencode` client identity.
+5. For GPT-6 Astra, the Daybreak tiers and GPT-5.6 Sol/Terra/Luna, applies the responses-lite request shape and default `opencode` client identity.
 6. Resolves preferred accounts via `modelAccountPools`, then selects an account with `rotationStrategy`.
 
 Examples:
@@ -217,6 +223,7 @@ Examples:
 - `openai/gpt-5.4-mini-xhigh` normalizes to `gpt-5.4-mini`
 - legacy aliases such as `gpt-5-mini` normalize to `gpt-5.4-mini`
 - bare `gpt-5.6` normalizes to flagship tier `gpt-5.6-sol`
+- bare `gpt-6` normalizes to `gpt-6-astra`; `gpt-6-astra-pro*` collapses onto it
 
 ## Verification
 
