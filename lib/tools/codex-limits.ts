@@ -221,6 +221,10 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 							// Reload this process's AccountManager either way so its next
 							// rotation observes the on-disk block.
 							quotaExhaustionPersistedOrKnown = true;
+							// Do this before fetching usage for another account: a cached
+							// manager can still have a debounced save with stale rotation
+							// state that would otherwise overwrite this durable block.
+							invalidateAccountManagerCache();
 						} catch (error) {
 							logWarn(
 								`[${PLUGIN_NAME}] Failed to persist exhausted usage quota: ${
