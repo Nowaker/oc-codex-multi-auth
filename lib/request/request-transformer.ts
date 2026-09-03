@@ -16,7 +16,11 @@ import {
 	GPT_6_ASTRA_MODEL_ID,
 	getNormalizedModel,
 } from "./helpers/model-map.js";
-import { getEffortSuffix, stripEffortSuffix } from "./helpers/effort-suffix.js";
+import {
+	EFFORT_SUFFIXES,
+	getEffortSuffix,
+	stripEffortSuffix,
+} from "./helpers/effort-suffix.js";
 import {
 	filterOpenCodeSystemPromptsWithCachedPrompt,
 	normalizeOrphanedToolOutputs,
@@ -689,9 +693,18 @@ export function getReasoningConfig(
 				? "minimal"
 				: "medium";
 
-	// Get user-requested effort
-	let effort = userConfig.reasoningEffort || defaultEffort;
-	const originalRequestedEffort = userConfig.reasoningEffort ?? defaultEffort;
+	// Get user-requested effort.
+	//
+	// Case-fold first. Every clamp below compares against lowercase literals, so
+	// an effort that arrives capitalized matched none of them and went to the
+	// wire unclamped: `"ULTRA"` stayed `ULTRA` instead of collapsing to `max`,
+	// `"NONE"` reached models that reject `none`, and `"MAX"` reached families
+	// that top out at `high`. `reasoningEffort` is read straight off
+	// opencode.json, so its TypeScript union does not constrain it at runtime.
+	// `sanitizeReasoningSummary` already case-folds the sibling field.
+	const requestedEffort = sanitizeReasoningEffort(userConfig.reasoningEffort);
+	let effort = requestedEffort || defaultEffort;
+	const originalRequestedEffort = requestedEffort ?? defaultEffort;
 
 	if (isCodexMini) {
 		if (effort === "minimal" || effort === "low" || effort === "none") {
@@ -763,12 +776,43 @@ export function getReasoningConfig(
 		effort = "low";
 	}
 
+	// Anything still unrecognized here is a token no family clamp matched, so it
+	// would go to the wire verbatim and come back a 400. `gpt-5-codex-mini` has
+	// always coerced these to its default through its own catch-all (pinned by
+	// "should clamp codex-mini unknown effort to medium"); every other family
+	// lacked one. Coerce the same way rather than emitting the unknown token.
+	if (!KNOWN_REASONING_EFFORTS.has(effort as string)) {
+		logWarn(
+			`unknown reasoning effort '${originalRequestedEffort}'; using '${defaultEffort}'`,
+		);
+		effort = defaultEffort;
+	}
+
 	const summary = sanitizeReasoningSummary(userConfig.reasoningSummary);
 
 	return {
 		effort,
 		summary,
 	};
+}
+
+/** Effort tokens this plugin recognizes, shared with the model-id suffix parser. */
+const KNOWN_REASONING_EFFORTS: ReadonlySet<string> = new Set(EFFORT_SUFFIXES);
+
+/**
+ * Case-fold a configured reasoning effort so the family clamps can see it.
+ *
+ * Deliberately does not reject unknown values: an effort this plugin does not
+ * recognize may be one the backend has added, and the clamps below already
+ * floor the ones each family refuses. Only the casing is normalized.
+ */
+function sanitizeReasoningEffort(
+	effort: ConfigOptions["reasoningEffort"],
+): ConfigOptions["reasoningEffort"] {
+	if (typeof effort !== "string") return effort;
+	const trimmed = effort.trim();
+	if (!trimmed) return undefined;
+	return trimmed.toLowerCase() as ConfigOptions["reasoningEffort"];
 }
 
 function sanitizeReasoningSummary(
