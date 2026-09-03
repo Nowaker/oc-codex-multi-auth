@@ -9,6 +9,11 @@ import {
 	createUsageRequestTimeoutError,
 } from "./error-sentinels.js";
 import { logWarn } from "./logger.js";
+import { MODEL_FAMILIES } from "./prompts/codex.js";
+import {
+	isQuotaWindowExhausted,
+	MAX_QUOTA_RESET_HORIZON_MS,
+} from "./quota-windows.js";
 import { coordinatePersistedRefresh } from "./storage/coordinated-refresh.js";
 import {
 	createCodexHeaders,
@@ -16,6 +21,7 @@ import {
 	isInvalidatedAuthTokenError,
 } from "./request/fetch-helpers.js";
 import {
+	withAccountStorageTransaction,
 	type AccountMetadataV3,
 	type AccountStorageV3,
 } from "./storage.js";
@@ -254,6 +260,83 @@ export function hasUsageWindow(window: LimitWindow): boolean {
 			typeof window.usedPercent === "number" ||
 			window.resetAtMs,
 	);
+}
+
+/**
+ * Return the latest valid reset time among fully spent ordinary Codex usage
+ * windows. This deliberately accepts only the primary and secondary windows:
+ * code-review and additional quotas do not govern ordinary model requests.
+ *
+ * The `/wham/usage` endpoint and request response headers describe the same
+ * 5-hour/weekly quota state. Applying this result to rotation lets an explicit
+ * `codex-limits` refresh protect paid Credits before the next model request.
+ */
+export function getUsageQuotaExhaustedResetAtMs(
+	windows: readonly LimitWindow[],
+	now: number = Date.now(),
+): number | undefined {
+	let latest: number | undefined;
+	for (const window of windows) {
+		if (!isQuotaWindowExhausted(window)) continue;
+		const resetAtMs = window.resetAtMs;
+		if (
+			typeof resetAtMs !== "number" ||
+			!Number.isFinite(resetAtMs) ||
+			resetAtMs <= now ||
+			resetAtMs - now > MAX_QUOTA_RESET_HORIZON_MS
+		) {
+			continue;
+		}
+		if (latest === undefined || resetAtMs > latest) latest = resetAtMs;
+	}
+	return latest;
+}
+
+/**
+ * Persist a base block for every model family on stored entries sharing the
+ * queried usage quota. Rotation tracks each family independently, whereas the
+ * `/wham/usage` primary/secondary subscription quota is shared by all models.
+ * Writing every base key ensures the next round-robin selection cannot use a
+ * different model family to spend an already-exhausted account's Credits.
+ *
+ * This uses a storage transaction rather than saving the caller's usage
+ * snapshot: usage inspection can refresh a single-use token, while another
+ * process can independently update credentials or account membership.
+ */
+export async function persistUsageQuotaExhaustion(
+	account: AccountMetadataV3,
+	resetAtMs: number,
+): Promise<boolean> {
+	const usageKey = getUsageAccountDedupeKey(account);
+	if (!usageKey) return false;
+
+	return withAccountStorageTransaction(async (current, persist) => {
+		if (!current) return false;
+		let changed = false;
+		for (const storedAccount of current.accounts) {
+			if (getUsageAccountDedupeKey(storedAccount) !== usageKey) continue;
+			const rateLimitResetTimes = { ...(storedAccount.rateLimitResetTimes ?? {}) };
+			let accountChanged = false;
+			for (const family of MODEL_FAMILIES) {
+				const existingResetAtMs = rateLimitResetTimes[family];
+				if (
+					typeof existingResetAtMs === "number" &&
+					Number.isFinite(existingResetAtMs) &&
+					existingResetAtMs >= resetAtMs
+				) {
+					continue;
+				}
+				rateLimitResetTimes[family] = resetAtMs;
+				accountChanged = true;
+			}
+			if (accountChanged) {
+				storedAccount.rateLimitResetTimes = rateLimitResetTimes;
+				changed = true;
+			}
+		}
+		if (changed) await persist(current);
+		return changed;
+	});
 }
 
 /**

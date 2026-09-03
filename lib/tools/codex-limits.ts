@@ -11,9 +11,11 @@ import {
 	fetchCodexUsage,
 	formatUsageLimitSummary,
 	formatUsageLimitTitle,
+	getUsageQuotaExhaustedResetAtMs,
 	getUsageAccountDedupeKey,
 	hasUsageWindow,
 	parseCodexUsagePayload,
+	persistUsageQuotaExhaustion,
 	resolveCodexUsageAccountId,
 } from "../codex-usage.js";
 import { PLUGIN_NAME } from "../constants.js";
@@ -139,6 +141,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 				);
 			}
 			let storageChanged = false;
+			let quotaExhaustionPersistedOrKnown = false;
 			const jsonAccounts: Array<Record<string, unknown>> = [];
 
 			for (const i of uniqueIndices) {
@@ -204,6 +207,32 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						organizationId: effectiveAccount.organizationId,
 					});
 					const usage = parseCodexUsagePayload(payload);
+					const quotaExhaustedResetAtMs = getUsageQuotaExhaustedResetAtMs(
+						[usage.primary, usage.secondary],
+					);
+					if (quotaExhaustedResetAtMs !== undefined) {
+						try {
+							storageChanged =
+								(await persistUsageQuotaExhaustion(
+									account,
+									quotaExhaustedResetAtMs,
+								)) || storageChanged;
+							// The block can already have been persisted by another process.
+							// Reload this process's AccountManager either way so its next
+							// rotation observes the on-disk block.
+							quotaExhaustionPersistedOrKnown = true;
+							// Do this before fetching usage for another account: a cached
+							// manager can still have a debounced save with stale rotation
+							// state that would otherwise overwrite this durable block.
+							invalidateAccountManagerCache();
+						} catch (error) {
+							logWarn(
+								`[${PLUGIN_NAME}] Failed to persist exhausted usage quota: ${
+									error instanceof Error ? error.message : String(error)
+								}`,
+							);
+						}
+					}
 					jsonAccounts.push({
 						...buildJsonAccountIdentity(displayIndex, {
 							includeSensitive: includeSensitiveOutput,
@@ -299,7 +328,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 				lines.push("");
 			}
 
-			if (storageChanged) {
+			if (storageChanged || quotaExhaustionPersistedOrKnown) {
 				invalidateAccountManagerCache();
 			}
 			if (outputFormat === "json") {

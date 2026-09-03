@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -254,6 +254,53 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		expect(String(fetchSpy.mock.calls.at(-1)?.[0])).toContain("/wham/usage");
 	});
 
+	it("limits: persists a spent weekly quota so rotation skips its Credits", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		const weeklyResetAt = Math.floor(Date.now() / 1000) + 86_400;
+		const spentUsagePayload = {
+			...usagePayload,
+			rate_limit: {
+				...usagePayload.rate_limit,
+				secondary_window: {
+					...usagePayload.rate_limit.secondary_window,
+					used_percent: 100,
+					reset_at: weeklyResetAt,
+				},
+			},
+		};
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => spentUsagePayload,
+			text: async () => JSON.stringify(spentUsagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(
+			runInstaller(["limits", "--json"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ action: "limits", exitCode: 0 });
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.accounts[0]?.limits).toEqual(
+			expect.arrayContaining([expect.objectContaining({ name: "Weekly limit", leftPercent: 0 })]),
+		);
+		const stored = JSON.parse(
+			await readFile(
+				join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json"),
+				"utf-8",
+			),
+		);
+		expect(stored.accounts[0]?.rateLimitResetTimes).toMatchObject({
+			codex: weeklyResetAt * 1000,
+			"gpt-5.6-terra": weeklyResetAt * 1000,
+		});
+	});
+
 	it("limits: renders the windows in text output rather than a bare account list (#209)", async () => {
 		vi.resetModules();
 		tempHome = await createTempHome();
@@ -384,4 +431,3 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		expect(output.accounts[0].error).toContain("500");
 	});
 });
-

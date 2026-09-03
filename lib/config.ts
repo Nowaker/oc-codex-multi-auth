@@ -1045,6 +1045,8 @@ export function getStreamStallTimeoutMs(pluginConfig: PluginConfig): number {
 
 export interface QuotaNotificationsConfig {
 	enabled: boolean;
+	/** Poll usage to block fully spent subscription quotas before they spend Credits. */
+	autoProtectCredits?: boolean;
 	intervalMs: number;
 	notifyEveryCheck: boolean;
 	thresholds: number[];
@@ -1061,6 +1063,11 @@ export function getQuotaNotifications(
 		"CODEX_AUTH_QUOTA_NOTIFICATIONS",
 		config?.enabled,
 		false,
+	);
+	const autoProtectCredits = resolveBooleanSetting(
+		"CODEX_AUTH_AUTO_PROTECT_CREDITS",
+		config?.autoProtectCredits,
+		true,
 	);
 
 	const intervalMs = resolveNumberSetting(
@@ -1090,6 +1097,7 @@ export function getQuotaNotifications(
 
 	return {
 		enabled,
+		autoProtectCredits,
 		intervalMs,
 		notifyEveryCheck: config?.notifyEveryCheck ?? false,
 		thresholds,

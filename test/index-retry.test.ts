@@ -239,6 +239,13 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		process.env.CODEX_AUTH_TOKEN_REFRESH_SKEW_MS = "0";
 		process.env.CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS = "0";
 		process.env.CODEX_AUTH_PREWARM = "0";
+		// The credit-protection monitor polls on a self-rescheduling timer and is
+		// on by default. Under fake timers `vi.runAllTimersAsync()` drains until no
+		// timer remains, and each tick arms the next, so the queue never empties
+		// and Vitest aborts at 10000 timers. These tests exercise retry backoff,
+		// not quota polling, so switch the poller off for them.
+		process.env.CODEX_AUTH_AUTO_PROTECT_CREDITS = "0";
+		process.env.CODEX_AUTH_QUOTA_NOTIFICATIONS = "0";
 
 		vi.useFakeTimers();
 		originalFetch = globalThis.fetch;
@@ -246,6 +253,8 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	});
 
 	afterEach(() => {
+		delete process.env.CODEX_AUTH_AUTO_PROTECT_CREDITS;
+		delete process.env.CODEX_AUTH_QUOTA_NOTIFICATIONS;
 		vi.useRealTimers();
 		globalThis.fetch = originalFetch;
 

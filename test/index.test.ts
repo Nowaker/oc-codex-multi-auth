@@ -1749,6 +1749,46 @@ describe("OpenAIOAuthPlugin", () => {
 			);
 		});
 
+		it("blocks a fully spent usage quota before round-robin can spend Credits", async () => {
+			const weeklyResetAt = Math.floor(Date.now() / 1000) + 86_400;
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: {
+								used_percent: 4,
+								limit_window_seconds: 18000,
+								reset_at: Math.floor(Date.now() / 1000) + 3600,
+							},
+							secondary_window: {
+								used_percent: 100,
+								limit_window_seconds: 604800,
+								reset_at: weeklyResetAt,
+							},
+						},
+						credits: { balance: "483.12" },
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			await plugin.tool["codex-limits"].execute();
+
+			expect(mockStorage.accounts[0]?.rateLimitResetTimes).toMatchObject({
+				codex: weeklyResetAt * 1000,
+				"gpt-5.1": weeklyResetAt * 1000,
+			});
+		});
+
 		it("returns json output for usage windows", async () => {
 			mockStorage.accounts = [
 				{
