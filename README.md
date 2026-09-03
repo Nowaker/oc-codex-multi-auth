@@ -257,6 +257,7 @@ Most of these also run as a **direct CLI** with no agent/model involvement (no t
 - `reasoning.encrypted_content` is preserved for multi-turn continuity
 - GPT-5.6 tiers use the responses-lite request shape and default client identity `opencode`; other models default to `codex_cli_rs`
 - account rotation is health-aware (`rotationStrategy` default `hybrid`) and avoids repeatedly selecting cooling accounts
+- A `codex-limits` or standalone `limits` check records a fully spent 5-hour or weekly subscription quota until its reported reset, so rotation skips that account instead of drawing from paid Credits. Restart OpenCode after the standalone command when it is already running so it reloads the updated account state.
 - same-host OpenCode processes sharing an account file serialize refresh-token exchange and commit so one current single-use token is exchanged once
 - 5xx bursts, network failures, and quota responses penalize account health
 - token refresh is queued to avoid refresh races

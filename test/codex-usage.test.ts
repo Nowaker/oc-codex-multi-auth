@@ -5,6 +5,7 @@ import {
 	fetchCodexUsage,
 	formatUsageLimitSummary,
 	formatUsageReset,
+	getUsageQuotaExhaustedResetAtMs,
 	getUsageLeftPercent,
 	hasUsageWindow,
 	parseCodexUsagePayload,
@@ -110,6 +111,25 @@ describe("codex usage helpers", () => {
 				}),
 			]),
 		);
+	});
+
+	it("finds the latest valid reset for an exhausted ordinary usage window", () => {
+		const now = Date.now();
+		expect(
+			getUsageQuotaExhaustedResetAtMs(
+				[
+					{ usedPercent: 100, windowMinutes: 300, resetAtMs: now + 60_000 },
+					{ usedPercent: 100, windowMinutes: 10080, resetAtMs: now + 86_400_000 },
+				],
+				now,
+			),
+		).toBe(now + 86_400_000);
+		expect(
+			getUsageQuotaExhaustedResetAtMs(
+				[{ usedPercent: 100, windowMinutes: 0, resetAtMs: now + 60_000 }],
+				now,
+			),
+		).toBeUndefined();
 	});
 
 	it("clamps remaining percent and preserves active codex account selection", () => {

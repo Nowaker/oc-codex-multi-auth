@@ -609,6 +609,19 @@ export async function runLimitsCommand(parsed, options = {}) {
 					organizationId: account.organizationId,
 				}),
 			);
+			const quotaExhaustedResetAtMs = usageMod.getUsageQuotaExhaustedResetAtMs([
+				usage.primary,
+				usage.secondary,
+			]);
+			if (quotaExhaustedResetAtMs !== undefined) {
+				try {
+					await usageMod.persistUsageQuotaExhaustion(account, quotaExhaustedResetAtMs);
+				} catch (error) {
+					loggerMod.logWarn(
+						`[${PACKAGE_NAME}] Failed to persist exhausted usage quota: ${formatErrorForLog(error)}`,
+					);
+				}
+			}
 			entry.planType = usage.planType;
 			entry.credits = usage.credits;
 			entry.limits = usage.limits;

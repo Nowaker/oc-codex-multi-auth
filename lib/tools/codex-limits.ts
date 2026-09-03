@@ -11,9 +11,11 @@ import {
 	fetchCodexUsage,
 	formatUsageLimitSummary,
 	formatUsageLimitTitle,
+	getUsageQuotaExhaustedResetAtMs,
 	getUsageAccountDedupeKey,
 	hasUsageWindow,
 	parseCodexUsagePayload,
+	persistUsageQuotaExhaustion,
 	resolveCodexUsageAccountId,
 } from "../codex-usage.js";
 import { PLUGIN_NAME } from "../constants.js";
@@ -204,6 +206,24 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						organizationId: effectiveAccount.organizationId,
 					});
 					const usage = parseCodexUsagePayload(payload);
+					const quotaExhaustedResetAtMs = getUsageQuotaExhaustedResetAtMs(
+						[usage.primary, usage.secondary],
+					);
+					if (quotaExhaustedResetAtMs !== undefined) {
+						try {
+							storageChanged =
+								(await persistUsageQuotaExhaustion(
+									account,
+									quotaExhaustedResetAtMs,
+								)) || storageChanged;
+						} catch (error) {
+							logWarn(
+								`[${PLUGIN_NAME}] Failed to persist exhausted usage quota: ${
+									error instanceof Error ? error.message : String(error)
+								}`,
+							);
+						}
+					}
 					jsonAccounts.push({
 						...buildJsonAccountIdentity(displayIndex, {
 							includeSensitive: includeSensitiveOutput,
