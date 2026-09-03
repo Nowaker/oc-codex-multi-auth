@@ -266,14 +266,14 @@ The default installer preserves `provider.openai`. `--modern` writes the modern 
   - `gpt-5.5`, `gpt-5.5-fast`
   - `gpt-5.4-mini`, `gpt-5.4-nano`
   - `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`
-- 53 effective variants through OpenCode's variant selector
+- 59 effective variants through OpenCode's variant selector
 - `store: false`
 - `reasoning.encrypted_content`
 - large context/output metadata for supported model families
 
-`--full` adds 53 explicit selector IDs for scripts. `--legacy` writes the explicit-only template (53 entries) for older OpenCode versions.
+`--full` adds 59 explicit selector IDs for scripts. `--legacy` writes the explicit-only template (59 entries) for older OpenCode versions.
 
-Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for `gpt-6-astra` → the GPT-5.6 tiers → `gpt-5.5`, and for `gpt-5.5` / `gpt-5-codex` through the GPT-5.4 family. Full generic fallback can be enabled through config or environment variables.
+Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for `gpt-6-astra` → the GPT-5.6 tiers → `gpt-5.5`, and for `gpt-5.5` / `gpt-5-codex` through `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.2`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31 and are no longer fallback targets. Full generic fallback can be enabled through config or environment variables.
 
 ---
 

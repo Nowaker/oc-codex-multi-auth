@@ -91,7 +91,7 @@ Installer flags:
 | --- | --- |
 | (default) / `--plugin-only` | Register the plugin and TUI integration without changing `provider.openai` |
 | `--modern` | Install compact modern catalog: 13 bases, 59 variants |
-| `--full` | Compact bases plus 53 explicit selector IDs |
+| `--full` | Compact bases plus 59 explicit selector IDs |
 | `--legacy` | Explicit-only catalog for older OpenCode |
 | `--dry-run` | Show changed config paths without values or writes |
 | `--no-cache-clear` | Skip clearing the OpenCode plugin cache |

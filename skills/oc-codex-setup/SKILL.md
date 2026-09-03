@@ -53,7 +53,7 @@ Use this when the user needs direct selector IDs such as `openai/gpt-5.5-medium`
 npx -y oc-codex-multi-auth@latest --legacy
 ```
 
-Use this on older OpenCode versions that do not support variant-based model entries. Installs 53 explicit model IDs only.
+Use this on older OpenCode versions that do not support variant-based model entries. Installs 59 explicit model IDs only.
 
 ## Other installer flags
 

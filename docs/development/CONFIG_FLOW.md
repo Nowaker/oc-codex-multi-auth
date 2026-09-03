@@ -51,7 +51,7 @@ That file controls plugin behavior such as retry policy, rotation strategy, begi
    - default / `--plugin-only`: preserve `provider.openai`
    - `--modern`: `config/opencode-modern.json` (compact 13 bases / 59 variants)
    - `--full`: modern bases merged with `config/opencode-legacy.json` explicit entries
-   - `--legacy`: `config/opencode-legacy.json` only (53 explicit IDs)
+   - `--legacy`: `config/opencode-legacy.json` only (59 explicit IDs)
 2. Back up an existing `~/.config/opencode/opencode.json` only when the merged result changes.
 3. Normalize the plugin list so it ends with plain `oc-codex-multi-auth`.
 4. Merge `provider.openai` with the selected shipped template block; `--plugin-only` skips this step entirely.
@@ -85,7 +85,7 @@ Important detail:
 It currently ships:
 
 - 13 base model families
-- 53 total variants
+- 59 total variants
 - GPT-6 Astra (responses-lite path)
 - GPT-5.6 Sol / Terra / Luna (responses-lite path)
 - `gpt-5.5` and `gpt-5.5-fast` at 1,050,000 context / 128,000 output
@@ -173,7 +173,7 @@ opencode run "task" --model=openai/gpt-5.6-sol --variant=high
 `--full` combines:
 
 - the 13 modern base model entries from `config/opencode-modern.json`
-- the 53 explicit preset entries from `config/opencode-legacy.json`
+- the 59 explicit preset entries from `config/opencode-legacy.json`
 
 Use it when scripts require direct selector IDs:
 
@@ -190,7 +190,7 @@ opencode run "task" --model=openai/gpt-5.6-sol-high
 
 It currently ships:
 
-- 53 explicit model entries
+- 59 explicit model entries
 - separate model IDs such as `gpt-5.5-medium`, `gpt-5.5-fast-medium`, `gpt-5.5-high`, `gpt-5.6-sol-xhigh`, and `gpt-5.4-mini-xhigh`
 - the same OpenAI provider defaults (`store: false`, `reasoning.encrypted_content`)
 

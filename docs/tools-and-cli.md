@@ -167,7 +167,7 @@ oc-codex-multi-auth warm
 | (default) / `--plugin-only` | Register plugin/TUI entries without changing `provider.openai` |
 | `--modern` | Install compact modern config (13 bases + variants) |
 | `--full` | Compact bases plus explicit selector entries |
-| `--legacy` | Explicit-only catalog (53 entries) |
+| `--legacy` | Explicit-only catalog (59 entries) |
 | `--dry-run` | Show changed config paths without values or writes |
 | `--no-cache-clear` | Skip clearing OpenCode plugin cache |
 

@@ -7,7 +7,7 @@ This directory contains the official OpenCode config templates for `oc-codex-mul
 | File | OpenCode version | Description |
 |------|------------------|-------------|
 | [`opencode-modern.json`](./opencode-modern.json) | **v1.0.210+** | Variant-based config: **13 base models**, **59 variants** total |
-| [`opencode-legacy.json`](./opencode-legacy.json) | **v1.0.209 and below** | Legacy explicit entries: **53** individual model definitions |
+| [`opencode-legacy.json`](./opencode-legacy.json) | **v1.0.209 and below** | Legacy explicit entries: **59** individual model definitions |
 
 ## Install modes
 
@@ -16,7 +16,7 @@ This directory contains the official OpenCode config templates for `oc-codex-mul
 | default / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
 | `--modern` | Compact modern: 13 base OAuth families + variant picker |
 | `--full` | Modern bases **plus** explicit legacy selector IDs |
-| `--legacy` | Explicit-only catalog (53 preset model entries) |
+| `--legacy` | Explicit-only catalog (59 preset model entries) |
 
 ```bash
 npx -y oc-codex-multi-auth@latest          # plugin entries only

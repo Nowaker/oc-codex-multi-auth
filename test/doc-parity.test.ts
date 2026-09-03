@@ -291,27 +291,38 @@ describe("runtime documentation parity", () => {
 		// drift between the two templates is itself a bug.
 		expect(legacyEntries).toBe(variants);
 
-		// Any base/variant count quoted in current docs must be the live one.
-		// Matches "12 base models", "12 bases", "12 base OAuth model families".
+		// Any catalog count quoted in current docs must be the live one.
+		//
+		// The first version of this matched only "N base" / "N variants", which
+		// let fifteen phrasings drift when the legacy template grew from 53 to
+		// 59: "53 preset model entries", "53 explicit selector IDs", "53
+		// effective variants", "53 individual model keys", and so on. The noun
+		// list below covers the phrasings the docs actually use; a new count
+		// noun has to be added here too.
 		//
 		// The `(?<![\d.])` guard keeps model names out of the match: without it
 		// "GPT-5.5 variant" reads as the number 5 followed by "variant".
-		const basePattern = /(?<![\d.])(\d+) (?:modern )?bases?\b|(?<![\d.])(\d+) base (?:OAuth )?model/g;
-		const variantPattern = /(?<![\d.])(\d+) variants?\b/g;
+		const qualifier =
+			"(?:total|effective|individual|explicit|shipped|preset|modern|legacy|base|OAuth|model|variant|selector|compact)";
+		const noun =
+			"(?:bases|base|variants|variant|presets|preset|entries|entry|selector IDs?|model IDs?|model keys?|model definitions?|model families|families)";
+		const countPattern = new RegExp(
+			String.raw`(?<![\d.])(\d+)((?:\s+${qualifier})*)\s+(${noun})\b`,
+			"g",
+		);
+
 		for (const relativePath of collectCurrentDocumentationFiles()) {
 			const contents = readRepoFile(relativePath);
-			for (const match of contents.matchAll(basePattern)) {
-				const quoted = Number(match[1] ?? match[2]);
-				expect(
-					quoted,
-					`${relativePath} quotes ${quoted} base models; templates ship ${bases}`,
-				).toBe(bases);
-			}
-			for (const match of contents.matchAll(variantPattern)) {
+			for (const match of contents.matchAll(countPattern)) {
+				const phrase = match[0];
+				// "13 base model families" counts bases; "59 preset model entries"
+				// counts variants. Anything naming bases or families is the former.
+				const countsBases = /bases?\b|model famil/.test(phrase);
+				const expected = countsBases ? bases : variants;
 				expect(
 					Number(match[1]),
-					`${relativePath} quotes ${match[1]} variants; templates ship ${variants}`,
-				).toBe(variants);
+					`${relativePath} quotes "${phrase}"; templates ship ${bases} bases / ${variants} variants`,
+				).toBe(expected);
 			}
 		}
 	});

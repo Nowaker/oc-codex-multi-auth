@@ -43,7 +43,7 @@ If you want direct explicit selector IDs such as `openai/gpt-5.5-medium` (modern
 npx -y oc-codex-multi-auth@latest --full
 ```
 
-If you explicitly want the older explicit-only layout (53 individual model keys):
+If you explicitly want the older explicit-only layout (59 individual model keys):
 
 ```bash
 npx -y oc-codex-multi-auth@latest --legacy

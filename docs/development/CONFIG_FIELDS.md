@@ -138,7 +138,7 @@ opencode run "task" --model=openai/gpt-5.6-sol --variant=medium
 
 ### Legacy template fields
 
-Legacy templates expose each preset as its own model key (53 explicit entries).
+Legacy templates expose each preset as its own model key (59 explicit entries).
 
 Example:
 

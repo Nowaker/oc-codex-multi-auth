@@ -203,12 +203,14 @@ const DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV: Record<string, string> = {
  * already hopped off an entry model.
  *
  * Entry models (those in DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV) resolve
- * themselves, so only the intermediates that are not entry models need to be
- * listed. `gpt-5.2` joined the tails when the retired 5.4 ids were demoted;
- * without it the chain stopped dead at 5.2 instead of trying what follows.
+ * themselves, so only non-entry intermediates need listing, and only those that
+ * own a row in DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: membership here gates
+ * *whether* auto-fallback is allowed to continue, but the resolver still reads
+ * `chain[currentModel]`, so a member with no row of its own returns undefined
+ * either way. `gpt-5.2` is deliberately absent for that reason. It is the last
+ * resort in every tail and has no row, so listing it would be a no-op.
  */
 const DEFAULT_AUTO_FALLBACK_CONTINUATION_MODELS = new Set([
-	"gpt-5.2",
 	"gpt-5.4",
 	"gpt-5.4-mini",
 ]);
