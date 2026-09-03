@@ -892,7 +892,11 @@ export function getUnsupportedCodexFallbackChain(
 		return stripEffortSuffix(stripped);
 	};
 
-	const normalized: Record<string, string[]> = {};
+	// Null-prototype: the keys come from settings.json, which reaches here via
+	// `JSON.parse`, and a parsed `__proto__` key IS a real own property (unlike
+	// one written as an object literal). On a plain object it would reassign
+	// this object's prototype rather than add a row.
+	const normalized: Record<string, string[]> = Object.create(null);
 	for (const [key, value] of Object.entries(chain)) {
 		if (typeof key !== "string" || !Array.isArray(value)) continue;
 		const normalizedKey = normalizeModel(key);
