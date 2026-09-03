@@ -6,10 +6,14 @@ import {
 import { renderCodexOpenCodeBridge } from "../prompts/codex-opencode-bridge.js";
 import { getOpenCodeCodexPrompt } from "../prompts/opencode-codex.js";
 import {
+	DAYBREAK_BLUE_MODEL_ID,
+	DAYBREAK_RED_MODEL_ID,
 	GPT_55_MODEL_ID,
+	GPT_56_CYBER_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
+	GPT_6_ASTRA_MODEL_ID,
 	getNormalizedModel,
 } from "./helpers/model-map.js";
 import { getEffortSuffix, stripEffortSuffix } from "./helpers/effort-suffix.js";
@@ -64,6 +68,27 @@ export function normalizeModel(model: string | undefined): string {
 	const normalized = modelId.toLowerCase();
 
 	// Priority order for pattern matching (most specific first):
+	// 0. GPT-6 Astra and the Daybreak cyber tiers. These run first because they
+	// are the newest ids and share no token with the 5.x branches below, so an
+	// earlier match here can never shadow one of them. Verbose display names
+	// ("GPT 6 Astra (OAuth)", "Daybreak Red") land here rather than in the map.
+	if (/\bdaybreak(?:-| )blue(?:\b|[- ])/.test(normalized)) {
+		return DAYBREAK_BLUE_MODEL_ID;
+	}
+	if (/\bdaybreak(?:-| )red(?:\b|[- ])/.test(normalized)) {
+		return DAYBREAK_RED_MODEL_ID;
+	}
+	// Must precede the bare `gpt-5.6` branch below, which would otherwise
+	// swallow `gpt-5.6-cyber` and silently route a security request to Sol.
+	if (/\bgpt(?:-| )5\.6(?:-| )cyber(?:\b|[- ])/.test(normalized)) {
+		return GPT_56_CYBER_MODEL_ID;
+	}
+	// GPT-6 Astra Pro is not a Codex-routable id (see MODEL_MAP), so every
+	// `gpt-6*` spelling collapses onto the one shipped tier.
+	if (/\bgpt(?:-| )6(?:\b|[- ])/.test(normalized)) {
+		return GPT_6_ASTRA_MODEL_ID;
+	}
+
 	// 1. GPT-5.3 Codex Spark — distinct backend model, preserved as canonical ID
 	if (
 		normalized.includes("gpt-5.3-codex-spark") ||
@@ -545,8 +570,20 @@ export function getReasoningConfig(
 	const isGpt56Terra = canonicalModelName === GPT_56_TERRA_MODEL_ID;
 	const isGpt56Luna = canonicalModelName === GPT_56_LUNA_MODEL_ID;
 	const isGpt56 = isGpt56Sol || isGpt56Terra || isGpt56Luna;
-	const supportsMax = isGpt56;
-	const supportsUltra = isGpt56Sol || isGpt56Terra;
+
+	// GPT-6 Astra and both Daybreak tiers accept low..max plus ultra, and
+	// reject "none"/"minimal" — the same envelope as Sol and Terra. Daybreak is
+	// read from the catalog; Astra is OpenAI's Codex model list.
+	const isGpt6Astra = canonicalModelName === GPT_6_ASTRA_MODEL_ID;
+	const isDaybreak =
+		canonicalModelName === DAYBREAK_BLUE_MODEL_ID ||
+		canonicalModelName === DAYBREAK_RED_MODEL_ID ||
+		canonicalModelName === GPT_56_CYBER_MODEL_ID;
+
+	/** Families whose whole effort range is low..ultra with no none/minimal. */
+	const isFullEffortFamily = isGpt56 || isGpt6Astra || isDaybreak;
+	const supportsMax = isFullEffortFamily;
+	const supportsUltra = isGpt56Sol || isGpt56Terra || isGpt6Astra || isDaybreak;
 
 	// GPT-5.4 Mini is a first-class explicit model.
 	const isGpt54Mini = canonicalModelName === "gpt-5.4-mini";
@@ -567,7 +604,7 @@ export function getReasoningConfig(
 		(normalizedName.includes("gpt-5.2") || normalizedName.includes("gpt 5.2")) &&
 		!isGpt52Codex;
 	const canonicalSupportsXhigh =
-		isGpt56 ||
+		isFullEffortFamily ||
 		canonicalModelName === GPT_55_MODEL_ID ||
 		canonicalModelName === "gpt-5.4" ||
 		canonicalModelName === "gpt-5.4-mini" ||
@@ -604,7 +641,7 @@ export function getReasoningConfig(
 	// GPT-5.5/5.4/5.2 general, GPT-5.4 Mini, GPT-5.4 Pro,
 	// legacy GPT-5.2/5.3 Codex aliases, and Codex Max support xhigh reasoning
 	const supportsXhigh =
-		isGpt56 ||
+		isFullEffortFamily ||
 		isGpt55General ||
 		isGpt54General ||
 		isGpt54Mini ||
@@ -702,10 +739,11 @@ export function getReasoningConfig(
 		effort = "low";
 	}
 
-	// GPT-5.6 accepts neither "none" nor "minimal". `none` is floored above via
-	// supportsNone, but `minimal` is otherwise only clamped for the Codex
-	// families (see the isCodex branch below), so 5.6 would leak it to the wire.
-	if (isGpt56 && effort === "minimal") {
+	// GPT-5.6, GPT-6 Astra and Daybreak accept neither "none" nor "minimal".
+	// `none` is floored above via supportsNone, but `minimal` is otherwise only
+	// clamped for the Codex families (see the isCodex branch below), so these
+	// would leak it to the wire.
+	if (isFullEffortFamily && effort === "minimal") {
 		effort = "low";
 	}
 

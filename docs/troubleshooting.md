@@ -480,16 +480,20 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    CODEX_AUTH_SEND_ORGANIZATION_HEADER=1 opencode   # restore legacy openai-organization pinning
    ```
    If the model still fails only through the plugin, run `codex-health` and compare the failing pooled account ids against the account the Codex CLI uses (`~/.codex/auth.json`).
-4. Default public selectors that are commonly entitlement-gated can auto-fallback: the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain to `gpt-5.5`, and `gpt-5.5`/canonical `gpt-5-codex` degrade through `gpt-5.4`, `gpt-5.4-mini`, then `gpt-5.4-nano`.
+4. Default public selectors that are commonly entitlement-gated can auto-fallback: `gpt-6-astra` degrades into the GPT-5.6 tiers, the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain to `gpt-5.5`, and `gpt-5.5`/canonical `gpt-5-codex` degrade through `gpt-5.6-terra`, `gpt-5.6-luna`, then `gpt-5.2`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones. The Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`) have no chain by design: an unentitled account gets a hard failure rather than a silent substitution by a general model.
 5. Enable fallback policy if you also want automatic downgrades for manual/legacy selectors:
    ```bash
    CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback opencode
    ```
-6. Default fallback chain (auto-fallback for the 5.6 tiers and `gpt-5.5`/`gpt-5-codex`; full chain when policy is `fallback` and not overridden):
+6. Default fallback chain (auto-fallback for `gpt-6-astra`, the 5.6 tiers and `gpt-5.5`/`gpt-5-codex`; full chain when policy is `fallback` and not overridden):
+   - `gpt-6-astra -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` (then the `gpt-5.5` chain below)
    - `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` (then the `gpt-5.5` chain below)
-   - `gpt-5.5 -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
-   - `gpt-5-codex -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
-   - `gpt-5.4-pro -> gpt-5.4` (if `gpt-5.4-pro` is selected manually)
+   - `gpt-5.5 -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.2`
+   - `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2`
+   - `gpt-5.4 -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (the successor its catalog entry names)
+   - `gpt-5.4-mini -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
+   - `gpt-5.4-nano -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
+   - `gpt-5.4-pro -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (if `gpt-5.4-pro` is selected manually)
    - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
    - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (if Spark IDs are selected manually)
    - `gpt-5.2-codex -> gpt-5-codex`

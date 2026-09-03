@@ -562,7 +562,7 @@ describe('Fetch Helpers Module', () => {
 			expect(legacyEdgeFallback).toBeUndefined();
 		});
 
-		it('falls back from canonical gpt-5-codex to gpt-5.4 when fallback policy is enabled', () => {
+		it('falls back from canonical gpt-5-codex to gpt-5.6-terra when fallback policy is enabled', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5-codex',
 				errorBody: {
@@ -576,10 +576,10 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBe('gpt-5.4');
+			expect(fallback).toBe('gpt-5.6-terra');
 		});
 
-		it('continues canonical Codex fallback to mini and nano when larger fallbacks are also unsupported', () => {
+		it('continues canonical Codex fallback onto the successors the catalog names', () => {
 			const errorBody = {
 				error: {
 					code: 'model_not_supported_with_chatgpt_account',
@@ -595,7 +595,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(miniFallback).toBe('gpt-5.4-mini');
+			expect(miniFallback).toBe('gpt-5.6-terra');
 
 			const nanoFallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.4-mini',
@@ -610,7 +610,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(nanoFallback).toBe('gpt-5.4-nano');
+			expect(nanoFallback).toBe('gpt-5.6-luna');
 		});
 
 		it('keeps directly selected GPT-5.4 family models strict when fallback policy is disabled', () => {
@@ -674,7 +674,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(gpt54Fallback).toBe('gpt-5.4');
+			expect(gpt54Fallback).toBe('gpt-5.6-terra');
 		});
 
 		it('covers legacy gpt-5.1-codex multi-hop through blocked canonical Codex', () => {
@@ -706,7 +706,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(gpt54Fallback).toBe('gpt-5.4');
+			expect(gpt54Fallback).toBe('gpt-5.6-terra');
 		});
 
 		it('auto-fallbacks canonical gpt-5-codex even when fallback policy is disabled', () => {
@@ -723,7 +723,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBe('gpt-5.4');
+			expect(fallback).toBe('gpt-5.6-terra');
 		});
 
 		it('honors the default selector auto-fallback opt-out', () => {
@@ -798,8 +798,9 @@ describe('Fetch Helpers Module', () => {
 			});
 			expect(lunaFallback).toBe('gpt-5.5');
 
-			// The chain keeps degrading through the GPT-5.4 family once it lands
-			// on gpt-5.5, matching the existing default-selector behavior.
+			// Once the walk lands on gpt-5.5 with every 5.6 tier already attempted,
+			// the only live general model left is gpt-5.2. It used to continue into
+			// the GPT-5.4 family, retired from Codex on 2026-08-31.
 			const gpt55Fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.5',
 				errorBody: unsupportedBody('gpt-5.5'),
@@ -812,7 +813,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(gpt55Fallback).toBe('gpt-5.4');
+			expect(gpt55Fallback).toBe('gpt-5.2');
 		});
 
 		it('treats the bare gpt-5.6 alias as the Sol tier for auto-fallback', () => {
@@ -886,7 +887,7 @@ describe('Fetch Helpers Module', () => {
 			expect(fallback).toBeUndefined();
 		});
 
-		it('falls back from gpt-5.4-pro to gpt-5.4 when fallback policy is enabled', () => {
+		it('falls back from gpt-5.4-pro to gpt-5.6-terra when fallback policy is enabled', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.4-pro',
 				errorBody: {
@@ -900,10 +901,10 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBe('gpt-5.4');
+			expect(fallback).toBe('gpt-5.6-terra');
 		});
 
-		it('does not fallback from gpt-5.4-pro when gpt-5.4 already attempted', () => {
+		it('still has somewhere to go from gpt-5.4-pro once retired gpt-5.4 is attempted', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.4-pro',
 				errorBody: {
@@ -917,10 +918,12 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBeUndefined();
+			// gpt-5.4 is retired, so exhausting it must not end the walk: the
+			// chain leads with the live successor named by the catalog.
+			expect(fallback).toBe('gpt-5.6-terra');
 		});
 
-		it('collapses gpt-5.5-pro to gpt-5.4 via the GPT-5.5 canonicalization step', () => {
+		it('collapses gpt-5.5-pro through gpt-5.5 to its live successor via the canonicalization step', () => {
 			// GPT-5.5 Pro is ChatGPT-only per the 2026-04-23 launch. If a user still
 			// types `gpt-5.5-pro`, canonicalizeModelName collapses it to gpt-5.5 so the
 			// gpt-5.5 -> gpt-5.4 fallback chain rescues the request instead of burning
@@ -938,10 +941,10 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBe('gpt-5.4');
+			expect(fallback).toBe('gpt-5.6-terra');
 		});
 
-		it('falls back from GPT-5.5 to gpt-5.4 when GPT-5.5 is unsupported', () => {
+		it('falls back from GPT-5.5 to gpt-5.6-terra when GPT-5.5 is unsupported', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.5-medium',
 				errorBody: {
@@ -955,10 +958,10 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBe('gpt-5.4');
+			expect(fallback).toBe('gpt-5.6-terra');
 		});
 
-		it('continues GPT-5.5 fallback when gpt-5.4 was already attempted', () => {
+		it('continues GPT-5.5 fallback when retired gpt-5.4 was already attempted', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.5',
 				errorBody: {
@@ -972,10 +975,10 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBe('gpt-5.4-mini');
+			expect(fallback).toBe('gpt-5.6-terra');
 		});
 
-		it('continues through gpt-5.5-pro fallback once gpt-5.4 has been attempted', () => {
+		it('continues through gpt-5.5-pro fallback once retired gpt-5.4 has been attempted', () => {
 			// Pro canonicalizes to gpt-5.5, so once gpt-5.4 is in attemptedModels the
 			// chain continues to the smaller GPT-5.4 family fallbacks.
 			const fallback = resolveUnsupportedCodexFallbackModel({
@@ -991,7 +994,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBe('gpt-5.4-mini');
+			expect(fallback).toBe('gpt-5.6-terra');
 		});
 	});
 

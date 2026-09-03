@@ -246,13 +246,16 @@ describe("GPT-5.6 Model Support", () => {
 				"gpt-5.6-terra",
 				"gpt-5.6-luna",
 				"gpt-5.5",
+				"gpt-5.2",
 			]);
 			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN["gpt-5.6-terra"]).toEqual([
 				"gpt-5.6-luna",
 				"gpt-5.5",
+				"gpt-5.2",
 			]);
 			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN["gpt-5.6-luna"]).toEqual([
 				"gpt-5.5",
+				"gpt-5.2",
 			]);
 		});
 	});

@@ -13,10 +13,17 @@
  * so the sol-only rejection is a per-originator entitlement decision on the
  * backend, not a version or payload problem.
  *
- * Policy: gpt-5.6 (responses-lite) models default to the host identity that
- * plain opencode is proven to pass with; every other model keeps the Codex CLI
+ * Policy: responses-lite models default to the host identity that plain
+ * opencode is proven to pass with; every other model keeps the Codex CLI
  * identity from PR #199. `CODEX_AUTH_CLIENT_IDENTITY=codex|opencode` (alias
  * `host` for `opencode`) forces one identity for all models.
+ *
+ * GPT-6 Astra and the Daybreak tiers inherit that default by being
+ * responses-lite. For Astra this is the deliberately conservative read: it is
+ * the newest model on the backend, entitlement for new models is decided per
+ * originator, and `opencode` is the originator this plugin has evidence of
+ * passing with on the newest tier. Flip it with CODEX_AUTH_CLIENT_IDENTITY if
+ * an account turns out to want the Codex CLI identity instead.
  */
 import os from "node:os";
 import { buildCodexUserAgent, sanitizeVersionToken } from "./user-agent.js";
