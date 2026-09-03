@@ -165,6 +165,66 @@ describe('Configuration Parsing', () => {
 			});
 			expect(unknown.effort).toBe('medium');
 		});
+
+		// `reasoningEffort` is read straight off opencode.json, so its TypeScript
+		// union does not constrain it at runtime. Every clamp compares against
+		// lowercase literals, so a capitalized value matched none of them and
+		// went to the wire unclamped.
+		describe('effort case-folding', () => {
+			it('case-folds before clamping, so no capitalized effort escapes', () => {
+				// ultra is a client-side tier and must never reach the backend.
+				expect(
+					getReasoningConfig('gpt-6-astra', { reasoningEffort: 'ULTRA' as never }).effort,
+				).toBe('max');
+				// astra rejects "none".
+				expect(
+					getReasoningConfig('gpt-6-astra', { reasoningEffort: 'NONE' as never }).effort,
+				).toBe('low');
+				// Codex families reject "minimal".
+				expect(
+					getReasoningConfig('gpt-5-codex', { reasoningEffort: 'MINIMAL' as never }).effort,
+				).toBe('low');
+				// gpt-5.1 tops out at high.
+				expect(
+					getReasoningConfig('gpt-5.1', { reasoningEffort: 'MAX' as never }).effort,
+				).toBe('high');
+			});
+
+			it('trims surrounding whitespace', () => {
+				expect(
+					getReasoningConfig('gpt-6-astra', { reasoningEffort: '  MAX  ' as never }).effort,
+				).toBe('max');
+				expect(
+					getReasoningConfig('gpt-6-astra', { reasoningEffort: '   ' as never }).effort,
+				).toBeTruthy();
+			});
+
+			it('leaves already-lowercase efforts exactly as they were', () => {
+				expect(
+					getReasoningConfig('gpt-6-astra', { reasoningEffort: 'xhigh' }).effort,
+				).toBe('xhigh');
+				expect(
+					getReasoningConfig('gpt-5.6-sol', { reasoningEffort: 'max' }).effort,
+				).toBe('max');
+				expect(
+					getReasoningConfig('gpt-5.5', { reasoningEffort: 'none' }).effort,
+				).toBe('none');
+			});
+		});
+
+		// Only codex-mini used to coerce these; every other family emitted the
+		// unknown token verbatim, which the backend answers with a 400.
+		it('coerces an unknown effort to the family default, not just for codex-mini', () => {
+			for (const model of ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5-codex', 'gpt-5.1']) {
+				const resolved = getReasoningConfig(model, {
+					reasoningEffort: 'invalid-effort' as never,
+				}).effort;
+				expect(
+					['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+					`${model} emitted ${resolved}`,
+				).toContain(resolved);
+			}
+		});
 	});
 
 	describe('Model-specific behavior', () => {

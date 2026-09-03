@@ -29,9 +29,13 @@
  * honored.
  */
 import {
+	DAYBREAK_BLUE_MODEL_ID,
+	DAYBREAK_RED_MODEL_ID,
+	GPT_56_CYBER_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
+	GPT_6_ASTRA_MODEL_ID,
 	getNormalizedModel,
 } from "./model-map.js";
 import { stripEffortSuffix } from "./effort-suffix.js";
@@ -42,6 +46,21 @@ const RESPONSES_LITE_MODELS: ReadonlySet<string> = new Set([
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
+	// Both Daybreak tiers are `use_responses_lite: true`, `tool_mode:
+	// "code_mode_only"` in the catalog — read directly from models.json.
+	DAYBREAK_BLUE_MODEL_ID,
+	DAYBREAK_RED_MODEL_ID,
+	// `gpt-5.6-cyber` has no catalog entry under its own slug, but it is an
+	// alias for the two Daybreak tiers above, both catalog-verified lite, and
+	// every 5.6-generation model in the catalog is lite.
+	GPT_56_CYBER_MODEL_ID,
+	// Astra shipped without a catalog entry, so 6.17.0 inferred this and kept it
+	// behind `CODEX_AUTH_ASTRA_RESPONSES_LITE`. openai/codex commit ed391d4d
+	// (2026-09-03T20:05:58Z) added the entry, and it reads
+	// `use_responses_lite: true`, `tool_mode: "code_mode_only"`,
+	// `multi_agent_version: "v2"`. The inference was right, so it is now read
+	// rather than guessed and the switch is gone.
+	GPT_6_ASTRA_MODEL_ID,
 ]);
 
 /** Header Codex sets on every responses-lite request. */

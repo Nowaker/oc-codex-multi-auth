@@ -36,13 +36,17 @@ controls how much thinking the model does.
 
 | model | supported values |
 |-------|------------------|
+| `gpt-6-astra` | low, medium, high, xhigh, max, ultra |
+| `gpt-daybreak-blue-latest` | low, medium, high, xhigh, max, ultra (Daybreak-gated; add manually) |
+| `gpt-daybreak-red-latest` | low, medium, high, xhigh, max, ultra (Daybreak-gated; add manually) |
+| `gpt-5.6-cyber` | low, medium, high, xhigh, max, ultra (Daybreak-gated; add manually) |
 | `gpt-5.6-sol` | low, medium, high, xhigh, max, ultra |
 | `gpt-5.6-terra` | low, medium, high, xhigh, max, ultra |
 | `gpt-5.6-luna` | low, medium, high, xhigh, max |
 | `gpt-5.5` | none, low, medium, high, xhigh |
 | `gpt-5.5-fast` | none, low, medium, high, xhigh |
-| `gpt-5.4` | none, low, medium, high, xhigh |
-| `gpt-5.4-mini` | none, low, medium, high, xhigh |
+| `gpt-5.4` | none, low, medium, high, xhigh (retired from Codex 2026-08-31; auto-upgrades to `gpt-5.6-terra`) |
+| `gpt-5.4-mini` | none, low, medium, high, xhigh (retired from Codex 2026-08-31; auto-upgrades to `gpt-5.6-luna`) |
 | `gpt-5.4-pro` | low, medium, high, xhigh (optional/manual model) |
 | `gpt-5-codex` | low, medium, high (default: high) |
 | `gpt-5.3-codex` | low, medium, high, xhigh (legacy alias to `gpt-5-codex`) |
@@ -53,11 +57,12 @@ controls how much thinking the model does.
 | `gpt-5.1-codex-mini` | medium, high |
 | `gpt-5.1` | none, low, medium, high |
 
-The shipped config templates include 12 base model families and 53 shipped presets overall (53 modern variants or 53 legacy explicit entries). Default install preserves `provider.openai`; use `--modern` to install the compact base families and variant picker, or `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin), while `gpt-5.3-codex-spark` remains a manual add-on for entitled workspaces only.
+The shipped config templates include 13 base model families and 59 shipped presets overall (59 modern variants or 59 legacy explicit entries). Default install preserves `provider.openai`; use `--modern` to install the compact base families and variant picker, or `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin). `gpt-6-astra-pro` is almost certainly not a model id at all (see below). `gpt-5.3-codex-spark` and the three Daybreak-gated cyber tiers remain manual add-ons for entitled workspaces only.
 
 Base families:
 
 ```text
+gpt-6-astra
 gpt-5.6-sol
 gpt-5.6-terra
 gpt-5.6-luna
@@ -72,13 +77,29 @@ gpt-5.1
 gpt-5-codex
 ```
 
+GPT-6 Astra notes:
+- Astra is OpenAI's frontier model, launched 2026-09-03. Efforts are low through `ultra`, matching OpenAI's Codex model list. Its API reference page says only "`reasoning.effort` supports `low`, `medium`, `high`, `xhigh`, and `max`", which is not a contradiction: `ultra` is a Codex client-side tier that is rewritten to `max` before the request leaves the client, so an API reference has no reason to list it. `gpt-5.6-sol` shows the same split.
+- Astra is opt-in, like the 5.6 tiers: neither the `gpt-5` alias nor the plugin default resolves to it. It rolled out to a limited set of organizations first and to Plus/Pro/Business/Enterprise over the following days, so an account outside the rollout auto-degrades `gpt-6-astra → gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5`. Disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`.
+- Bare `gpt-6` is a **plugin-side** alias for `gpt-6-astra`. OpenAI publishes no bare `gpt-6` id.
+- "GPT-6 Astra Pro" appears in launch-day press but is very likely not a model id at all: `/api/docs/models/gpt-6-astra-pro` returns 404 while the real `gpt-5.5-pro` and `gpt-5.4-pro` pages both return 200, and it is absent from both the `ChatModel` and `ResponsesOnlyModel` enums of the OpenAPI spec added by the SDK PR that introduced Astra (openai/openai-python#3791) — an enum that does list `gpt-5.5-pro`. The plugin maps `gpt-6-astra-pro*` onto `gpt-6-astra` anyway, so a user who typed it after reading the press gets a working request instead of an unknown slug on the wire.
+- Astra is sent over the **responses-lite** path. Astra's catalog entry landed in openai/codex commit `ed391d4d` (2026-09-03) and reads `use_responses_lite: true`, `tool_mode: "code_mode_only"`, `multi_agent_version: "v2"`, so the shape is read rather than inferred. The `CODEX_AUTH_ASTRA_RESPONSES_LITE` switch that 6.17.0 carried while this was unverifiable has been removed.
+- Astra's instructions come from the `gpt_5_2_prompt.md` fallback. Its catalog entry exists but ships an empty `base_instructions` where every sibling carries 11k to 21k characters, and the loader treats empty as absent. Astra stays registered as a catalog slug, so it switches over on its own if OpenAI fills the field in.
+- The catalog marks Astra `visibility: "hide"` with `priority: 1` and `minimal_client_version: 0.153.0`, which is the staged rollout rather than a program gate. Unlike the Daybreak tiers it still ships in the config templates, because it has an auto-fallback chain: an unentitled account costs one round trip and lands on a working model, where a Daybreak request would hard-fail.
+
+Cyber tier notes (Daybreak-gated):
+- `gpt-daybreak-blue-latest` (defensive security) and `gpt-daybreak-red-latest` (cyber-permissive, for authorized security research) are catalog-verified cyber-specialty models — `model_specialty: "cyber"`, `use_responses_lite: true`, `tool_mode: "code_mode_only"`, efforts low through ultra. `gpt-5.6-cyber` is OpenAI's published alias fronting them; it belongs to the 5.6 generation, not GPT-6.
+- All three require Daybreak program approval, and Blue/Red are `visibility: "hide"` in the catalog. They are therefore **not** in the shipped config templates, for the same reason `gpt-5.3-codex-spark` is not: shipping an entitlement-gated id to every user causes avoidable startup failures. The plugin routes them fully, so an entitled user adds the id by hand and it works.
+- None of the three has a fallback chain, deliberately. Degrading a cyber-specialty request onto a general model would answer a security-research prompt with a model that was never asked for, so an unentitled account gets a hard failure instead of a silent substitution.
+- `gpt-daybreak-blue` and `gpt-daybreak-red` are accepted as short forms of the `-latest` ids.
+- `gpt-5.6-cyber` is matched ahead of the bare `gpt-5.6` alias, which would otherwise claim it and route a security request to Sol.
+
 GPT-5.6 notes:
 - 5.6 models are served over the **responses-lite** path. Their catalog entry sets `use_responses_lite: true` and `tool_mode: "code_mode_only"`, so the plugin reshapes the request the way Codex does: tool definitions move into `input` as a leading `additional_tools` developer item, the Codex instructions follow as a developer message, top-level `instructions` is emptied, `tools` is omitted, `parallel_tool_calls` is forced off, image `detail` fields are stripped, and an `x-openai-internal-codex-responses-lite: true` header is sent. Pre-5.6 models keep the classic shape.
 - No 5.6 tier accepts `none` or `minimal`; both are raised to `low`.
 - `max` and `ultra` are new in 5.6. Requesting them on an older family steps down to `xhigh` (then `high` where xhigh is unsupported).
 - `ultra` is a client-side tier. Codex rewrites it to `max` before the request leaves the client, and the subagent orchestration that distinguishes ultra lives in the Codex client rather than the request body. This plugin is a proxy, so `-ultra` is accepted as an alias and sent on the wire as `max` — it does **not** spawn subagents.
 - 5.6 is opt-in: the legacy `gpt-5` alias and the plugin default still resolve to `gpt-5.5` / `gpt-5.4`. Because 5.6 shipped as a limited preview, an account without access falls back down the 5.6 tiers and then to `gpt-5.5` automatically — this works under the default `strict` policy, like the `gpt-5.5`/`gpt-5-codex` auto-fallbacks, and can be disabled with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`. The lite shape is applied per request attempt, so a request that falls back from `gpt-5.6-sol` to `gpt-5.5` is re-serialized into the classic shape and keeps its tools.
-- Client identity defaults to `originator: opencode` for GPT-5.6 tiers and `codex_cli_rs` for other models. Override with `CODEX_AUTH_CLIENT_IDENTITY=codex|opencode`.
+- Client identity defaults to `originator: opencode` for every responses-lite model (the 5.6 tiers, GPT-6 Astra and both Daybreak tiers) and `codex_cli_rs` for other models. Override with `CODEX_AUTH_CLIENT_IDENTITY=codex|opencode`.
 - Instructions for the 5.6 tiers come from the Codex model catalog — see "System instructions" below.
 
 ### System instructions
@@ -87,6 +108,9 @@ Modern Codex carries a full `base_instructions` string **per model** in its cata
 
 | Model | Instruction source |
 |-------|--------------------|
+| `gpt-6-astra` | `gpt_5_2_prompt.md` for now — registered as a catalog slug, so it switches to catalog text the moment openai/codex publishes an entry |
+| `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest` | catalog |
+| `gpt-5.6-cyber` | `gpt_5_2_prompt.md` (the catalog has no entry under this slug, only the Daybreak ids it fronts) |
 | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | catalog (each tier has distinct text) |
 | `gpt-5.5` | catalog |
 | `gpt-5.4`, `gpt-5.4-mini` | catalog |
@@ -96,12 +120,15 @@ Modern Codex carries a full `base_instructions` string **per model** in its cata
 Catalog-sourced instructions cache per model id (`catalog-<slug>-instructions.md`); file-sourced instructions keep the historical per-family cache. This matters because `gpt-5.5` and `gpt-5.4` share the `gpt-5.4` family but have different catalog text — a family-keyed cache would let one serve the other's prompt. `models.json` is fetched once per release tag and shared across models. If the pinned Codex release has no catalog entry for a model, the plugin falls back to that family's prompt file.
 
 For context sizing, shipped templates use:
+- `gpt-6-astra`: `context=1050000`, `output=128000`
 - `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`: `context=1050000`, `output=128000`
 - `gpt-5.5` and `gpt-5.5-fast`: `context=1050000`, `output=128000`
 - `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, and `gpt-5.1-codex-mini`: `context=400000`, `output=128000`
 - `gpt-5.1`: `context=272000`, `output=128000`
 
 model normalization aliases:
+- bare `gpt-6` maps to `gpt-6-astra`; `gpt-6-astra-pro*` collapses onto `gpt-6-astra` (not a Codex-routable id)
+- `gpt-daybreak-blue*` and `gpt-daybreak-red*` map to the catalog ids `gpt-daybreak-blue-latest` / `gpt-daybreak-red-latest`; `gpt-5.6-cyber*` maps to itself, never to Sol
 - bare `gpt-5.6` maps to the flagship tier `gpt-5.6-sol`; `gpt-5.6-terra*` and `gpt-5.6-luna*` map to their own ids
 - `gpt-5.5*`, `gpt-5.5-fast*`, and user-typed `gpt-5.5-pro*` normalize to the public Codex model id `gpt-5.5`
 - legacy `gpt-5` maps to `gpt-5.5`; legacy `gpt-5-mini` / `gpt-5-nano` map to `gpt-5.4-mini` / `gpt-5.4-nano`
@@ -254,7 +281,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `unsupportedCodexPolicy` | `strict` | unsupported-model behavior: `strict` (return entitlement error) or `fallback` (retry with configured fallback chain) |
 | `fallbackOnUnsupportedCodexModel` | `false` | legacy fallback toggle mapped to `unsupportedCodexPolicy` (prefer using `unsupportedCodexPolicy`) |
 | `fallbackToGpt52OnUnsupportedGpt53` | `true` | legacy compatibility toggle for the `gpt-5.3-codex -> gpt-5.2-codex` edge when generic fallback is enabled |
-| `unsupportedCodexFallbackChain` | `{}` | optional per-model fallback-chain override (map of `model -> [fallback1, fallback2, ...]`; default includes the 5.6 tiers down to `gpt-5.5`, and `gpt-5.5`/`gpt-5-codex` through the GPT-5.4 family). The 5.6 tier, `gpt-5.5`, and canonical Codex auto-fallbacks are on by default for common entitlement gates; set `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1`, or `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` to opt out. GPT-5.5 Pro is not mapped: it is ChatGPT-only per OpenAI's 2026-04-23 launch. |
+| `unsupportedCodexFallbackChain` | `{}` | optional per-model fallback-chain override (map of `model -> [fallback1, fallback2, ...]`; default includes `gpt-6-astra` and the 5.6 tiers down to `gpt-5.5`, and `gpt-5.5`/`gpt-5-codex` down to `gpt-5.2`). The 5.6 tier, `gpt-5.5`, and canonical Codex auto-fallbacks are on by default for common entitlement gates; set `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1`, or `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` to opt out. GPT-5.5 Pro and GPT-6 Astra Pro are not mapped: neither is a Codex-routable id. The Daybreak cyber tiers are deliberately chainless, so an unentitled account fails loudly rather than being answered by a general model. |
 | `sessionRecovery` | `true` | auto-recover from common api errors |
 | `autoResume` | `true` | auto-resume after thinking block recovery |
 | `tokenRefreshSkewMs` | `60000` | refresh tokens this many ms before expiry |
@@ -335,18 +362,26 @@ by default the plugin is strict (`unsupportedCodexPolicy: "strict"`) except for 
 set `unsupportedCodexPolicy: "fallback"` to enable model fallback after account/workspace attempts are exhausted.
 
 defaults when fallback policy is enabled and `unsupportedCodexFallbackChain` is empty (plus the always-on public-selector auto-fallbacks for common entitlement gates):
+- `gpt-6-astra -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` (then the `gpt-5.5` chain)
 - `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` (then the `gpt-5.5` chain)
 - `gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5`
 - `gpt-5.6-luna -> gpt-5.5`
-- `gpt-5.5 -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
-- `gpt-5-codex -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
-- `gpt-5.4-pro -> gpt-5.4` (if `gpt-5.4-pro` is selected manually; not a shipped base)
+- `gpt-5.5 -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.2`
+- `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2`
+- `gpt-5.4 -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (the successor its catalog entry names)
+- `gpt-5.4-mini -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
+- `gpt-5.4-nano -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
+- `gpt-5.4-pro -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (if `gpt-5.4-pro` is selected manually; not a shipped base)
+
+> GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
 - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
 - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (applies if you manually select Spark model IDs)
 - `gpt-5.2-codex -> gpt-5-codex`
 - `gpt-5.1-codex -> gpt-5-codex`
 
 Note: `gpt-5.4` and `gpt-5.4-pro` appear in fallback/runtime normalization but are not shipped as compact modern base picker entries (bases use `gpt-5.4-mini` / `gpt-5.4-nano`).
+
+`gpt-5.4-mini` is still shipped as a base even though Codex retired it on 2026-08-31, because removing it would break saved configs that name it. Selecting it costs one extra round trip: the request 400s and the default chain immediately upgrades it to `gpt-5.6-luna`, the successor its catalog entry names. Prefer `gpt-5.6-luna` directly.
 
 note: the TUI can continue showing your originally selected model while fallback is applied internally. use request logs to verify the effective upstream model (`request-*-after-transform.json`). set `CODEX_PLUGIN_LOG_BODIES=1` when you need to inspect raw `.body.*` fields.
 
@@ -356,10 +391,10 @@ custom chain example:
   "unsupportedCodexPolicy": "fallback",
   "fallbackOnUnsupportedCodexModel": true,
   "unsupportedCodexFallbackChain": {
-    "gpt-5.5": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
-    "gpt-5.4": ["gpt-5.4-mini", "gpt-5.4-nano"],
-    "gpt-5.4-pro": ["gpt-5.4"],
-    "gpt-5-codex": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+    "gpt-5.5": ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.2"],
+    "gpt-5.4": ["gpt-5.6-terra", "gpt-5.2"],
+    "gpt-5.4-pro": ["gpt-5.6-terra", "gpt-5.2"],
+    "gpt-5-codex": ["gpt-5.6-terra", "gpt-5.5", "gpt-5.2"],
     "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
     "gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"]
   }
@@ -418,11 +453,12 @@ override any config with env vars (boolean values are truthy only for `"1"`):
 | `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback` | enable generic unsupported-model fallback policy |
 | `CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL=1` | legacy fallback toggle (prefer policy variable above) |
 | `CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=0` | disable only the legacy `gpt-5.3-codex -> gpt-5.2-codex` edge |
+| `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1` | disable automatic `gpt-6-astra -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` rollout fallback |
 | `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1` | disable automatic `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` preview fallback |
 | `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` | disable automatic `gpt-5.5 -> gpt-5.4` fallback during rollout |
 | `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` | disable automatic canonical Codex/GPT-5.4-family fallback |
 | `CODEX_AUTH_ACCOUNT_ID=acc_xxx` | force specific workspace id |
-| `CODEX_AUTH_CLIENT_IDENTITY=codex` | force one client identity for all models: `codex` (`originator: codex_cli_rs`) or `opencode` (alias `host`; `originator: opencode`). Default: `opencode` for the GPT-5.6 tiers, `codex` for everything else |
+| `CODEX_AUTH_CLIENT_IDENTITY=codex` | force one client identity for all models: `codex` (`originator: codex_cli_rs`) or `opencode` (alias `host`; `originator: opencode`). Default: `opencode` for every responses-lite model (5.6 tiers, GPT-6 Astra, Daybreak), `codex` for everything else |
 | `CODEX_AUTH_DISABLE_CODEX_USER_AGENT=1` | keep the host runtime's `User-Agent` instead of the identity's `User-Agent` |
 | `CODEX_AUTH_CLIENT_VERSION=0.150.0` | override the Codex CLI version advertised in the `codex_cli_rs` `User-Agent` |
 | `CODEX_AUTH_HOST_VERSION=1.18.0` | override the opencode version advertised in the `opencode` `User-Agent` (default: the host runtime's own UA version when it injects one, else a baked-in fallback) |
