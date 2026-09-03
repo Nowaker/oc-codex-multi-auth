@@ -94,13 +94,12 @@ const PROMPT_FILES: Record<ModelFamily, string> = {
 	"gpt-5-codex": "gpt_5_codex_prompt.md",
 	"codex-max": "gpt-5.1-codex-max_prompt.md",
 	codex: "gpt_5_codex_prompt.md",
-	// Fallback only. The 5.6 tiers, Astra and Daybreak source their real
-	// instructions from the model catalog (see CATALOG_SLUGS); this file is used
-	// only when the pinned release tag has no catalog entry for the slug.
+	// Fallback only. The 5.6 tiers and Daybreak source their real instructions
+	// from the model catalog (see CATALOG_SLUGS); this file is used only when
+	// the release tag has no usable catalog entry for the slug.
 	//
-	// Astra is in exactly that state today: OpenAI shipped it on 2026-09-03 and
-	// the public catalog has carried no `gpt-6-astra` entry since its 2026-08-20
-	// refresh, so Astra reads this file until openai/codex publishes one.
+	// Astra reads this file: its catalog entry exists but ships an empty
+	// `base_instructions`, which the loader treats as absent.
 	"gpt-6-astra": "gpt_5_2_prompt.md",
 	"gpt-daybreak-blue": "gpt_5_2_prompt.md",
 	"gpt-daybreak-red": "gpt_5_2_prompt.md",
@@ -165,11 +164,11 @@ const CATALOG_SLUGS: ReadonlySet<string> = new Set([
 	// Present in the catalog as of rust-v0.153.0.
 	"gpt-daybreak-blue-latest",
 	"gpt-daybreak-red-latest",
-	// Not in the catalog yet — Astra postdates the last models.json refresh.
-	// Listing it anyway is free and self-healing: extractCatalogInstructions
-	// returns null for an absent slug and the loader falls through to the
-	// prompt file, so Astra picks up real catalog instructions on the first
-	// release that publishes them, with no code change here.
+	// Astra has a catalog entry as of openai/codex ed391d4d, but its
+	// `base_instructions` is an empty string where every sibling carries 11k to
+	// 21k characters. extractCatalogInstructions treats empty as absent, so
+	// Astra still reads its prompt file. Listed here so it switches over on its
+	// own if OpenAI later fills the field in, with no code change.
 	"gpt-6-astra",
 ]);
 

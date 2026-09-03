@@ -62,7 +62,7 @@ Package version: see `package.json` (`version` field).
 - OpenCode loads the provider plugin and TUI plugin from built package exports.
 - Default installer mode only registers plugin entries and preserves `provider.openai`; `--modern` writes compact config (13 bases / 59 variants), `--full` adds 59 explicit selector IDs, and `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
 - Runtime requests preserve Codex stateless requirements: `store: false` and `reasoning.encrypted_content`.
-- GPT-6 Astra, Daybreak and GPT-5.6 use responses-lite shaping and default client identity `opencode`; other models default to `codex_cli_rs`. Astra's lite membership is inferred rather than catalog-read; `CODEX_AUTH_ASTRA_RESPONSES_LITE` overrides it.
+- GPT-6 Astra, Daybreak and GPT-5.6 use responses-lite shaping and default client identity `opencode`; other models default to `codex_cli_rs`. All three are catalog-read (`use_responses_lite: true`). Astra's entry also ships an empty `base_instructions`, so it reads its prompt file rather than catalog text.
 - Account selection uses `rotationStrategy` (`hybrid` default) with health scoring in `lib/rotation.ts`.
 - Per-project account storage is enabled by default.
 - Optional OS keychain backend is opt-in with `CODEX_KEYCHAIN=1`.

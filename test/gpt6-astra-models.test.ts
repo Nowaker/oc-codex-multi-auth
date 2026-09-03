@@ -237,9 +237,6 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 	});
 
 	describe("responses-lite shaping", () => {
-		afterEach(() => {
-			delete process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE;
-		});
 
 		// Both Daybreak entries are `use_responses_lite: true` in the catalog.
 		it("puts every cyber tier on the lite path", () => {
@@ -249,26 +246,26 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 			expect(usesResponsesLite("openai/gpt-daybreak-blue-xhigh")).toBe(true);
 		});
 
-		it("defaults Astra to the lite path", () => {
+		// Read from the catalog now, not inferred: gpt-6-astra is
+		// `use_responses_lite: true`, `tool_mode: "code_mode_only"`.
+		it("puts Astra on the lite path", () => {
 			expect(usesResponsesLite(ASTRA)).toBe(true);
 			expect(usesResponsesLite("gpt-6")).toBe(true);
 			expect(usesResponsesLite("openai/gpt-6-astra-ultra")).toBe(true);
 		});
 
-		// Astra's lite membership is inferred, not read from a catalog entry, so
-		// it stays overridable until openai/codex publishes one.
-		it("honors CODEX_AUTH_ASTRA_RESPONSES_LITE=0 for Astra only", () => {
+		// 6.17.0 kept Astra behind CODEX_AUTH_ASTRA_RESPONSES_LITE because no
+		// catalog entry existed to read `use_responses_lite` from. The entry
+		// landed in openai/codex ed391d4d and confirmed the inference, so the
+		// switch is gone and no env var may change the shaping decision.
+		it("ignores the retired CODEX_AUTH_ASTRA_RESPONSES_LITE switch", () => {
 			process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE = "0";
-			expect(usesResponsesLite(ASTRA)).toBe(false);
-			expect(usesResponsesLite("gpt-6")).toBe(false);
-			expect(usesResponsesLite(BLUE)).toBe(true);
-			expect(usesResponsesLite(CYBER)).toBe(true);
-			expect(usesResponsesLite("gpt-5.6-sol")).toBe(true);
-		});
-
-		it("treats any other value as lite", () => {
-			process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE = "1";
-			expect(usesResponsesLite(ASTRA)).toBe(true);
+			try {
+				expect(usesResponsesLite(ASTRA)).toBe(true);
+				expect(usesResponsesLite("gpt-6")).toBe(true);
+			} finally {
+				delete process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE;
+			}
 		});
 	});
 
@@ -351,10 +348,15 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 			expect(extractCatalogInstructions(catalog, RED)).toBe("RED PROMPT");
 		});
 
-		// Astra postdates the catalog's last refresh. Absence must degrade to the
-		// prompt file rather than throw, so Astra picks up real instructions on
-		// the first release that publishes them with no code change.
-		it("returns null for Astra while the catalog has no entry for it", () => {
+		// Astra now has a catalog entry, but its `base_instructions` is an empty
+		// string where every sibling carries 11k to 21k characters. Empty must
+		// read as absent so Astra falls through to its prompt file rather than
+		// being handed no instructions at all.
+		it("treats Astra's empty base_instructions as absent", () => {
+			const withAstra = JSON.stringify({
+				models: [{ slug: ASTRA, base_instructions: "" }],
+			});
+			expect(extractCatalogInstructions(withAstra, ASTRA)).toBeNull();
 			expect(extractCatalogInstructions(catalog, ASTRA)).toBeNull();
 		});
 	});

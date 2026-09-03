@@ -85,7 +85,7 @@ If your OpenCode runtime supports global compaction tuning, you can also set val
 
 ## GPT-6 Astra notes
 
-- Served over the **responses-lite** path by default. Astra is the one lite model whose membership is *inferred* rather than read from a catalog entry: the public Codex catalog has had no `gpt-6-astra` entry since its 2026-08-20 refresh, and Astra launched 2026-09-03. Override with `CODEX_AUTH_ASTRA_RESPONSES_LITE=0` (classic shape) or `=1` (force lite).
+- Served over the **responses-lite** path. Astra's catalog entry landed in openai/codex commit `ed391d4d` (2026-09-03) and reads `use_responses_lite: true`, `tool_mode: "code_mode_only"`, `multi_agent_version: "v2"`, so the shape is read rather than inferred. The `CODEX_AUTH_ASTRA_RESPONSES_LITE` switch that 6.17.0 carried while this was unverifiable has been removed.
 - Rollout gate: Astra reached a limited set of organizations first, so accounts outside it auto-fallback  
   `gpt-6-astra → gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5`  
   (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`).
