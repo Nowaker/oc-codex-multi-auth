@@ -37,8 +37,9 @@ controls how much thinking the model does.
 | model | supported values |
 |-------|------------------|
 | `gpt-6-astra` | low, medium, high, xhigh, max, ultra |
-| `gpt-daybreak-blue-latest` | low, medium, high, xhigh, max, ultra (cyber tier; add manually) |
-| `gpt-daybreak-red-latest` | low, medium, high, xhigh, max, ultra (cyber tier; add manually) |
+| `gpt-daybreak-blue-latest` | low, medium, high, xhigh, max, ultra (Daybreak-gated; add manually) |
+| `gpt-daybreak-red-latest` | low, medium, high, xhigh, max, ultra (Daybreak-gated; add manually) |
+| `gpt-5.6-cyber` | low, medium, high, xhigh, max, ultra (Daybreak-gated; add manually) |
 | `gpt-5.6-sol` | low, medium, high, xhigh, max, ultra |
 | `gpt-5.6-terra` | low, medium, high, xhigh, max, ultra |
 | `gpt-5.6-luna` | low, medium, high, xhigh, max |
@@ -56,14 +57,12 @@ controls how much thinking the model does.
 | `gpt-5.1-codex-mini` | medium, high |
 | `gpt-5.1` | none, low, medium, high |
 
-The shipped config templates include 15 base model families and 71 shipped presets overall (71 modern variants or 71 legacy explicit entries). Default install preserves `provider.openai`; use `--modern` to install the compact base families and variant picker, or `--full` to install explicit selector IDs too. `gpt-5.5-pro` and `gpt-6-astra-pro` are ChatGPT-only (not routed by this plugin), while `gpt-5.3-codex-spark` remains a manual add-on for entitled workspaces only.
+The shipped config templates include 13 base model families and 59 shipped presets overall (59 modern variants or 59 legacy explicit entries). Default install preserves `provider.openai`; use `--modern` to install the compact base families and variant picker, or `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin). `gpt-6-astra-pro` is almost certainly not a model id at all (see below). `gpt-5.3-codex-spark` and the three Daybreak-gated cyber tiers remain manual add-ons for entitled workspaces only.
 
 Base families:
 
 ```text
 gpt-6-astra
-gpt-daybreak-blue-latest
-gpt-daybreak-red-latest
 gpt-5.6-sol
 gpt-5.6-terra
 gpt-5.6-luna
@@ -79,19 +78,19 @@ gpt-5-codex
 ```
 
 GPT-6 Astra notes:
-- Astra is OpenAI's frontier model, launched 2026-09-03. Efforts are low through `ultra`, matching OpenAI's Codex model list. (Its API reference page stops at `max`; the same page-vs-catalog split already exists for `gpt-5.6-sol`, whose API page claims `none` that no Codex 5.6 tier accepts. This plugin routes over the Codex backend, so the Codex list wins.)
+- Astra is OpenAI's frontier model, launched 2026-09-03. Efforts are low through `ultra`, matching OpenAI's Codex model list. Its API reference page says only "`reasoning.effort` supports `low`, `medium`, `high`, `xhigh`, and `max`", which is not a contradiction: `ultra` is a Codex client-side tier that is rewritten to `max` before the request leaves the client, so an API reference has no reason to list it. `gpt-5.6-sol` shows the same split.
 - Astra is opt-in, like the 5.6 tiers: neither the `gpt-5` alias nor the plugin default resolves to it. It rolled out to a limited set of organizations first and to Plus/Pro/Business/Enterprise over the following days, so an account outside the rollout auto-degrades `gpt-6-astra → gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5`. Disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`.
 - Bare `gpt-6` is a **plugin-side** alias for `gpt-6-astra`. OpenAI publishes no bare `gpt-6` id.
-- `gpt-6-astra-pro` is press-reported for Pro/Business/Enterprise but is absent from OpenAI's Codex model list, so it is not a routable Codex id. The plugin collapses `gpt-6-astra-pro*` onto `gpt-6-astra` rather than putting an unknown slug on the wire — the same treatment `gpt-5.5-pro` gets.
+- "GPT-6 Astra Pro" appears in launch-day press but is very likely not a model id at all: `/api/docs/models/gpt-6-astra-pro` returns 404 while the real `gpt-5.5-pro` and `gpt-5.4-pro` pages both return 200, and it is absent from both the `ChatModel` and `ResponsesOnlyModel` enums of the OpenAPI spec added by the SDK PR that introduced Astra (openai/openai-python#3791) — an enum that does list `gpt-5.5-pro`. The plugin maps `gpt-6-astra-pro*` onto `gpt-6-astra` anyway, so a user who typed it after reading the press gets a working request instead of an unknown slug on the wire.
 - Astra is sent over the **responses-lite** path by default. Unlike every other lite model this is *inferred*, not read: the public Codex catalog has carried no `gpt-6-astra` entry since its 2026-08-20 refresh, so `use_responses_lite` cannot be verified for it. The inference is that every catalog model from 5.6 onward — sol, terra, luna and both Daybreak tiers — is lite and `code_mode_only`. Override with `CODEX_AUTH_ASTRA_RESPONSES_LITE=0` (classic shape) or `=1` (force lite).
 - Astra has no catalog entry yet, so its instructions come from the `gpt_5_2_prompt.md` fallback. It is already registered as a catalog slug, so it will pick up real catalog instructions automatically on the first Codex release that publishes them.
 
-Daybreak notes:
-- `gpt-daybreak-blue-latest` (defensive security) and `gpt-daybreak-red-latest` (cyber-permissive, for authorized security research) are catalog-verified cyber-specialty models — `model_specialty: "cyber"`, `use_responses_lite: true`, `tool_mode: "code_mode_only"`, efforts low through ultra.
-- Both carry `visibility: "hide"` in the catalog, so Codex does not list them in its own model picker. They are opt-in ids you type; the plugin never selects one by default.
-- Neither has a fallback chain, deliberately. Degrading a cyber-specialty request onto a general model would answer a security-research prompt with a model that was never asked for, so an unentitled account gets a hard failure instead of a silent substitution.
+Cyber tier notes (Daybreak-gated):
+- `gpt-daybreak-blue-latest` (defensive security) and `gpt-daybreak-red-latest` (cyber-permissive, for authorized security research) are catalog-verified cyber-specialty models — `model_specialty: "cyber"`, `use_responses_lite: true`, `tool_mode: "code_mode_only"`, efforts low through ultra. `gpt-5.6-cyber` is OpenAI's published alias fronting them; it belongs to the 5.6 generation, not GPT-6.
+- All three require Daybreak program approval, and Blue/Red are `visibility: "hide"` in the catalog. They are therefore **not** in the shipped config templates, for the same reason `gpt-5.3-codex-spark` is not: shipping an entitlement-gated id to every user causes avoidable startup failures. The plugin routes them fully, so an entitled user adds the id by hand and it works.
+- None of the three has a fallback chain, deliberately. Degrading a cyber-specialty request onto a general model would answer a security-research prompt with a model that was never asked for, so an unentitled account gets a hard failure instead of a silent substitution.
 - `gpt-daybreak-blue` and `gpt-daybreak-red` are accepted as short forms of the `-latest` ids.
-- Context sizing comes from the catalog rather than an API page (Blue `872000`, Red `372000`), since neither model has a published API reference page.
+- `gpt-5.6-cyber` is matched ahead of the bare `gpt-5.6` alias, which would otherwise claim it and route a security request to Sol.
 
 GPT-5.6 notes:
 - 5.6 models are served over the **responses-lite** path. Their catalog entry sets `use_responses_lite: true` and `tool_mode: "code_mode_only"`, so the plugin reshapes the request the way Codex does: tool definitions move into `input` as a leading `additional_tools` developer item, the Codex instructions follow as a developer message, top-level `instructions` is emptied, `tools` is omitted, `parallel_tool_calls` is forced off, image `detail` fields are stripped, and an `x-openai-internal-codex-responses-lite: true` header is sent. Pre-5.6 models keep the classic shape.
@@ -110,6 +109,7 @@ Modern Codex carries a full `base_instructions` string **per model** in its cata
 |-------|--------------------|
 | `gpt-6-astra` | `gpt_5_2_prompt.md` for now — registered as a catalog slug, so it switches to catalog text the moment openai/codex publishes an entry |
 | `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest` | catalog |
+| `gpt-5.6-cyber` | `gpt_5_2_prompt.md` (the catalog has no entry under this slug, only the Daybreak ids it fronts) |
 | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | catalog (each tier has distinct text) |
 | `gpt-5.5` | catalog |
 | `gpt-5.4`, `gpt-5.4-mini` | catalog |
@@ -120,8 +120,6 @@ Catalog-sourced instructions cache per model id (`catalog-<slug>-instructions.md
 
 For context sizing, shipped templates use:
 - `gpt-6-astra`: `context=1050000`, `output=128000`
-- `gpt-daybreak-blue-latest`: `context=872000`, `output=128000`
-- `gpt-daybreak-red-latest`: `context=372000`, `output=128000`
 - `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`: `context=1050000`, `output=128000`
 - `gpt-5.5` and `gpt-5.5-fast`: `context=1050000`, `output=128000`
 - `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, and `gpt-5.1-codex-mini`: `context=400000`, `output=128000`
@@ -129,7 +127,7 @@ For context sizing, shipped templates use:
 
 model normalization aliases:
 - bare `gpt-6` maps to `gpt-6-astra`; `gpt-6-astra-pro*` collapses onto `gpt-6-astra` (not a Codex-routable id)
-- `gpt-daybreak-blue*` and `gpt-daybreak-red*` map to the catalog ids `gpt-daybreak-blue-latest` / `gpt-daybreak-red-latest`
+- `gpt-daybreak-blue*` and `gpt-daybreak-red*` map to the catalog ids `gpt-daybreak-blue-latest` / `gpt-daybreak-red-latest`; `gpt-5.6-cyber*` maps to itself, never to Sol
 - bare `gpt-5.6` maps to the flagship tier `gpt-5.6-sol`; `gpt-5.6-terra*` and `gpt-5.6-luna*` map to their own ids
 - `gpt-5.5*`, `gpt-5.5-fast*`, and user-typed `gpt-5.5-pro*` normalize to the public Codex model id `gpt-5.5`
 - legacy `gpt-5` maps to `gpt-5.5`; legacy `gpt-5-mini` / `gpt-5-nano` map to `gpt-5.4-mini` / `gpt-5.4-nano`

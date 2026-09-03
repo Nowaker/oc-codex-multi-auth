@@ -23,6 +23,7 @@ import {
 	DAYBREAK_BLUE_MODEL_ID,
 	DAYBREAK_RED_MODEL_ID,
 	GPT_55_MODEL_ID,
+	GPT_56_CYBER_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
@@ -252,6 +253,12 @@ function canonicalizeModelName(model: string | undefined): string | undefined {
 	}
 	if (withoutEffort === "gpt-daybreak-red") {
 		return DAYBREAK_RED_MODEL_ID;
+	}
+
+	// `gpt-5.6-cyber` must not fall into the bare `gpt-5.6` -> Sol collapse
+	// above; it is its own Daybreak-gated id with no chain of its own.
+	if (withoutEffort === GPT_56_CYBER_MODEL_ID) {
+		return GPT_56_CYBER_MODEL_ID;
 	}
 
 	return withoutEffort;

@@ -25,13 +25,11 @@ See [config/README.md](../config/README.md) for the template split.
 
 ## What models are included by default?
 
-The shipped templates include **15 base families** and **71 presets** total:
+The shipped templates include **13 base families** and **59 presets** total:
 
 | Base | Family |
 |------|--------|
 | `gpt-6-astra` | GPT-6 Astra (responses-lite) |
-| `gpt-daybreak-blue-latest` | Daybreak cyber (responses-lite) |
-| `gpt-daybreak-red-latest` | Daybreak cyber (responses-lite) |
 | `gpt-5.6-sol` | GPT-5.6 (responses-lite) |
 | `gpt-5.6-terra` | GPT-5.6 (responses-lite) |
 | `gpt-5.6-luna` | GPT-5.6 (responses-lite) |
@@ -45,7 +43,7 @@ The shipped templates include **15 base families** and **71 presets** total:
 | `gpt-5.1` | GPT-5.1 |
 | `gpt-5-codex` | GPT-5 Codex |
 
-GPT-5.6 is entitlement-gated for some accounts. Without access, the plugin auto-falls back `sol → terra → luna → gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`). Optional or entitlement-gated model IDs can be added manually when your workspace supports them. `gpt-5.5-pro` is ChatGPT-only and is not routed through this Codex plugin. GPT-6 Astra rolled out gradually from 2026-09-03 and auto-falls back `gpt-6-astra → sol → terra → luna → gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`); `gpt-6-astra-pro` is not a Codex-routable id and collapses onto `gpt-6-astra`. The Daybreak cyber tiers have no fallback chain on purpose.
+GPT-5.6 is entitlement-gated for some accounts. Without access, the plugin auto-falls back `sol → terra → luna → gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`). Optional or entitlement-gated model IDs can be added manually when your workspace supports them. `gpt-5.5-pro` is ChatGPT-only and is not routed through this Codex plugin. GPT-6 Astra rolled out gradually from 2026-09-03 and auto-falls back `gpt-6-astra → sol → terra → luna → gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`); `gpt-6-astra-pro` is not a Codex-routable id and collapses onto `gpt-6-astra`. The Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`) are routed but deliberately absent from the shipped templates, and have no fallback chain on purpose.
 
 Default install preserves `provider.openai` and only registers plugin entries. Use `--modern` for compact bases + variants, `--full` for modern + explicit IDs, or `--legacy` for explicit-only.
 

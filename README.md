@@ -20,8 +20,9 @@ Use it when you want OpenCode to run Codex-style coding workflows from your own 
 ## What You Get
 
 - OpenCode plugin support for ChatGPT Plus/Pro OAuth and Codex/GPT-5 coding workflows
-- GPT-6 Astra, the Daybreak Blue/Red cyber tiers, and GPT-5.6 Sol/Terra/Luna (responses-lite path) plus GPT-5.5, GPT-5.5 Fast, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.1, and Codex model templates
-- Compact modern OpenCode config with 15 base families and 71 variant presets; explicit legacy selector IDs when needed
+- GPT-6 Astra and GPT-5.6 Sol/Terra/Luna (responses-lite path) plus GPT-5.5, GPT-5.5 Fast, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.1, and Codex model templates
+- Routing for the Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`), deliberately kept out of the shipped templates since they need program approval
+- Compact modern OpenCode config with 13 base families and 59 variant presets; explicit legacy selector IDs when needed
 - Stateless Codex-compatible request handling with `store: false` and `reasoning.encrypted_content`
 - Multi-account rotation with hybrid health scoring, cooldowns, automatic token refresh, and failover
 - Explicit saved-account listing, account switching, labeling, tagging, notes, health checks, and diagnostics
@@ -89,7 +90,7 @@ Installer flags:
 | Flag | Effect |
 | --- | --- |
 | (default) / `--plugin-only` | Register the plugin and TUI integration without changing `provider.openai` |
-| `--modern` | Install compact modern catalog: 15 bases, 71 variants |
+| `--modern` | Install compact modern catalog: 13 bases, 59 variants |
 | `--full` | Compact bases plus 53 explicit selector IDs |
 | `--legacy` | Explicit-only catalog for older OpenCode |
 | `--dry-run` | Show changed config paths without values or writes |

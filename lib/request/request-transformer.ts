@@ -9,6 +9,7 @@ import {
 	DAYBREAK_BLUE_MODEL_ID,
 	DAYBREAK_RED_MODEL_ID,
 	GPT_55_MODEL_ID,
+	GPT_56_CYBER_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
@@ -76,6 +77,11 @@ export function normalizeModel(model: string | undefined): string {
 	}
 	if (/\bdaybreak(?:-| )red(?:\b|[- ])/.test(normalized)) {
 		return DAYBREAK_RED_MODEL_ID;
+	}
+	// Must precede the bare `gpt-5.6` branch below, which would otherwise
+	// swallow `gpt-5.6-cyber` and silently route a security request to Sol.
+	if (/\bgpt(?:-| )5\.6(?:-| )cyber(?:\b|[- ])/.test(normalized)) {
+		return GPT_56_CYBER_MODEL_ID;
 	}
 	// GPT-6 Astra Pro is not a Codex-routable id (see MODEL_MAP), so every
 	// `gpt-6*` spelling collapses onto the one shipped tier.
@@ -571,7 +577,8 @@ export function getReasoningConfig(
 	const isGpt6Astra = canonicalModelName === GPT_6_ASTRA_MODEL_ID;
 	const isDaybreak =
 		canonicalModelName === DAYBREAK_BLUE_MODEL_ID ||
-		canonicalModelName === DAYBREAK_RED_MODEL_ID;
+		canonicalModelName === DAYBREAK_RED_MODEL_ID ||
+		canonicalModelName === GPT_56_CYBER_MODEL_ID;
 
 	/** Families whose whole effort range is low..ultra with no none/minimal. */
 	const isFullEffortFamily = isGpt56 || isGpt6Astra || isDaybreak;

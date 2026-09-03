@@ -54,6 +54,7 @@ export type ModelFamily =
 	| "gpt-6-astra"
 	| "gpt-daybreak-blue"
 	| "gpt-daybreak-red"
+	| "gpt-5.6-cyber"
 	| "gpt-5.6-sol"
 	| "gpt-5.6-terra"
 	| "gpt-5.6-luna"
@@ -74,6 +75,7 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = [
 	"gpt-6-astra",
 	"gpt-daybreak-blue",
 	"gpt-daybreak-red",
+	"gpt-5.6-cyber",
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
@@ -102,6 +104,7 @@ const PROMPT_FILES: Record<ModelFamily, string> = {
 	"gpt-6-astra": "gpt_5_2_prompt.md",
 	"gpt-daybreak-blue": "gpt_5_2_prompt.md",
 	"gpt-daybreak-red": "gpt_5_2_prompt.md",
+	"gpt-5.6-cyber": "gpt_5_2_prompt.md",
 	"gpt-5.6-sol": "gpt_5_2_prompt.md",
 	"gpt-5.6-terra": "gpt_5_2_prompt.md",
 	"gpt-5.6-luna": "gpt_5_2_prompt.md",
@@ -125,6 +128,7 @@ const CACHE_FILES: Record<ModelFamily, string> = {
 	"gpt-6-astra": "gpt-6-astra-instructions.md",
 	"gpt-daybreak-blue": "gpt-daybreak-blue-instructions.md",
 	"gpt-daybreak-red": "gpt-daybreak-red-instructions.md",
+	"gpt-5.6-cyber": "gpt-5.6-cyber-instructions.md",
 	"gpt-5.6-sol": "gpt-5.6-sol-instructions.md",
 	"gpt-5.6-terra": "gpt-5.6-terra-instructions.md",
 	"gpt-5.6-luna": "gpt-5.6-luna-instructions.md",
@@ -341,6 +345,11 @@ export function getModelFamily(normalizedModel: string): ModelFamily {
 	}
 	if (/\bdaybreak(?:-| )red(?:\b|[- ])/i.test(normalizedModel)) {
 		return "gpt-daybreak-red";
+	}
+	// Must precede the bare `gpt-5.6` branch, which would otherwise claim
+	// `gpt-5.6-cyber` for the Sol family and serve it Sol's instructions.
+	if (/\bgpt(?:-| )5\.6(?:-| )cyber(?:\b|[- ])/i.test(normalizedModel)) {
+		return "gpt-5.6-cyber";
 	}
 	if (/\bgpt(?:-| )6(?:\b|[- ])/i.test(normalizedModel)) {
 		return "gpt-6-astra";

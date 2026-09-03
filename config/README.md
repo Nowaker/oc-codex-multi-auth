@@ -6,7 +6,7 @@ This directory contains the official OpenCode config templates for `oc-codex-mul
 
 | File | OpenCode version | Description |
 |------|------------------|-------------|
-| [`opencode-modern.json`](./opencode-modern.json) | **v1.0.210+** | Variant-based config: **15 base models**, **71 variants** total |
+| [`opencode-modern.json`](./opencode-modern.json) | **v1.0.210+** | Variant-based config: **13 base models**, **59 variants** total |
 | [`opencode-legacy.json`](./opencode-legacy.json) | **v1.0.209 and below** | Legacy explicit entries: **53** individual model definitions |
 
 ## Install modes
@@ -14,7 +14,7 @@ This directory contains the official OpenCode config templates for `oc-codex-mul
 | Installer flag | What gets written |
 |----------------|-------------------|
 | default / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
-| `--modern` | Compact modern: 15 base OAuth families + variant picker |
+| `--modern` | Compact modern: 13 base OAuth families + variant picker |
 | `--full` | Modern bases **plus** explicit legacy selector IDs |
 | `--legacy` | Explicit-only catalog (53 preset model entries) |
 
@@ -53,13 +53,11 @@ OpenCode v1.0.210+ added model `variants`, so one model entry can expose multipl
 
 Both templates include:
 
-### Base model families (15)
+### Base model families (13)
 
 | Base | Variants (modern) |
 |------|-------------------|
 | `gpt-6-astra` | low, medium, high, xhigh, max, ultra |
-| `gpt-daybreak-blue-latest` | low, medium, high, xhigh, max, ultra |
-| `gpt-daybreak-red-latest` | low, medium, high, xhigh, max, ultra |
 | `gpt-5.6-sol` | low, medium, high, xhigh, max, ultra |
 | `gpt-5.6-terra` | low, medium, high, xhigh, max, ultra |
 | `gpt-5.6-luna` | low, medium, high, xhigh, max |
@@ -78,7 +76,6 @@ Shared template requirements:
 - `store: false` and `include: ["reasoning.encrypted_content"]`
 - Context metadata:
   - `gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` / `gpt-5.5-fast`: context **1,050,000**, output **128,000**
-  - `gpt-daybreak-blue-latest`: context **872,000**, output **128,000**; `gpt-daybreak-red-latest`: context **372,000**, output **128,000**. These come from the Codex catalog's `max_context_window` rather than an API reference page, because neither model has one.
   - `gpt-5.4-mini` / `gpt-5.4-nano` / Codex models (`gpt-5-codex`, `gpt-5.1-codex*`, …): context **400,000**, output **128,000**
   - `gpt-5.1`: context **272,000**, output **128,000**
 
@@ -95,11 +92,11 @@ If your OpenCode runtime supports global compaction tuning, you can also set val
 - Efforts are low through `ultra`, per OpenAI's Codex model list. `ultra` is sent as `max` on the wire, as with 5.6.
 - Bare `gpt-6` is a plugin-side alias. `gpt-6-astra-pro` is not a Codex-routable id and collapses onto `gpt-6-astra`.
 
-## Daybreak notes
+## Cyber tier notes (Daybreak-gated)
 
-- `gpt-daybreak-blue-latest` (defensive) and `gpt-daybreak-red-latest` (cyber-permissive, for authorized security research) are catalog-verified cyber-specialty models, served over the responses-lite path.
-- Both are `visibility: "hide"` in the catalog, so they are opt-in ids you type; nothing selects them by default.
-- Neither has a fallback chain on purpose — a cyber-specialty request must not be silently answered by a general model.
+- `gpt-daybreak-blue-latest` (defensive) and `gpt-daybreak-red-latest` (cyber-permissive, for authorized security research) are catalog-verified cyber-specialty models, served over the responses-lite path. `gpt-5.6-cyber` is OpenAI's published alias fronting them, and belongs to the 5.6 generation rather than GPT-6.
+- All three need Daybreak program approval, and Blue/Red are `visibility: "hide"` in the catalog, so they are **not** in the shipped templates — same policy as `gpt-5.3-codex-spark` below. The plugin routes them fully; entitled users add the ids by hand.
+- None has a fallback chain on purpose — a cyber-specialty request must not be silently answered by a general model.
 
 ## GPT-5.6 notes
 

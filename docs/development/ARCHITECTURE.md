@@ -260,9 +260,8 @@ The request path also writes quota snapshots from response headers, so the TUI c
 
 The default installer preserves `provider.openai`. `--modern` writes the modern OpenCode template (`config/opencode-modern.json`):
 
-- 15 base model families in the picker:
+- 13 base model families in the picker:
   - `gpt-6-astra`
-  - `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`
   - `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
   - `gpt-5.5`, `gpt-5.5-fast`
   - `gpt-5.4-mini`, `gpt-5.4-nano`
@@ -301,7 +300,7 @@ Unsupported-model behavior is strict by default. Default auto-fallbacks still co
 9. Account pool limits stay at `ACCOUNT_LIMITS` (max 20, 30s auth cooldown, remove after 3 consecutive auth failures).
 10. Codex CLI hydrate from `~/.codex` stays on unless `CODEX_AUTH_SYNC_CODEX_CLI=0`.
 11. Startup prewarm runs only for legacy request transform when not disabled via `CODEX_AUTH_PREWARM=0`.
-12. Installer help/post-install strings must match the live catalog (15 modern bases / 71 variants; 71 legacy explicit).
+12. Installer help/post-install strings must match the live catalog (13 modern bases / 59 variants; 59 legacy explicit).
 13. Tool additions require a per-file factory, registry wiring, and focused test/docs updates.
 14. Boolean environment overrides are truthy only for the literal string `"1"`.
 15. Docs, package metadata, GitHub About text, and plugin metadata should lead with OpenCode, ChatGPT OAuth, Codex/GPT-5 routing, multi-account rotation, account switching, health checks, diagnostics, and recovery tools.

@@ -60,7 +60,7 @@ Package version: see `package.json` (`version` field).
 - Canonical package/plugin name is `oc-codex-multi-auth`.
 - The npm bin is an installer and thin standalone CLI, not a long-running runtime daemon.
 - OpenCode loads the provider plugin and TUI plugin from built package exports.
-- Default installer mode only registers plugin entries and preserves `provider.openai`; `--modern` writes compact config (15 bases / 71 variants), `--full` adds 71 explicit selector IDs, and `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
+- Default installer mode only registers plugin entries and preserves `provider.openai`; `--modern` writes compact config (13 bases / 59 variants), `--full` adds 59 explicit selector IDs, and `--legacy` writes legacy explicit-only config; `--dry-run` and `--no-cache-clear` are supported.
 - Runtime requests preserve Codex stateless requirements: `store: false` and `reasoning.encrypted_content`.
 - GPT-6 Astra, Daybreak and GPT-5.6 use responses-lite shaping and default client identity `opencode`; other models default to `codex_cli_rs`. Astra's lite membership is inferred rather than catalog-read; `CODEX_AUTH_ASTRA_RESPONSES_LITE` overrides it.
 - Account selection uses `rotationStrategy` (`hybrid` default) with health scoring in `lib/rotation.ts`.
@@ -114,8 +114,8 @@ oc-codex-multi-auth doctor
 - Flagged accounts: `~/.opencode/oc-codex-multi-auth-flagged-accounts.json`.
 - Quota notification state: `oc-codex-multi-auth-quota-notifications.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
 - Request logs: `~/.opencode/logs/codex-plugin/` when logging is enabled.
-- Model catalog: 15 modern bases / 71 variants; legacy 71 explicit.
-- Bases: `gpt-6-astra`, `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-fast`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`.
+- Model catalog: 13 modern bases / 59 variants; legacy 59 explicit.
+- Bases: `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-fast`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`. Routed but deliberately unshipped (Daybreak-gated, add by hand): `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`.
 - Prompt templates sync from Codex CLI GitHub releases with ETag caching; 5.6 and Daybreak instructions come from the Codex model catalog. `gpt-6-astra` is registered as a catalog slug but has no entry yet, so it reads the prompt file until openai/codex publishes one.
 - 5xx server errors trigger account rotation and health penalty like network errors.
 - API deprecation/sunset headers (RFC 8594) are logged as warnings.

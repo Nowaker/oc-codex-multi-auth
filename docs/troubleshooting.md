@@ -480,7 +480,7 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    CODEX_AUTH_SEND_ORGANIZATION_HEADER=1 opencode   # restore legacy openai-organization pinning
    ```
    If the model still fails only through the plugin, run `codex-health` and compare the failing pooled account ids against the account the Codex CLI uses (`~/.codex/auth.json`).
-4. Default public selectors that are commonly entitlement-gated can auto-fallback: `gpt-6-astra` degrades into the GPT-5.6 tiers, the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain to `gpt-5.5`, and `gpt-5.5`/canonical `gpt-5-codex` degrade through `gpt-5.4`, `gpt-5.4-mini`, then `gpt-5.4-nano`. The Daybreak cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`) have no chain by design: an unentitled account gets a hard failure rather than a silent substitution by a general model.
+4. Default public selectors that are commonly entitlement-gated can auto-fallback: `gpt-6-astra` degrades into the GPT-5.6 tiers, the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain to `gpt-5.5`, and `gpt-5.5`/canonical `gpt-5-codex` degrade through `gpt-5.4`, `gpt-5.4-mini`, then `gpt-5.4-nano`. The Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`) have no chain by design: an unentitled account gets a hard failure rather than a silent substitution by a general model.
 5. Enable fallback policy if you also want automatic downgrades for manual/legacy selectors:
    ```bash
    CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback opencode

@@ -72,7 +72,7 @@ This field differs slightly between the modern and legacy shipped templates.
 
 ### Modern template fields
 
-Modern templates define 15 base model families and expose 71 presets through `variants`.
+Modern templates define 13 base model families and expose 59 presets through `variants`.
 
 Example:
 
@@ -196,6 +196,7 @@ Examples:
 | `openai/gpt-6` | `gpt-6-astra` |
 | `openai/gpt-6-astra-pro-high` | `gpt-6-astra` (Astra Pro is not a Codex-routable id) |
 | `openai/gpt-daybreak-blue-xhigh` | `gpt-daybreak-blue-latest` |
+| `openai/gpt-5.6-cyber-max` | `gpt-5.6-cyber` (never `gpt-5.6-sol`) |
 | `openai/gpt-5.4-mini-xhigh` | `gpt-5.4-mini` |
 | `openai/gpt-5.1-codex-high` | `gpt-5-codex` |
 | `openai/gpt-5.1-codex-max-high` | `gpt-5.1-codex-max` |

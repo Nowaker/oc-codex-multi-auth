@@ -34,7 +34,7 @@ Install modes:
 | Flag | Config written |
 | --- | --- |
 | (default) / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
-| `--modern` | Compact modern: 15 base model families + variant picker (71 variants total) |
+| `--modern` | Compact modern: 13 base model families + variant picker (59 variants total) |
 | `--full` | Compact modern bases **plus** explicit legacy selector IDs |
 | `--legacy` | Explicit-only catalog (53 model entries) |
 
@@ -81,14 +81,14 @@ The gateway override is fail-closed: remote gateways require HTTPS, literal loop
 
 **Native mode** keeps the host payload shape whenever possible. **Legacy mode** applies compatibility rewrites for older OpenCode/AI SDK behavior, including filtering unsupported `item_reference` payloads and stripping IDs that cannot be used with `store: false`.
 
-**Responses-lite:** for `gpt-6-astra`, `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, the plugin reshapes the request the way Codex does: tool definitions move into `input` as a leading `additional_tools` developer item, Codex instructions follow as a developer message, top-level `instructions` is emptied, `tools` is omitted, `parallel_tool_calls` is forced off, image `detail` fields are stripped, and `x-openai-internal-codex-responses-lite: true` is sent. Lite reshape is applied per request attempt against the model actually being sent, so a sol → gpt-5.5 fallback re-serializes into the classic shape and keeps its tools.
+**Responses-lite:** for `gpt-6-astra`, the Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`), `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, the plugin reshapes the request the way Codex does: tool definitions move into `input` as a leading `additional_tools` developer item, Codex instructions follow as a developer message, top-level `instructions` is emptied, `tools` is omitted, `parallel_tool_calls` is forced off, image `detail` fields are stripped, and `x-openai-internal-codex-responses-lite: true` is sent. Lite reshape is applied per request attempt against the model actually being sent, so a sol → gpt-5.5 fallback re-serializes into the classic shape and keeps its tools.
 
 **Client identity:** by default every responses-lite model uses the host/opencode identity (`originator: opencode` with an `opencode/...` User-Agent). Other families default to the Codex CLI identity. Override with `CODEX_AUTH_CLIENT_IDENTITY`.
 
 **Auto-fallback (preview entitlement gates):**
 
 - GPT-6 Astra: `gpt-6-astra` → `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-5.6-luna` → `gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`)
-- Daybreak: no chain. The cyber tiers fail loudly rather than silently answering from a general model.
+- Cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`): no chain. They fail loudly rather than silently answering from a general model.
 - GPT-5.6: `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-5.6-luna` → `gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`)
 - GPT-5.5 / canonical Codex also have default auto-fallback through the GPT-5.4 family; broader fallback chains require `unsupportedCodexPolicy: "fallback"`.
 

@@ -31,6 +31,7 @@
 import {
 	DAYBREAK_BLUE_MODEL_ID,
 	DAYBREAK_RED_MODEL_ID,
+	GPT_56_CYBER_MODEL_ID,
 	GPT_56_LUNA_MODEL_ID,
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
@@ -49,6 +50,11 @@ const RESPONSES_LITE_MODELS: ReadonlySet<string> = new Set([
 	// "code_mode_only"` in the catalog — read directly from models.json.
 	DAYBREAK_BLUE_MODEL_ID,
 	DAYBREAK_RED_MODEL_ID,
+	// `gpt-5.6-cyber` has no catalog entry under its own slug, but it is an
+	// alias for the two Daybreak tiers above, both catalog-verified lite, and
+	// every 5.6-generation model in the catalog is lite. Unlike Astra it has a
+	// direct family precedent, so it needs no override switch.
+	GPT_56_CYBER_MODEL_ID,
 ]);
 
 /**

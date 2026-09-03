@@ -21,7 +21,7 @@ This is the default. It registers the OpenCode and TUI plugin entries without ch
 npx -y oc-codex-multi-auth@latest --modern
 ```
 
-Use this when the shipped 15 base OAuth model families and 71 OpenCode variant presets are required.
+Use this when the shipped 13 base OAuth model families and 59 OpenCode variant presets are required.
 
 ## Config-safe update
 

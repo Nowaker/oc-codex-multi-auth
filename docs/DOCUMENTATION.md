@@ -37,7 +37,7 @@ docs/
 
 ## config/ (copy-paste templates)
 
-- `config/opencode-modern.json` - OpenCode v1.0.210+ variant-based template (15 bases / 71 variants)
+- `config/opencode-modern.json` - OpenCode v1.0.210+ variant-based template (13 bases / 59 variants)
 - `config/opencode-legacy.json` - OpenCode v1.0.209 and below template (53 explicit entries)
 - `config/minimal-opencode.json` - minimal debug template
 - `config/README.md` - template-selection guide and install modes

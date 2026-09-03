@@ -247,7 +247,7 @@ describe("runtime documentation parity", () => {
 
 	// Counts are derived from the shipped templates rather than hardcoded.
 	// They were hardcoded once, and adding GPT-6 Astra plus the two Daybreak
-	// tiers moved the real catalog from 12/53 to 15/71 while this test kept
+	// tiers moved the real catalog from 12/53 to 13/59 while this test kept
 	// asserting 12/53 and passing — the installer went on advertising numbers
 	// the templates no longer had. Deriving them makes that drift impossible.
 	function readTemplateCounts(): {

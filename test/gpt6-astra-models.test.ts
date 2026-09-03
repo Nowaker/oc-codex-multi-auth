@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, afterEach } from "vitest";
 import { getNormalizedModel, MODEL_MAP } from "../lib/request/helpers/model-map.js";
 import {
@@ -23,11 +24,17 @@ import { resolveClientIdentity } from "../lib/request/helpers/client-identity.js
  * through Ultra; its API reference page stops at `max`, the same page-vs-
  * catalog split `gpt-5.6-sol` already has.
  */
+interface TemplateShape {
+	provider: { openai: { models: Record<string, unknown> } };
+}
+
 describe("GPT-6 Astra and Daybreak Model Support", () => {
 	const ASTRA = "gpt-6-astra";
 	const BLUE = "gpt-daybreak-blue-latest";
 	const RED = "gpt-daybreak-red-latest";
-	const ALL = [ASTRA, BLUE, RED] as const;
+	const CYBER = "gpt-5.6-cyber";
+	const CYBER_TIERS = [BLUE, RED, CYBER] as const;
+	const ALL = [ASTRA, BLUE, RED, CYBER] as const;
 	const FULL_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 	describe("normalization", () => {
@@ -60,6 +67,20 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 			expect(normalizeModel("gpt-6-astra-pro")).toBe(ASTRA);
 			expect(normalizeModel("gpt-6-astra-pro-high")).toBe(ASTRA);
 			expect(getNormalizedModel("gpt-6-astra-pro-ultra")).toBe(ASTRA);
+		});
+
+		// `gpt-5.6-cyber` carries "5.6" in its name, so every 5.6 branch that
+		// runs before it would claim it and silently answer a security request
+		// from Sol.
+		it("does not let the bare gpt-5.6 branch swallow gpt-5.6-cyber", () => {
+			expect(normalizeModel(CYBER)).toBe(CYBER);
+			expect(normalizeModel("gpt-5.6-cyber-xhigh")).toBe(CYBER);
+			expect(normalizeModel("GPT 5.6 Cyber (OAuth)")).toBe(CYBER);
+			expect(getModelFamily(CYBER)).toBe("gpt-5.6-cyber");
+			expect(getModelFamily("GPT 5.6 Cyber")).not.toBe("gpt-5.6-sol");
+			// The sibling tiers must be unaffected by that new branch.
+			expect(normalizeModel("gpt-5.6")).toBe("gpt-5.6-sol");
+			expect(normalizeModel("gpt-5.6-terra")).toBe("gpt-5.6-terra");
 		});
 
 		it("accepts the Daybreak short forms without the -latest tail", () => {
@@ -99,12 +120,14 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 			expect(getModelFamily(ASTRA)).toBe("gpt-6-astra");
 			expect(getModelFamily(BLUE)).toBe("gpt-daybreak-blue");
 			expect(getModelFamily(RED)).toBe("gpt-daybreak-red");
+			expect(getModelFamily(CYBER)).toBe("gpt-5.6-cyber");
 		});
 
 		it("registers the new families for per-family rotation state", () => {
 			expect(MODEL_FAMILIES).toContain("gpt-6-astra");
 			expect(MODEL_FAMILIES).toContain("gpt-daybreak-blue");
 			expect(MODEL_FAMILIES).toContain("gpt-daybreak-red");
+			expect(MODEL_FAMILIES).toContain("gpt-5.6-cyber");
 		});
 
 		it("routes bare gpt-6 to the Astra family", () => {
@@ -219,9 +242,10 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 		});
 
 		// Both Daybreak entries are `use_responses_lite: true` in the catalog.
-		it("puts both Daybreak tiers on the lite path", () => {
-			expect(usesResponsesLite(BLUE)).toBe(true);
-			expect(usesResponsesLite(RED)).toBe(true);
+		it("puts every cyber tier on the lite path", () => {
+			for (const model of CYBER_TIERS) {
+				expect(usesResponsesLite(model)).toBe(true);
+			}
 			expect(usesResponsesLite("openai/gpt-daybreak-blue-xhigh")).toBe(true);
 		});
 
@@ -238,6 +262,7 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 			expect(usesResponsesLite(ASTRA)).toBe(false);
 			expect(usesResponsesLite("gpt-6")).toBe(false);
 			expect(usesResponsesLite(BLUE)).toBe(true);
+			expect(usesResponsesLite(CYBER)).toBe(true);
 			expect(usesResponsesLite("gpt-5.6-sol")).toBe(true);
 		});
 
@@ -269,9 +294,10 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 
 		// Degrading a cyber-specialty request onto a general model would answer
 		// a security-research prompt with a model nobody asked for.
-		it("gives the Daybreak tiers no fallback chain", () => {
-			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[BLUE]).toBeUndefined();
-			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[RED]).toBeUndefined();
+		it("gives the cyber tiers no fallback chain", () => {
+			for (const model of CYBER_TIERS) {
+				expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[model]).toBeUndefined();
+			}
 		});
 
 		it("does not make Astra a fallback target of any other model", () => {
@@ -279,6 +305,34 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 				DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN,
 			)) {
 				expect(targets).not.toContain(ASTRA);
+			}
+		});
+	});
+
+	// The templates already exclude `gpt-5.3-codex-spark` because shipping an
+	// entitlement-gated id to every user causes avoidable startup failures. All
+	// three cyber tiers need Daybreak program approval, and Blue/Red are
+	// `visibility: "hide"` in the catalog, so the same rule applies to them.
+	describe("shipped config templates", () => {
+		const templates = ["config/opencode-modern.json", "config/opencode-legacy.json"];
+
+		it("ships Astra but no Daybreak-gated cyber tier", () => {
+			for (const template of templates) {
+				const ids = Object.keys(
+					(JSON.parse(readFileSync(template, "utf8")) as TemplateShape).provider
+						.openai.models,
+				);
+				expect(ids.some((id) => id.startsWith(ASTRA))).toBe(true);
+				for (const id of ids) {
+					expect(id).not.toContain("daybreak");
+					expect(id).not.toContain("cyber");
+				}
+			}
+		});
+
+		it("still routes the gated ids even though they are unshipped", () => {
+			for (const model of CYBER_TIERS) {
+				expect(normalizeModel(model)).toBe(model);
 			}
 		});
 	});

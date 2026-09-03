@@ -428,6 +428,7 @@ describe("Model Map Module", () => {
         "gpt-6-astra",
         "gpt-daybreak-blue-latest",
         "gpt-daybreak-red-latest",
+        "gpt-5.6-cyber",
       ]);
 
       for (const [key, value] of Object.entries(MODEL_MAP)) {
