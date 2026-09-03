@@ -45,8 +45,8 @@ controls how much thinking the model does.
 | `gpt-5.6-luna` | low, medium, high, xhigh, max |
 | `gpt-5.5` | none, low, medium, high, xhigh |
 | `gpt-5.5-fast` | none, low, medium, high, xhigh |
-| `gpt-5.4` | none, low, medium, high, xhigh |
-| `gpt-5.4-mini` | none, low, medium, high, xhigh |
+| `gpt-5.4` | none, low, medium, high, xhigh (retired from Codex 2026-08-31; auto-upgrades to `gpt-5.6-terra`) |
+| `gpt-5.4-mini` | none, low, medium, high, xhigh (retired from Codex 2026-08-31; auto-upgrades to `gpt-5.6-luna`) |
 | `gpt-5.4-pro` | low, medium, high, xhigh (optional/manual model) |
 | `gpt-5-codex` | low, medium, high (default: high) |
 | `gpt-5.3-codex` | low, medium, high, xhigh (legacy alias to `gpt-5-codex`) |
@@ -279,7 +279,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `unsupportedCodexPolicy` | `strict` | unsupported-model behavior: `strict` (return entitlement error) or `fallback` (retry with configured fallback chain) |
 | `fallbackOnUnsupportedCodexModel` | `false` | legacy fallback toggle mapped to `unsupportedCodexPolicy` (prefer using `unsupportedCodexPolicy`) |
 | `fallbackToGpt52OnUnsupportedGpt53` | `true` | legacy compatibility toggle for the `gpt-5.3-codex -> gpt-5.2-codex` edge when generic fallback is enabled |
-| `unsupportedCodexFallbackChain` | `{}` | optional per-model fallback-chain override (map of `model -> [fallback1, fallback2, ...]`; default includes `gpt-6-astra` and the 5.6 tiers down to `gpt-5.5`, and `gpt-5.5`/`gpt-5-codex` through the GPT-5.4 family). The 5.6 tier, `gpt-5.5`, and canonical Codex auto-fallbacks are on by default for common entitlement gates; set `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1`, or `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` to opt out. GPT-5.5 Pro and GPT-6 Astra Pro are not mapped: neither is a Codex-routable id. The Daybreak cyber tiers are deliberately chainless, so an unentitled account fails loudly rather than being answered by a general model. |
+| `unsupportedCodexFallbackChain` | `{}` | optional per-model fallback-chain override (map of `model -> [fallback1, fallback2, ...]`; default includes `gpt-6-astra` and the 5.6 tiers down to `gpt-5.5`, and `gpt-5.5`/`gpt-5-codex` down to `gpt-5.2`). The 5.6 tier, `gpt-5.5`, and canonical Codex auto-fallbacks are on by default for common entitlement gates; set `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1`, or `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` to opt out. GPT-5.5 Pro and GPT-6 Astra Pro are not mapped: neither is a Codex-routable id. The Daybreak cyber tiers are deliberately chainless, so an unentitled account fails loudly rather than being answered by a general model. |
 | `sessionRecovery` | `true` | auto-recover from common api errors |
 | `autoResume` | `true` | auto-resume after thinking block recovery |
 | `tokenRefreshSkewMs` | `60000` | refresh tokens this many ms before expiry |
@@ -356,15 +356,22 @@ defaults when fallback policy is enabled and `unsupportedCodexFallbackChain` is 
 - `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` (then the `gpt-5.5` chain)
 - `gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5`
 - `gpt-5.6-luna -> gpt-5.5`
-- `gpt-5.5 -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
-- `gpt-5-codex -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
-- `gpt-5.4-pro -> gpt-5.4` (if `gpt-5.4-pro` is selected manually; not a shipped base)
+- `gpt-5.5 -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.2`
+- `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2`
+- `gpt-5.4 -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (the successor its catalog entry names)
+- `gpt-5.4-mini -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
+- `gpt-5.4-nano -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
+- `gpt-5.4-pro -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (if `gpt-5.4-pro` is selected manually; not a shipped base)
+
+> GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
 - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
 - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (applies if you manually select Spark model IDs)
 - `gpt-5.2-codex -> gpt-5-codex`
 - `gpt-5.1-codex -> gpt-5-codex`
 
 Note: `gpt-5.4` and `gpt-5.4-pro` appear in fallback/runtime normalization but are not shipped as compact modern base picker entries (bases use `gpt-5.4-mini` / `gpt-5.4-nano`).
+
+`gpt-5.4-mini` is still shipped as a base even though Codex retired it on 2026-08-31, because removing it would break saved configs that name it. Selecting it costs one extra round trip: the request 400s and the default chain immediately upgrades it to `gpt-5.6-luna`, the successor its catalog entry names. Prefer `gpt-5.6-luna` directly.
 
 note: the TUI can continue showing your originally selected model while fallback is applied internally. use request logs to verify the effective upstream model (`request-*-after-transform.json`). set `CODEX_PLUGIN_LOG_BODIES=1` when you need to inspect raw `.body.*` fields.
 
@@ -374,10 +381,10 @@ custom chain example:
   "unsupportedCodexPolicy": "fallback",
   "fallbackOnUnsupportedCodexModel": true,
   "unsupportedCodexFallbackChain": {
-    "gpt-5.5": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
-    "gpt-5.4": ["gpt-5.4-mini", "gpt-5.4-nano"],
-    "gpt-5.4-pro": ["gpt-5.4"],
-    "gpt-5-codex": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+    "gpt-5.5": ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.2"],
+    "gpt-5.4": ["gpt-5.6-terra", "gpt-5.2"],
+    "gpt-5.4-pro": ["gpt-5.6-terra", "gpt-5.2"],
+    "gpt-5-codex": ["gpt-5.6-terra", "gpt-5.5", "gpt-5.2"],
     "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
     "gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"]
   }

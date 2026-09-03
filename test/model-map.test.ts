@@ -159,7 +159,7 @@ describe("Model Map Module", () => {
       expect(getNormalizedModel("gpt-5.3-codex")).toBe("gpt-5.3-codex");
       expect(getNormalizedModel("gpt-5.3-codex-spark")).toBe("gpt-5.3-codex-spark");
 
-      // ── gpt-5.2-codex → gpt-5-codex → gpt-5.4 ──────────────────────────────
+      // ── gpt-5.2-codex → gpt-5-codex → gpt-5.6-terra ────────────────────────
       const normalized52 = getNormalizedModel("gpt-5.2-codex")!;
       const fallback52 = resolveUnsupportedCodexFallbackModel({
         requestedModel: normalized52,
@@ -187,7 +187,7 @@ describe("Model Map Module", () => {
         fallbackOnUnsupportedCodexModel: true,
         fallbackToGpt52OnUnsupportedGpt53: true,
       });
-      expect(fallback52step2).toBe("gpt-5.4");
+      expect(fallback52step2).toBe("gpt-5.6-terra");
 
       // ── gpt-5.3-codex → gpt-5-codex ─────────────────────────────────────────
       const normalized53 = getNormalizedModel("gpt-5.3-codex")!;

@@ -90,7 +90,7 @@ The gateway override is fail-closed: remote gateways require HTTPS, literal loop
 - GPT-6 Astra: `gpt-6-astra` → `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-5.6-luna` → `gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`)
 - Cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`): no chain. They fail loudly rather than silently answering from a general model.
 - GPT-5.6: `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-5.6-luna` → `gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`)
-- GPT-5.5 / canonical Codex also have default auto-fallback through the GPT-5.4 family; broader fallback chains require `unsupportedCodexPolicy: "fallback"`.
+- GPT-5.5 / canonical Codex also have default auto-fallback, now through `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.2`; broader fallback chains require `unsupportedCodexPolicy: "fallback"`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
 
 ### 4. Account rotation and model pools
 

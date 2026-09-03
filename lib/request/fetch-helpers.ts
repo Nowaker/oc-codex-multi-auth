@@ -127,22 +127,53 @@ export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> 
 		GPT_56_TERRA_MODEL_ID,
 		GPT_56_LUNA_MODEL_ID,
 		GPT_55_MODEL_ID,
+		"gpt-5.2",
 	],
 	// GPT-5.6 shipped as a limited preview. Accounts outside it get
 	// `model_not_supported_with_chatgpt_account`, so degrade down the 5.6 tiers
 	// and then out to the generally-available 5.5 family.
+	//
+	// `gpt-5.2` repeats on every tier on purpose. The resolver walks the chain
+	// of whichever model it is currently on, so once a request hops from
+	// gpt-5.5 to terra it reads terra's list; a terminal that lived only on
+	// gpt-5.5's list would never be reached.
 	[GPT_56_SOL_MODEL_ID]: [
 		GPT_56_TERRA_MODEL_ID,
 		GPT_56_LUNA_MODEL_ID,
 		GPT_55_MODEL_ID,
+		"gpt-5.2",
 	],
-	[GPT_56_TERRA_MODEL_ID]: [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
-	[GPT_56_LUNA_MODEL_ID]: [GPT_55_MODEL_ID],
-	[GPT_55_MODEL_ID]: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
-	"gpt-5.4": ["gpt-5.4-mini", "gpt-5.4-nano"],
-	"gpt-5.4-mini": ["gpt-5.4-nano"],
-	"gpt-5.4-pro": ["gpt-5.4"],
-	"gpt-5-codex": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+	[GPT_56_TERRA_MODEL_ID]: [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
+	[GPT_56_LUNA_MODEL_ID]: [GPT_55_MODEL_ID, "gpt-5.2"],
+
+	// GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31T19:00:00Z.
+	// The catalog marks both `visibility: "hide"` and carries an explicit
+	// `upgrade` directive naming the replacement — gpt-5.4 -> gpt-5.6-terra,
+	// gpt-5.4-mini -> gpt-5.6-luna. `gpt-5.4-nano` has no catalog entry at all.
+	//
+	// Every tail below used to lead with those three, so an entitlement failure
+	// on gpt-5.5 or gpt-5-codex spent its whole attempt budget on retired ids
+	// and then hard-failed without ever trying a live model.
+	//
+	// The tails now end at the live models: `gpt-5.6-terra` and `gpt-5.6-luna`
+	// (the catalog's own named replacements, and its top-priority entries) then
+	// `gpt-5.2`, the only other general model still `visibility: "list"`. The
+	// retired ids are not re-appended after them: if terra, luna and 5.2 have
+	// all been refused, the account has no general Codex entitlement left and a
+	// model OpenAI retired four days ago cannot rescue it. Selecting `gpt-5.4`
+	// or `gpt-5.4-mini` directly still degrades, through their own keys below.
+	[GPT_55_MODEL_ID]: [GPT_56_TERRA_MODEL_ID, GPT_56_LUNA_MODEL_ID, "gpt-5.2"],
+	// Each retired id leads with the successor its own catalog entry names.
+	"gpt-5.4": [GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
+	"gpt-5.4-mini": [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
+	// `gpt-5.4-nano` has no catalog entry, so no upgrade directive to follow. It
+	// was previously a dead end with no chain of its own, which made it a
+	// terminal failure for anyone who selected it; give it the same way out.
+	"gpt-5.4-nano": [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
+	// GPT-5.4 Pro has no catalog entry either; it inherits the 5.4 line's
+	// successor rather than degrading onto retired gpt-5.4 first.
+	"gpt-5.4-pro": [GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
+	"gpt-5-codex": [GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
 	// Legacy selectors normalize to `gpt-5-codex` before lookup during the
 	// request path. Keep these historical entries for direct helper callers and
 	// custom-chain documentation; the canonical `gpt-5-codex` edge above is the
@@ -167,7 +198,17 @@ const DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV: Record<string, string> = {
 	[GPT_6_ASTRA_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK",
 };
 
+/**
+ * Models the default auto-fallback may keep degrading *from* after it has
+ * already hopped off an entry model.
+ *
+ * Entry models (those in DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV) resolve
+ * themselves, so only the intermediates that are not entry models need to be
+ * listed. `gpt-5.2` joined the tails when the retired 5.4 ids were demoted;
+ * without it the chain stopped dead at 5.2 instead of trying what follows.
+ */
 const DEFAULT_AUTO_FALLBACK_CONTINUATION_MODELS = new Set([
+	"gpt-5.2",
 	"gpt-5.4",
 	"gpt-5.4-mini",
 ]);

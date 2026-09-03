@@ -58,7 +58,7 @@ describe("GPT-5.5 activation", () => {
 		expect(getModelFamily("gpt-5.5-fast")).toBe("gpt-5.4");
 	});
 
-	it("auto-falls-back from GPT-5.5 to GPT-5.4 even when the global policy is off", () => {
+	it("auto-falls-back from GPT-5.5 to GPT-5.6 Terra even when the global policy is off", () => {
 		const fallback = resolveUnsupportedCodexFallbackModel({
 			requestedModel: "gpt-5.5-medium",
 			errorBody: {
@@ -70,10 +70,10 @@ describe("GPT-5.5 activation", () => {
 			fallbackToGpt52OnUnsupportedGpt53: false,
 		});
 
-		expect(fallback).toBe("gpt-5.4");
+		expect(fallback).toBe("gpt-5.6-terra");
 	});
 
-	it("still falls back from GPT-5.5 to GPT-5.4 when explicit policy opt-in is set", () => {
+	it("still falls back from GPT-5.5 to GPT-5.6 Terra when explicit policy opt-in is set", () => {
 		const fallback = resolveUnsupportedCodexFallbackModel({
 			requestedModel: "gpt-5.5-medium",
 			errorBody: {
@@ -85,7 +85,7 @@ describe("GPT-5.5 activation", () => {
 			fallbackToGpt52OnUnsupportedGpt53: false,
 		});
 
-		expect(fallback).toBe("gpt-5.4");
+		expect(fallback).toBe("gpt-5.6-terra");
 	});
 
 	it("disables GPT-5.5 auto-fallback when CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1 is set", () => {
@@ -119,6 +119,6 @@ describe("GPT-5.5 activation", () => {
 			fallbackToGpt52OnUnsupportedGpt53: false,
 		});
 
-		expect(fallback).toBe("gpt-5.4");
+		expect(fallback).toBe("gpt-5.6-terra");
 	});
 });

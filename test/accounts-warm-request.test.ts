@@ -46,10 +46,19 @@ describe("buildWarmRequestBody (#182)", () => {
 		expect(body.input?.[0]).toMatchObject({ role: "user", type: "message" });
 	});
 
-	it("keeps effort 'none' for every model the default chain can reach", async () => {
-		for (const model of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]) {
+	// Not every reachable model accepts "none" any more: the chain now ends in
+	// the 5.6 tiers, which reject it and clamp to "low". What must hold is that
+	// warming never puts an effort on the wire that the target model refuses.
+	it("sends a backend-valid effort for every model the default chain can reach", async () => {
+		for (const model of reachableFromWarmEntry()) {
 			const body = await buildWarmRequestBody(model);
-			expect(body.reasoning).toEqual({ effort: "none", summary: "auto" });
+			expect(body.reasoning).toEqual(
+				getReasoningConfig(model, {
+					reasoningEffort: "none",
+					reasoningSummary: "auto",
+				}),
+			);
+			expect(body.reasoning?.effort).not.toBe("ultra");
 		}
 	});
 
@@ -65,6 +74,9 @@ describe("buildWarmRequestBody (#182)", () => {
 			"gpt-5.4-mini",
 			"gpt-5.4-nano",
 			"gpt-5.6-sol",
+			"gpt-5.6-terra",
+			"gpt-5.6-luna",
+			"gpt-5.2",
 			"gpt-5.4-pro",
 			"gpt-5-codex",
 		]) {
@@ -79,27 +91,42 @@ describe("buildWarmRequestBody (#182)", () => {
 	});
 });
 
+function reachableFromWarmEntry(): string[] {
+	const reachable = new Set<string>(["gpt-5.5"]);
+	const queue = ["gpt-5.5"];
+	while (queue.length > 0) {
+		const current = queue.shift() as string;
+		for (const target of DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[current] ?? []) {
+			if (reachable.has(target)) continue;
+			reachable.add(target);
+			queue.push(target);
+		}
+	}
+	return [...reachable];
+}
+
 describe("warm fallback chain invariants (#210)", () => {
 	it("the attempt budget covers every model reachable from the warm entry point", () => {
-		const reachable = new Set<string>(["gpt-5.5"]);
-		const queue = ["gpt-5.5"];
-		while (queue.length > 0) {
-			const current = queue.shift() as string;
-			for (const target of DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[current] ?? []) {
-				if (reachable.has(target)) continue;
-				reachable.add(target);
-				queue.push(target);
-			}
-		}
+		const reachable = reachableFromWarmEntry();
 		// If this fails the default chain grew a tail past the warm attempt
 		// budget, so warming would stop before reaching an entitled model.
-		expect(reachable.size).toBeLessThanOrEqual(WARM_ATTEMPT_HARD_CEILING);
-		expect([...reachable]).toEqual([
+		expect(reachable.length).toBeLessThanOrEqual(WARM_ATTEMPT_HARD_CEILING);
+		expect(reachable).toEqual([
 			"gpt-5.5",
-			"gpt-5.4",
-			"gpt-5.4-mini",
-			"gpt-5.4-nano",
+			"gpt-5.6-terra",
+			"gpt-5.6-luna",
+			"gpt-5.2",
 		]);
+	});
+
+	// gpt-5.4 and gpt-5.4-mini were retired from Codex on 2026-08-31 (catalog
+	// `visibility: "hide"` plus an `upgrade` directive naming their
+	// replacements), and gpt-5.4-nano has no catalog entry. Warming must not
+	// spend its bounded budget on ids OpenAI has withdrawn.
+	it("reaches no retired model from the warm entry point", () => {
+		for (const model of reachableFromWarmEntry()) {
+			expect(model.startsWith("gpt-5.4")).toBe(false);
+		}
 	});
 });
 
@@ -199,7 +226,7 @@ describe("warmAccountWindow (#182)", () => {
 			(fetchImpl.mock.calls[1] as [string, RequestInit])[1].body as string,
 		);
 		expect(firstBody.model).toBe("gpt-5.5");
-		expect(secondBody.model).toBe("gpt-5.4");
+		expect(secondBody.model).toBe("gpt-5.6-terra");
 	});
 
 	it("stops after the bounded attempt budget when no model is entitled (#210)", async () => {
@@ -213,7 +240,7 @@ describe("warmAccountWindow (#182)", () => {
 		const fetchImpl = vi.fn(async () => unsupported());
 
 		await expect(warmAccountWindow({ ...PARAMS, fetchImpl })).rejects.toThrow(
-			/tried gpt-5\.5, gpt-5\.4, gpt-5\.4-mini, gpt-5\.4-nano/,
+			/tried gpt-5\.5, gpt-5\.6-terra, gpt-5\.6-luna, gpt-5\.2/,
 		);
 		expect(fetchImpl).toHaveBeenCalledTimes(4);
 	});

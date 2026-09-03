@@ -63,7 +63,7 @@ Both templates include:
 | `gpt-5.6-luna` | low, medium, high, xhigh, max |
 | `gpt-5.5` | none, low, medium, high, xhigh |
 | `gpt-5.5-fast` | none, low, medium, high, xhigh |
-| `gpt-5.4-mini` | none, low, medium, high, xhigh |
+| `gpt-5.4-mini` | none, low, medium, high, xhigh (retired from Codex 2026-08-31; auto-upgrades to `gpt-5.6-luna`) |
 | `gpt-5.4-nano` | none, low, medium, high, xhigh |
 | `gpt-5.1-codex-max` | low, medium, high, xhigh |
 | `gpt-5.1-codex` | low, medium, high |
@@ -142,12 +142,12 @@ Current defaults are strict entitlement handling except for common default-selec
 - **GPT-6 Astra** auto-fallback: `gpt-6-astra → gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5`
 - **Daybreak** cyber tiers: no fallback chain, deliberately
 - **GPT-5.6** auto-fallback: `gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5`
-- **`gpt-5.5`** and canonical **`gpt-5-codex`** can auto-fallback through `gpt-5.4`, `gpt-5.4-mini`, then `gpt-5.4-nano` when the backend reports the selected model is not supported
+- **`gpt-5.5`** and canonical **`gpt-5-codex`** can auto-fallback through `gpt-5.6-terra`, `gpt-5.6-luna`, then `gpt-5.2` when the backend reports the selected model is not supported
 - `unsupportedCodexPolicy: "strict"` returns other entitlement errors directly
 - set `unsupportedCodexPolicy: "fallback"` (or `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback`) to enable the full fallback chain for manual/legacy selectors
 - `fallbackToGpt52OnUnsupportedGpt53: true` keeps the legacy `gpt-5.3-codex -> gpt-5.2-codex` edge inside fallback mode
 - user-typed `gpt-5.5-pro*` is canonicalized to `gpt-5.5` before fallback because GPT-5.5 Pro is ChatGPT-only, not a Codex-routable model; `gpt-6-astra-pro*` is canonicalized to `gpt-6-astra` for the same reason
-- legacy Codex selectors such as `gpt-5.2-codex`, `gpt-5.3-codex`, and `gpt-5.3-codex-spark` normalize to canonical `gpt-5-codex`; if that canonical Codex model is gated, the default auto-fallback can retry through the GPT-5.4 family
+- legacy Codex selectors such as `gpt-5.2-codex`, `gpt-5.3-codex`, and `gpt-5.3-codex-spark` normalize to canonical `gpt-5-codex`; if that canonical Codex model is gated, the default auto-fallback can retry through `gpt-5.6-terra`, `gpt-5.5`, then `gpt-5.2`
 - set `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1` to disable GPT-6 Astra auto-fallback
 - set `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1` to disable GPT-5.6 auto-fallback
 - set `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` to disable GPT-5.5 auto-fallback
@@ -159,8 +159,10 @@ Default chains when generic fallback policy is enabled (and empty override map):
 
 - `gpt-6-astra → gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5` (also auto under default strict for rollout gates)
 - `gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5` (also auto under default strict for preview gates)
-- `gpt-5.5 → gpt-5.4 → gpt-5.4-mini → gpt-5.4-nano`
-- `gpt-5-codex → gpt-5.4 → gpt-5.4-mini → gpt-5.4-nano`
+- `gpt-5.5 → gpt-5.6-terra → gpt-5.6-luna → gpt-5.2`
+- `gpt-5-codex → gpt-5.6-terra → gpt-5.5 → gpt-5.2`
+
+> GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
 - `gpt-5.4-pro → gpt-5.4` (if you manually select `gpt-5.4-pro`)
 - `gpt-5.3-codex → gpt-5-codex → gpt-5.2-codex`
 - `gpt-5.3-codex-spark → gpt-5-codex → gpt-5.3-codex → gpt-5.2-codex` (only if Spark IDs are added manually)
