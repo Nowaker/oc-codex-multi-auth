@@ -367,7 +367,7 @@ describe("quota monitor lifecycle", () => {
 		vi.useFakeTimers();
 		const loadStorage = vi.fn().mockResolvedValue(null);
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: false, autoProtectCredits: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage,
 			initialDelayMs: 10,
 		});
@@ -382,6 +382,7 @@ describe("quota monitor lifecycle", () => {
 		vi.useFakeTimers();
 		const loadConfig = vi.fn(() => ({
 			enabled: false,
+			autoProtectCredits: false,
 			intervalMs: 1_000,
 			notifyEveryCheck: false,
 			thresholds: [25, 10, 0],
@@ -402,7 +403,7 @@ describe("quota monitor lifecycle", () => {
 		const monitor = createQuotaMonitor({
 			// Enabled, but with no thresholds and no every-check alert there is
 			// nothing any check could produce.
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [] }),
+			loadConfig: () => ({ enabled: true, autoProtectCredits: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [] }),
 			loadStorage,
 			notificationsSupported: () => true,
 		});
@@ -445,16 +446,41 @@ describe("quota monitor lifecycle", () => {
 		expect(loadStorage).not.toHaveBeenCalled();
 	});
 
-	it("does not poll accounts when desktop notifications are unsupported", async () => {
+	it("does not poll accounts when notifications and credit protection are disabled", async () => {
 		const loadStorage = vi.fn().mockResolvedValue(null);
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, autoProtectCredits: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage,
 			notificationsSupported: () => false,
 		});
 
 		await monitor.runNow();
 		expect(loadStorage).not.toHaveBeenCalled();
+	});
+
+	it("polls to protect Credits even when desktop notifications are unavailable", async () => {
+		const loadStorage = vi.fn().mockResolvedValue({
+			version: 3 as const,
+			accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+			activeIndex: 0,
+		});
+		const fetchSummary = vi.fn().mockResolvedValue(accountUsage({
+			fiveHourUsed: 10,
+			weeklyUsed: 10,
+		}));
+		const notify = vi.fn();
+		const monitor = createQuotaMonitor({
+			loadConfig: () => ({ enabled: true, autoProtectCredits: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [] }),
+			loadStorage,
+			fetchSummary,
+			notify,
+			notificationsSupported: () => false,
+		});
+
+		await monitor.runNow();
+
+		expect(fetchSummary).toHaveBeenCalledOnce();
+		expect(notify).not.toHaveBeenCalled();
 	});
 
 	it("notifies when only the weekly window crosses a threshold", async () => {

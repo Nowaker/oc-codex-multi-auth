@@ -73,6 +73,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_AUTO_UPDATE',
 		'CODEX_AUTH_ACCOUNT_TOASTS',
 		'CODEX_AUTH_QUOTA_NOTIFICATIONS',
+		'CODEX_AUTH_AUTO_PROTECT_CREDITS',
 		'CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS',
 	] as const;
 	const originalEnv: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
@@ -862,6 +863,7 @@ describe('Plugin Configuration', () => {
 		it('is disabled by default with production-safe defaults', () => {
 			expect(getQuotaNotifications({})).toEqual({
 				enabled: false,
+				autoProtectCredits: true,
 				intervalMs: 1_800_000,
 				notifyEveryCheck: false,
 				thresholds: [25, 10, 0],
@@ -872,11 +874,13 @@ describe('Plugin Configuration', () => {
 			expect(getQuotaNotifications({
 				quotaNotifications: {
 					enabled: true,
+					autoProtectCredits: false,
 					intervalMs: 10_000,
 					thresholds: [0, 25, 10, 25],
 				},
 			})).toEqual({
 				enabled: true,
+				autoProtectCredits: false,
 				intervalMs: 30_000,
 				notifyEveryCheck: false,
 				thresholds: [25, 10, 0],
@@ -909,8 +913,10 @@ describe('Plugin Configuration', () => {
 
 		it('honors environment overrides', () => {
 			process.env.CODEX_AUTH_QUOTA_NOTIFICATIONS = '1';
+			process.env.CODEX_AUTH_AUTO_PROTECT_CREDITS = '0';
 			process.env.CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS = '600000';
 			expect(getQuotaNotifications({}).enabled).toBe(true);
+			expect(getQuotaNotifications({}).autoProtectCredits).toBe(false);
 			expect(getQuotaNotifications({}).intervalMs).toBe(600_000);
 		});
 	});

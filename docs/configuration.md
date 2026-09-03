@@ -214,6 +214,7 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
   "streamStallTimeoutMs": 45000,
   "quotaNotifications": {
     "enabled": false,
+    "autoProtectCredits": true,
     "intervalMs": 1800000,
     "notifyEveryCheck": false,
     "thresholds": [25, 10, 0]
@@ -265,10 +266,18 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `pidOffsetEnabled` | `false` | add a small PID-based offset to hybrid selection scores (helps multi-process load spread) |
 | `fetchTimeoutMs` | `60000` | upstream fetch timeout in ms |
 | `streamStallTimeoutMs` | `45000` | max time to wait for next SSE chunk before aborting |
-| `quotaNotifications` | disabled | optional macOS Notification Center alerts for aggregate 5-hour and weekly pool quotas; `intervalMs` defaults to 30 minutes with a 30-second minimum, `notifyEveryCheck` defaults to `false`, and `thresholds` defaults to `[25, 10, 0]` |
+| `quotaNotifications` | disabled | optional macOS Notification Center alerts for aggregate 5-hour and weekly pool quotas. `autoProtectCredits` defaults to `true` and polls the same endpoint to exclude fully spent subscription quotas from rotation; `intervalMs` defaults to 30 minutes with a 30-second minimum, `notifyEveryCheck` defaults to `false`, and `thresholds` defaults to `[25, 10, 0]` |
 
-Quota notifications query each distinct enabled account with bounded
-concurrency. The 5-hour and weekly windows are tracked independently, and each
+The quota guard queries each distinct enabled account with bounded concurrency
+every `intervalMs` (30 minutes by default), even when notifications are off.
+When the backend reports a fully spent 5-hour or weekly subscription window,
+the account is excluded from every model-family rotation until that window's
+reported reset. Failed or rate-limited usage queries fail open and wait for the
+next interval; they never block an account. Set `autoProtectCredits` to `false`
+to disable this periodic guard. A manual `codex-limits` or standalone `limits`
+check always persists an observed exhaustion block immediately. Quota
+notifications use the same poller. The 5-hour and
+weekly windows are tracked independently, and each
 threshold alerts once until that window rises above it after a reset. Each line
 reports the account with the most headroom in that window plus that same
 account's reset time, so the percentage and the reset it is printed with always
@@ -384,6 +393,7 @@ override any config with env vars (boolean values are truthy only for `"1"`):
 | `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS=60000` | refresh OAuth tokens this many ms before expiry |
 | `CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS=60000` | debounce rate-limit toast notifications |
 | `CODEX_AUTH_QUOTA_NOTIFICATIONS=1` | enable macOS aggregate quota notifications |
+| `CODEX_AUTH_AUTO_PROTECT_CREDITS=0` | disable periodic quota checks that protect paid Credits (enabled by default) |
 | `CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS=1800000` | override the quota check interval (minimum 30000 ms) |
 | `CODEX_AUTH_SESSION_RECOVERY=0` | disable automatic session recovery hooks |
 | `CODEX_AUTH_AUTO_RESUME=0` | disable auto-resume after thinking-block recovery |

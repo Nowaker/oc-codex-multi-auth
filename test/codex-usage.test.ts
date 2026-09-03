@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
 	deduplicateUsageAccountIndices,
@@ -9,10 +12,13 @@ import {
 	getUsageLeftPercent,
 	hasUsageWindow,
 	parseCodexUsagePayload,
+	persistUsageQuotaExhaustion,
 	resolveCodexUsageActiveAccount,
 	type UsagePayload,
 } from "../lib/codex-usage.js";
-import type { AccountStorageV3 } from "../lib/storage.js";
+import { loadAccounts, saveAccounts, type AccountStorageV3 } from "../lib/storage.js";
+import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
+import { setStoragePathDirect } from "../lib/storage/state.js";
 
 describe("codex usage helpers", () => {
 	it("formats same-day reset times on a locale-independent 24-hour clock", () => {
@@ -130,6 +136,34 @@ describe("codex usage helpers", () => {
 				now,
 			),
 		).toBeUndefined();
+	});
+
+	it("persists a quota block for every model family without shortening a longer block", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "usage-quota-persist-"));
+		try {
+			setStoragePathDirect(join(directory, "accounts.json"));
+			const account = {
+				refreshToken: "refresh-1",
+				accountId: "account-1",
+				addedAt: 0,
+				lastUsed: 0,
+			};
+			await saveAccounts({ version: 3, accounts: [account], activeIndex: 0 });
+			const resetAtMs = Date.now() + 86_400_000;
+
+			expect(await persistUsageQuotaExhaustion(account, resetAtMs)).toBe(true);
+			expect(await persistUsageQuotaExhaustion(account, resetAtMs - 60_000)).toBe(false);
+
+			const persisted = await loadAccounts();
+			expect(persisted?.accounts[0]?.rateLimitResetTimes).toEqual(
+				expect.objectContaining(
+					Object.fromEntries(MODEL_FAMILIES.map((family) => [family, resetAtMs])),
+				),
+			);
+		} finally {
+			setStoragePathDirect(null);
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("clamps remaining percent and preserves active codex account selection", () => {

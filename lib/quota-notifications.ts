@@ -5,8 +5,10 @@ import {
 	fetchCodexUsage,
 	formatUsageReset,
 	getUsageLeftPercent,
+	getUsageQuotaExhaustedResetAtMs,
 	hasUsageWindow,
 	parseCodexUsagePayload,
+	persistUsageQuotaExhaustion,
 	resolveCodexUsageAccountId,
 	type CodexUsageSummary,
 } from "./codex-usage.js";
@@ -80,6 +82,7 @@ type MonitorDependencies = {
 		storage: AccountStorageV3,
 		account: AccountMetadataV3 | undefined,
 		onCredentialsPersisted: () => void,
+		autoProtectCredits: boolean,
 	) => Promise<AccountQuotaSummary | null>;
 	notify: DesktopNotifier;
 	notificationsSupported: () => boolean;
@@ -353,6 +356,7 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 					storage,
 					storage.accounts[index],
 					markCredentialsPersisted,
+					config.autoProtectCredits !== false,
 				)),
 			);
 			for (const summary of results) {
@@ -360,6 +364,14 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 			}
 		}
 		if (summaries.length === 0 || disposed || expectedGeneration !== generation) return;
+		const canDeliver =
+			config.enabled &&
+			(config.notifyEveryCheck || config.thresholds.length > 0) &&
+			dependencies.notificationsSupported();
+		// Credit protection has already persisted any exhausted accounts while
+		// gathering summaries. Do not create notification-state files unless a
+		// notification can actually be delivered.
+		if (!canDeliver) return;
 
 		const now = dependencies.now();
 		const usage = aggregateQuotaUsage(summaries, now);
@@ -453,11 +465,14 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 		let keepPolling = true;
 		try {
 			const config = dependencies.loadConfig();
-			// `thresholds: []` with `notifyEveryCheck: false` can never deliver
-			// anything, so polling it would query the usage endpoint for every
-			// account, forever, with no possible output.
 			const canDeliver = config.notifyEveryCheck || config.thresholds.length > 0;
-			keepPolling = config.enabled && canDeliver && dependencies.notificationsSupported();
+			const notificationsEnabled =
+				config.enabled && canDeliver && dependencies.notificationsSupported();
+			// The quota guard reuses this bounded, interval-based usage poll rather
+			// than adding a request-path preflight. A failed or rate-limited usage
+			// request simply retries on the next interval, so it cannot turn usage
+			// endpoint throttling into a routing block.
+			keepPolling = config.autoProtectCredits !== false || notificationsEnabled;
 			if (keepPolling) await check(config, expectedGeneration);
 		} catch (error) {
 			logDebug(`Quota monitor tick failed: ${(error as Error).message}`);
@@ -502,6 +517,7 @@ async function fetchUsageForAccount(
 	storage: AccountStorageV3,
 	account: AccountMetadataV3 | undefined,
 	onCredentialsPersisted: () => void = () => undefined,
+	autoProtectCredits = true,
 ): Promise<AccountQuotaSummary | null> {
 	if (!account) return null;
 	try {
@@ -511,13 +527,31 @@ async function fetchUsageForAccount(
 		if (credentials.persisted) onCredentialsPersisted();
 		const accountId = resolveCodexUsageAccountId({ account, accessToken: credentials.accessToken });
 		if (!accountId) return null;
+		const usage = parseCodexUsagePayload(await fetchCodexUsage({
+			accountId,
+			accessToken: credentials.accessToken,
+			organizationId: account.organizationId,
+			normalizeAccountErrors: true,
+		}));
+		const quotaExhaustedResetAtMs = getUsageQuotaExhaustedResetAtMs([
+			usage.primary,
+			usage.secondary,
+		]);
+		if (autoProtectCredits && quotaExhaustedResetAtMs !== undefined) {
+			try {
+				await persistUsageQuotaExhaustion(account, quotaExhaustedResetAtMs);
+				// A second process can already have written the same monotonic block.
+				// This process must still discard its cached AccountManager so the next
+				// selection observes that existing on-disk block.
+				onCredentialsPersisted();
+			} catch (error) {
+				// The backend's usage observation remains useful for notifications;
+				// only the proactive routing guard is unavailable until the next poll.
+				logWarn(`Failed to persist exhausted usage quota: ${(error as Error).message}`);
+			}
+		}
 		return {
-			usage: parseCodexUsagePayload(await fetchCodexUsage({
-				accountId,
-				accessToken: credentials.accessToken,
-				organizationId: account.organizationId,
-				normalizeAccountErrors: true,
-			})),
+			usage,
 		};
 	} catch (error) {
 		logDebug(`Failed to fetch quota for one account: ${(error as Error).message}`);

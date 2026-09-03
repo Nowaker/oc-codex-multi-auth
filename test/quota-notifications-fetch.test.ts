@@ -8,6 +8,7 @@ import type { AccountStorageV3 } from "../lib/storage.js";
 
 const ensureCodexUsageAccessToken = vi.fn();
 const fetchCodexUsage = vi.fn();
+const persistUsageQuotaExhaustion = vi.fn();
 
 // Only the two network/credential seams are stubbed. Everything else in
 // `codex-usage.js` stays real so this exercises the default `fetchSummary`
@@ -19,6 +20,8 @@ vi.mock("../lib/codex-usage.js", async (importOriginal) => {
 		ensureCodexUsageAccessToken: (...args: unknown[]) =>
 			ensureCodexUsageAccessToken(...args) as unknown,
 		fetchCodexUsage: (...args: unknown[]) => fetchCodexUsage(...args) as unknown,
+		persistUsageQuotaExhaustion: (...args: unknown[]) =>
+			persistUsageQuotaExhaustion(...args) as unknown,
 	};
 });
 
@@ -38,6 +41,7 @@ function monitorWith(overrides: Record<string, unknown> = {}) {
 			intervalMs: 1_000,
 			notifyEveryCheck: true,
 			thresholds: [25, 10, 0],
+			autoProtectCredits: true,
 		}),
 		loadStorage: async () => storage,
 		notificationsSupported: () => true,
@@ -50,6 +54,7 @@ describe("default quota fetch path", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks();
+		persistUsageQuotaExhaustion.mockResolvedValue(false);
 		const directory = await mkdtemp(join(tmpdir(), "quota-fetch-"));
 		directories.push(directory);
 		setStoragePathDirect(join(directory, "accounts.json"));
@@ -123,6 +128,101 @@ describe("default quota fetch path", () => {
 			"Codex quota status",
 			"5h: 10% | resets unavailable\nWeekly: 90% | resets unavailable",
 		);
+	});
+
+	it("persists an exhausted subscription quota and invalidates cached routing", async () => {
+		ensureCodexUsageAccessToken.mockResolvedValue({
+			accessToken: "access-1",
+			refreshed: false,
+			persisted: false,
+		});
+		const weeklyResetAt = Math.floor(Date.now() / 1000) + 86_400;
+		fetchCodexUsage.mockResolvedValue({
+			rate_limit: {
+				primary_window: { used_percent: 10, limit_window_seconds: 18_000 },
+				secondary_window: {
+					used_percent: 100,
+					limit_window_seconds: 604_800,
+					reset_at: weeklyResetAt,
+				},
+			},
+		});
+		persistUsageQuotaExhaustion.mockResolvedValue(true);
+		const onCredentialsPersisted = vi.fn();
+
+		await monitorWith({ onCredentialsPersisted, notify: vi.fn().mockResolvedValue(true) }).runNow();
+
+		expect(persistUsageQuotaExhaustion).toHaveBeenCalledWith(
+			expect.objectContaining({ accountId: "account-1" }),
+			weeklyResetAt * 1000,
+		);
+		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
+	});
+
+	it("invalidates cached routing when another process already persisted the block", async () => {
+		ensureCodexUsageAccessToken.mockResolvedValue({
+			accessToken: "access-1",
+			refreshed: false,
+			persisted: false,
+		});
+		fetchCodexUsage.mockResolvedValue({
+			rate_limit: {
+				secondary_window: {
+					used_percent: 100,
+					limit_window_seconds: 604_800,
+					reset_at: Math.floor(Date.now() / 1000) + 86_400,
+				},
+			},
+		});
+		persistUsageQuotaExhaustion.mockResolvedValue(false);
+		const onCredentialsPersisted = vi.fn();
+
+		await monitorWith({ onCredentialsPersisted, notify: vi.fn().mockResolvedValue(true) }).runNow();
+
+		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
+	});
+
+	it("does not persist exhaustion when automatic credit protection is disabled", async () => {
+		ensureCodexUsageAccessToken.mockResolvedValue({
+			accessToken: "access-1",
+			refreshed: false,
+			persisted: false,
+		});
+		fetchCodexUsage.mockResolvedValue({
+			rate_limit: {
+				secondary_window: {
+					used_percent: 100,
+					limit_window_seconds: 604_800,
+					reset_at: Math.floor(Date.now() / 1000) + 86_400,
+				},
+			},
+		});
+
+		await monitorWith({
+			loadConfig: () => ({
+				enabled: true,
+				autoProtectCredits: false,
+				intervalMs: 1_000,
+				notifyEveryCheck: true,
+				thresholds: [25, 10, 0],
+			}),
+			notify: vi.fn().mockResolvedValue(true),
+		}).runNow();
+
+		expect(persistUsageQuotaExhaustion).not.toHaveBeenCalled();
+	});
+
+	it("does not block an account when the usage endpoint is rate-limited", async () => {
+		ensureCodexUsageAccessToken.mockResolvedValue({
+			accessToken: "access-1",
+			refreshed: false,
+			persisted: false,
+		});
+		fetchCodexUsage.mockRejectedValue(new Error("429 from the usage endpoint"));
+
+		await monitorWith({ notify: vi.fn().mockResolvedValue(true) }).runNow();
+
+		expect(persistUsageQuotaExhaustion).not.toHaveBeenCalled();
 	});
 
 	it("skips an account whose access token carries no resolvable account id", async () => {

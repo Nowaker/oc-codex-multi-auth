@@ -254,6 +254,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `fetchTimeoutMs` | `60000` | `CODEX_AUTH_FETCH_TIMEOUT_MS` | Upstream fetch timeout |
 | `streamStallTimeoutMs` | `45000` | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS` | SSE stall abort timeout |
 | `quotaNotifications.enabled` | `false` | `CODEX_AUTH_QUOTA_NOTIFICATIONS` | macOS-only aggregate quota alerts |
+| `quotaNotifications.autoProtectCredits` | `true` | `CODEX_AUTH_AUTO_PROTECT_CREDITS` | Periodically exclude fully spent subscription quotas from rotation before they draw paid Credits |
 | `quotaNotifications.intervalMs` | `1800000` | `CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS` | Quota poll interval (minimum `30000`) |
 | `quotaNotifications.notifyEveryCheck` | `false` | (file only) | Alert after every poll, not only on threshold crossings |
 | `quotaNotifications.thresholds` | `[25, 10, 0]` | (file only) | Remaining-percent alert thresholds; `[]` disables threshold alerts |

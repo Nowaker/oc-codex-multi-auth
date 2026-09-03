@@ -141,6 +141,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 				);
 			}
 			let storageChanged = false;
+			let quotaExhaustionPersistedOrKnown = false;
 			const jsonAccounts: Array<Record<string, unknown>> = [];
 
 			for (const i of uniqueIndices) {
@@ -216,6 +217,10 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 									account,
 									quotaExhaustedResetAtMs,
 								)) || storageChanged;
+							// The block can already have been persisted by another process.
+							// Reload this process's AccountManager either way so its next
+							// rotation observes the on-disk block.
+							quotaExhaustionPersistedOrKnown = true;
 						} catch (error) {
 							logWarn(
 								`[${PLUGIN_NAME}] Failed to persist exhausted usage quota: ${
@@ -319,7 +324,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 				lines.push("");
 			}
 
-			if (storageChanged) {
+			if (storageChanged || quotaExhaustionPersistedOrKnown) {
 				invalidateAccountManagerCache();
 			}
 			if (outputFormat === "json") {
