@@ -52,33 +52,16 @@ const RESPONSES_LITE_MODELS: ReadonlySet<string> = new Set([
 	DAYBREAK_RED_MODEL_ID,
 	// `gpt-5.6-cyber` has no catalog entry under its own slug, but it is an
 	// alias for the two Daybreak tiers above, both catalog-verified lite, and
-	// every 5.6-generation model in the catalog is lite. Unlike Astra it has a
-	// direct family precedent, so it needs no override switch.
+	// every 5.6-generation model in the catalog is lite.
 	GPT_56_CYBER_MODEL_ID,
+	// Astra shipped without a catalog entry, so 6.17.0 inferred this and kept it
+	// behind `CODEX_AUTH_ASTRA_RESPONSES_LITE`. openai/codex commit ed391d4d
+	// (2026-09-03T20:05:58Z) added the entry, and it reads
+	// `use_responses_lite: true`, `tool_mode: "code_mode_only"`,
+	// `multi_agent_version: "v2"`. The inference was right, so it is now read
+	// rather than guessed and the switch is gone.
+	GPT_6_ASTRA_MODEL_ID,
 ]);
-
-/**
- * Env override for Astra's request shape.
- *
- * Unlike every other id in {@link RESPONSES_LITE_MODELS}, Astra's lite
- * membership is inferred, not read: OpenAI shipped GPT-6 Astra on 2026-09-03
- * and the public Codex catalog has carried no `gpt-6-astra` entry since its
- * 2026-08-20 refresh, so `use_responses_lite` cannot be verified for it.
- *
- * The inference: every catalog model of the 5.6 generation and later — sol,
- * terra, luna, and both Daybreak tiers — is `use_responses_lite: true` with
- * `tool_mode: "code_mode_only"`, and Astra exposes `ultra`, which the catalog
- * only ever pairs with `multi_agent_version: "v2"` lite models. Defaulting
- * Astra to lite therefore matches every neighbour it has.
- *
- * Getting this wrong strands tool definitions in either direction, so the guess
- * is overridable: `CODEX_AUTH_ASTRA_RESPONSES_LITE=0` sends Astra the classic
- * shape, `=1` forces lite. Drop this switch and hardcode membership once a
- * catalog entry for `gpt-6-astra` lands.
- */
-function astraUsesResponsesLite(): boolean {
-	return process.env.CODEX_AUTH_ASTRA_RESPONSES_LITE?.trim() !== "0";
-}
 
 /** Header Codex sets on every responses-lite request. */
 export const RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite";
@@ -98,7 +81,6 @@ export function usesResponsesLite(model: string | undefined): boolean {
 		: trimmed;
 	const stripped = stripEffortSuffix(withoutPrefix).toLowerCase();
 	const canonical = getNormalizedModel(stripped) ?? stripped;
-	if (canonical === GPT_6_ASTRA_MODEL_ID) return astraUsesResponsesLite();
 	return RESPONSES_LITE_MODELS.has(canonical);
 }
 
