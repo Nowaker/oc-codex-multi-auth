@@ -7,6 +7,16 @@ async function createTempHome() {
 	return mkdtemp(join(tmpdir(), "oc-codex-standalone-"));
 }
 
+async function seedPool(home: string, accounts: unknown[]) {
+	const opencodeDir = join(home, ".opencode");
+	await mkdir(opencodeDir, { recursive: true });
+	await writeFile(
+		join(opencodeDir, "oc-codex-multi-auth-accounts.json"),
+		JSON.stringify({ version: 3, activeIndex: 0, accounts }, null, 2),
+		"utf-8",
+	);
+}
+
 describe("standalone oc-codex-multi-auth CLI commands", () => {
 	let tempHome: string | null = null;
 
@@ -53,6 +63,97 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
 		expect(output.totalAccounts).toBe(1);
 		expect(output.accounts[0].email).toBe("user....com");
+	});
+
+	it("status: the masked id suffix reveals no more than the masked accountId beside it", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "user@example.com",
+				accountId: "acct_123456789",
+				accountIdSource: "token",
+				refreshToken: "refresh-token",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["status", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const account = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])).accounts[0];
+		expect(account.accountId).toBe("acct...6789");
+		expect(account.idSuffix).toBe("6789");
+	});
+
+	it("status: --include-sensitive keeps the six-character id suffix the other surfaces print", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "user@example.com",
+				accountId: "acct_123456789",
+				accountIdSource: "token",
+				refreshToken: "refresh-token",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["status", "--json", "--include-sensitive"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const account = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])).accounts[0];
+		expect(account.accountId).toBe("acct_123456789");
+		expect(account.idSuffix).toBe("456789");
+	});
+
+	it("list: the masked id suffix still separates two accounts that share an email", async () => {
+		// A masked row must still say which account it is. One subscription can
+		// hold several workspaces under a single email, so with no suffix at
+		// all these two rows read identically.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "dup@example.com",
+				accountId: "acct_0000000000aaaa",
+				accountIdSource: "token",
+				refreshToken: "refresh-a",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+			{
+				email: "dup@example.com",
+				accountId: "acct_0000000000bbbb",
+				accountIdSource: "token",
+				refreshToken: "refresh-b",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["list"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const identities = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.startsWith("- ["))
+			.map((line) => line.slice(line.indexOf("("), line.indexOf(")") + 1));
+
+		expect(identities).toHaveLength(2);
+		expect(identities[0]).toBe("(dup@....com, id:aaaa)");
+		expect(identities[1]).toBe("(dup@....com, id:bbbb)");
 	});
 
 	it("rejects unknown positional commands instead of installing", async () => {

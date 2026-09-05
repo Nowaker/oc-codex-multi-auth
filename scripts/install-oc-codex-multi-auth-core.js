@@ -337,6 +337,17 @@ function maskValue(value, includeSensitive) {
 	return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
+// Six characters when the id is shown in full, matching what the
+// in-conversation surfaces print as `id:`. Four when it is masked, which is
+// the tail `maskValue` discloses as `accountId` in the same payload, so the
+// printed identity never reveals more of an id than the field beside it.
+function accountIdSuffix(accountId, includeSensitive) {
+	const trimmed = typeof accountId === "string" ? accountId.trim() : "";
+	if (!trimmed) return undefined;
+	const width = includeSensitive ? 6 : 4;
+	return trimmed.length > width ? trimmed.slice(-width) : trimmed;
+}
+
 function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
 	const normalizedTag = typeof tag === "string" ? tag.trim().toLowerCase() : "";
@@ -350,6 +361,7 @@ function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 			label: account?.accountLabel ?? `Account ${index + 1}`,
 			email: maskValue(account?.email, includeSensitive),
 			accountId: maskValue(account?.accountId, includeSensitive),
+			idSuffix: accountIdSuffix(account?.accountId, includeSensitive),
 			accountIdSource: account?.accountIdSource,
 			enabled: account?.enabled !== false,
 			hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
@@ -373,7 +385,11 @@ function printStandaloneResult(command, payload, json) {
 	console.log(`Accounts: ${payload.totalAccounts}`);
 	if (Array.isArray(payload.accounts)) {
 		for (const account of payload.accounts) {
-			console.log(`- [${account.index}] ${account.label} enabled=${account.enabled} refresh=${account.hasRefreshToken} access=${account.hasAccessToken}`);
+			const identity = [account.email, account.idSuffix ? `id:${account.idSuffix}` : undefined]
+				.filter(Boolean)
+				.join(", ");
+			const name = identity ? `${account.label} (${identity})` : account.label;
+			console.log(`- [${account.index}] ${name} enabled=${account.enabled} refresh=${account.hasRefreshToken} access=${account.hasAccessToken}`);
 		}
 	}
 	if (payload.error) console.log(`Error: ${payload.error}`);
