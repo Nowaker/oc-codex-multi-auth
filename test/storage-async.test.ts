@@ -136,6 +136,44 @@ describe("Storage Module - Async Operations", () => {
       expect(result?.activeIndex).toBe(0);
     });
 
+    it("drops an org-derived label an older build generated", () => {
+      const input = {
+        version: 3,
+        accounts: [
+          {
+            refreshToken: "token1",
+            accountLabel: "DreamHost API (role:owner) [id:c487c4]",
+            email: "personal@example.com",
+            addedAt: 1000,
+            lastUsed: 2000,
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      const result = normalizeAccountStorage(input);
+      expect(result?.accounts[0]).not.toHaveProperty("accountLabel");
+      expect(result?.accounts[0]?.email).toBe("personal@example.com");
+      expect(result?.accounts[0]?.refreshToken).toBe("token1");
+    });
+
+    it("keeps a label the user set with codex-label", () => {
+      const input = {
+        version: 3,
+        accounts: [
+          { refreshToken: "token1", accountLabel: "Work", addedAt: 1000, lastUsed: 2000 },
+          { refreshToken: "token2", accountLabel: "", addedAt: 1000, lastUsed: 2000 },
+          { refreshToken: "token3", addedAt: 1000, lastUsed: 2000 },
+        ],
+        activeIndex: 0,
+      };
+
+      const result = normalizeAccountStorage(input);
+      expect(result?.accounts[0]?.accountLabel).toBe("Work");
+      expect(result?.accounts[1]?.accountLabel).toBe("");
+      expect(result?.accounts[2]).not.toHaveProperty("accountLabel");
+    });
+
     it("preserves per-family active indices", () => {
       const input: AccountStorageV3 = {
         version: 3,

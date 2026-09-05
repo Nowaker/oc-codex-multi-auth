@@ -8,7 +8,7 @@
  */
 
 import { createLogger } from "../logger.js";
-import { extractAccountUserId } from "../auth/token-utils.js";
+import { extractAccountUserId, isGeneratedAccountLabel } from "../auth/token-utils.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { AccountStorageV2DetectionSchema } from "../schemas.js";
 import { StorageError } from "./errors.js";
@@ -32,6 +32,35 @@ import {
 const log = createLogger("storage");
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
+
+/**
+ * Drops a label an earlier build generated from an API-platform organization.
+ *
+ * Builds up to 6.17 named a ChatGPT account after an organization read from
+ * the `id_token_add_organizations` claims, storing a personal subscription as
+ * "<api org> (role:owner) [id:c487c4]". 6.18 stopped generating that label and
+ * clears it on login, since every surface prints `accountLabel` verbatim while
+ * the email and account id already render from their own fields.
+ *
+ * Login is the only thing that clears it, and a refresh token rotates for
+ * months without one, so a pool written by an older build shows the wrong
+ * organization indefinitely. Doing it here instead means the first read or
+ * write by a build that no longer generates the label drops it, with no
+ * re-authentication.
+ *
+ * Only the generated shape goes: a name set with `codex-label` carries no
+ * `[id:...]` marker, so `isGeneratedAccountLabel` reports it as the user's.
+ * That predicate also calls a blank label generated, which is why an absent
+ * or empty one returns early rather than being deleted.
+ */
+function dropStaleGeneratedLabel(account: AccountMetadataV3): AccountMetadataV3 {
+  const label = account.accountLabel;
+  if (typeof label !== "string" || !label.trim()) return account;
+  if (!isGeneratedAccountLabel(label)) return account;
+  const next = { ...account };
+  delete next.accountLabel;
+  return next;
+}
 
 /**
  * Normalizes and validates account storage data, migrating from v1 to v3 if needed.
@@ -123,9 +152,10 @@ export function normalizeAccountStorage(
   );
 
   const accountsWithMemberIdentity = validAccounts.map((account) => {
-    if (account.accountUserId?.trim()) return account;
-    const accountUserId = extractAccountUserId(account.accessToken);
-    return accountUserId ? { ...account, accountUserId } : account;
+    const named = dropStaleGeneratedLabel(account);
+    if (named.accountUserId?.trim()) return named;
+    const accountUserId = extractAccountUserId(named.accessToken);
+    return accountUserId ? { ...named, accountUserId } : named;
   });
   const deduplicatedAccounts = deduplicateAccountsForStorage(accountsWithMemberIdentity);
 
