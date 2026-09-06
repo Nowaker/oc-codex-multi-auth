@@ -624,6 +624,12 @@ export async function runLimitsCommand(parsed, options = {}) {
 			}
 			entry.planType = usage.planType;
 			entry.credits = usage.credits;
+			entry.resetCredits = usage.resetCredits
+				? {
+						...usage.resetCredits,
+						summary: usageMod.formatResetCredits(usage.resetCredits),
+					}
+				: null;
 			entry.limits = usage.limits;
 		} catch (error) {
 			// `ensureCodexUsageAccessToken` can surface a raw OAuth refresh
@@ -675,6 +681,9 @@ function printLimitsResult(payload, json) {
 		}
 		if (account.planType) console.log(`  Plan: ${account.planType}`);
 		if (account.credits) console.log(`  Credits: ${account.credits}`);
+		if (account.resetCredits && account.resetCredits.available > 0) {
+			console.log(`  Resets: ${account.resetCredits.summary}`);
+		}
 	}
 	if (payload.nextAction) console.log(`Next: ${payload.nextAction}`);
 }
