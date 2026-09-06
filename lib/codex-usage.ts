@@ -50,6 +50,11 @@ export type UsageCredits = {
 	balance?: string | null;
 } | null;
 
+export type UsageResetCredits = {
+	available_count?: number;
+	applicable_available_count?: number;
+} | null;
+
 export type UsagePayload = {
 	plan_type?: string;
 	rate_limit?: UsageRateLimit;
@@ -60,6 +65,7 @@ export type UsagePayload = {
 		rate_limit?: UsageRateLimit;
 	}> | null;
 	credits?: UsageCredits;
+	rate_limit_reset_credits?: UsageResetCredits;
 };
 
 export type UsageLimitPayload = {
@@ -76,9 +82,15 @@ export type AdditionalUsageLimit = {
 	window: LimitWindow;
 };
 
+export type ResetCreditCounts = {
+	available: number;
+	applicableNow: number;
+};
+
 export type CodexUsageSummary = {
 	planType: string | null;
 	credits: string | null;
+	resetCredits: ResetCreditCounts | null;
 	primary: LimitWindow;
 	secondary: LimitWindow;
 	codeReview: LimitWindow;
@@ -233,6 +245,46 @@ export function formatUsageCredits(
 	}
 	if (credits.has_credits) return "available";
 	return undefined;
+}
+
+function toResetCreditCount(value: unknown): number | null {
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+		return null;
+	}
+	return Math.trunc(value);
+}
+
+/**
+ * Read the redeemable rate-limit resets the usage response already carries.
+ *
+ * These are a different currency from `credits`, and an account routinely
+ * holds both readings at once: a spent purchase balance alongside banked
+ * resets. Reporting only `credits` therefore says "you have nothing" while a
+ * full reset is waiting to be redeemed.
+ *
+ * `applicable_available_count` is the subset redeemable right now, which is
+ * smaller than the banked count whenever no window is exhausted yet. A
+ * response that omits it predates the field rather than reporting zero, so it
+ * defaults to the banked count - defaulting to zero would report every banked
+ * reset as unusable.
+ */
+export function parseUsageResetCredits(
+	source: UsageResetCredits | undefined,
+): ResetCreditCounts | null {
+	if (typeof source !== "object" || source === null) return null;
+	const available = toResetCreditCount(source.available_count);
+	if (available === null) return null;
+	return {
+		available,
+		applicableNow:
+			toResetCreditCount(source.applicable_available_count) ?? available,
+	};
+}
+
+export function formatResetCredits(counts: ResetCreditCounts): string {
+	return counts.applicableNow === counts.available
+		? `${counts.available} banked`
+		: `${counts.available} banked (${counts.applicableNow} applicable now)`;
 }
 
 export function formatAdditionalUsageLimitName(
@@ -399,6 +451,7 @@ export function parseCodexUsagePayload(
 	return {
 		planType: source.plan_type ?? null,
 		credits: credits ?? null,
+		resetCredits: parseUsageResetCredits(source.rate_limit_reset_credits),
 		primary,
 		secondary,
 		codeReview,

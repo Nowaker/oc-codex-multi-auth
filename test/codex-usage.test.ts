@@ -450,6 +450,69 @@ describe("disabled usage windows (issue #194)", () => {
 		expect(hasUsageWindow(usage.primary)).toBe(true);
 		expect(usage.limits[0]).toMatchObject({ name: "quota limit", leftPercent: 90 });
 	});
+
+	it("reports the banked resets the usage response already carries", () => {
+		const usage = parseCodexUsagePayload({
+			plan_type: "pro",
+			rate_limit: {
+				primary_window: { used_percent: 100, limit_window_seconds: 604800 },
+			},
+			rate_limit_reset_credits: {
+				available_count: 2,
+				applicable_available_count: 2,
+			},
+		});
+
+		expect(usage.resetCredits).toEqual({ available: 2, applicableNow: 2 });
+	});
+
+	it("separates banked resets from a spent purchase balance", () => {
+		// The two are different currencies and the account below holds both
+		// readings at once: no purchase balance, two redeemable resets. Reporting
+		// only `credits` reads as "you have nothing" while a reset is waiting.
+		const usage = parseCodexUsagePayload({
+			credits: { has_credits: false, balance: "0" },
+			rate_limit_reset_credits: { available_count: 2, applicable_available_count: 2 },
+		});
+
+		expect(usage.credits).toBe("0");
+		expect(usage.resetCredits).toEqual({ available: 2, applicableNow: 2 });
+	});
+
+	it("distinguishes a banked reset that does not apply yet", () => {
+		// An account inside its quota reports the credit as banked but not
+		// applicable, because there is no exhausted window for it to clear.
+		const usage = parseCodexUsagePayload({
+			rate_limit_reset_credits: { available_count: 1, applicable_available_count: 0 },
+		});
+
+		expect(usage.resetCredits).toEqual({ available: 1, applicableNow: 0 });
+	});
+
+	it("treats absent or malformed reset-credit data as unknown", () => {
+		expect(parseCodexUsagePayload({}).resetCredits).toBeNull();
+		expect(parseCodexUsagePayload({ rate_limit_reset_credits: null }).resetCredits).toBeNull();
+		expect(
+			parseCodexUsagePayload({
+				rate_limit_reset_credits: "two" as unknown as never,
+			}).resetCredits,
+		).toBeNull();
+		expect(
+			parseCodexUsagePayload({
+				rate_limit_reset_credits: { available_count: -1 },
+			}).resetCredits,
+		).toBeNull();
+	});
+
+	it("defaults an omitted applicable count to the banked count", () => {
+		// Older responses carry only `available_count`. Treating the missing
+		// field as zero would report every banked reset as unusable.
+		const usage = parseCodexUsagePayload({
+			rate_limit_reset_credits: { available_count: 3 },
+		});
+
+		expect(usage.resetCredits).toEqual({ available: 3, applicableNow: 3 });
+	});
 });
 
 describe("Codex usage endpoint", () => {
