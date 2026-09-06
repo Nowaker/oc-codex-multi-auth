@@ -337,11 +337,15 @@ function maskValue(value, includeSensitive) {
 	return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
-// Six characters to match what the in-conversation surfaces print as `id:`.
-function accountIdSuffix(accountId) {
+// Six characters when the id is shown in full, matching what the
+// in-conversation surfaces print as `id:`. Four when it is masked, which is
+// the tail `maskValue` discloses as `accountId` in the same payload, so the
+// printed identity never reveals more of an id than the field beside it.
+function accountIdSuffix(accountId, includeSensitive) {
 	const trimmed = typeof accountId === "string" ? accountId.trim() : "";
 	if (!trimmed) return undefined;
-	return trimmed.length > 6 ? trimmed.slice(-6) : trimmed;
+	const width = includeSensitive ? 6 : 4;
+	return trimmed.length > width ? trimmed.slice(-width) : trimmed;
 }
 
 function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
@@ -357,7 +361,7 @@ function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 			label: account?.accountLabel ?? `Account ${index + 1}`,
 			email: maskValue(account?.email, includeSensitive),
 			accountId: maskValue(account?.accountId, includeSensitive),
-			idSuffix: accountIdSuffix(account?.accountId),
+			idSuffix: accountIdSuffix(account?.accountId, includeSensitive),
 			accountIdSource: account?.accountIdSource,
 			enabled: account?.enabled !== false,
 			hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
