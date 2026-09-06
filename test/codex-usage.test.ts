@@ -513,6 +513,37 @@ describe("disabled usage windows (issue #194)", () => {
 
 		expect(usage.resetCredits).toEqual({ available: 3, applicableNow: 3 });
 	});
+
+	it("reads a null applicable count as the omission it is", () => {
+		// JSON's way of saying "not provided", and this endpoint does send it -
+		// `secondary_window` arrives as a literal null on single-window plans.
+		// A fix that defaults only on `undefined` would treat it as a stated
+		// value, find it unreadable, and hide three real banked resets.
+		const usage = parseCodexUsagePayload({
+			rate_limit_reset_credits: {
+				available_count: 3,
+				applicable_available_count: null,
+			},
+		});
+
+		expect(usage.resetCredits).toEqual({ available: 3, applicableNow: 3 });
+	});
+
+	it("reports nothing when the applicable count is stated but cannot be true", () => {
+		const unreadable = (applicable: unknown) =>
+			parseCodexUsagePayload({
+				rate_limit_reset_credits: {
+					available_count: 2,
+					applicable_available_count: applicable as number,
+				},
+			}).resetCredits;
+
+		expect(unreadable(-1)).toBeNull();
+		expect(unreadable(Number.NaN)).toBeNull();
+		expect(unreadable("1")).toBeNull();
+		// A subset cannot outnumber the set it is drawn from.
+		expect(unreadable(3)).toBeNull();
+	});
 });
 
 describe("Codex usage endpoint", () => {

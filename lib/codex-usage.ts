@@ -51,8 +51,8 @@ export type UsageCredits = {
 } | null;
 
 export type UsageResetCredits = {
-	available_count?: number;
-	applicable_available_count?: number;
+	available_count?: number | null;
+	applicable_available_count?: number | null;
 } | null;
 
 export type UsagePayload = {
@@ -266,7 +266,15 @@ function toResetCreditCount(value: unknown): number | null {
  * smaller than the banked count whenever no window is exhausted yet. A
  * response that omits it predates the field rather than reporting zero, so it
  * defaults to the banked count - defaulting to zero would report every banked
- * reset as unusable.
+ * reset as unusable. Omitted means absent OR null: this endpoint sends a
+ * literal JSON null for a field it has no value for, which is how
+ * `secondary_window` arrives on every single-window plan.
+ *
+ * A count the server did state and this code cannot read is a different thing,
+ * and defaulting it would invent an answer. A negative, non-numeric or
+ * larger-than-banked applicable count makes the whole reading unknown rather
+ * than fully applicable, because over-reporting sends someone to redeem a
+ * credit that is not there.
  */
 export function parseUsageResetCredits(
 	source: UsageResetCredits | undefined,
@@ -274,11 +282,14 @@ export function parseUsageResetCredits(
 	if (typeof source !== "object" || source === null) return null;
 	const available = toResetCreditCount(source.available_count);
 	if (available === null) return null;
-	return {
-		available,
-		applicableNow:
-			toResetCreditCount(source.applicable_available_count) ?? available,
-	};
+
+	const stated = source.applicable_available_count;
+	if (stated === undefined || stated === null) {
+		return { available, applicableNow: available };
+	}
+	const applicableNow = toResetCreditCount(stated);
+	if (applicableNow === null || applicableNow > available) return null;
+	return { available, applicableNow };
 }
 
 export function formatResetCredits(counts: ResetCreditCounts): string {
