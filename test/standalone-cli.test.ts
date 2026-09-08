@@ -209,10 +209,10 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		expect(rows[1]).toContain("Work [id:mine] (work....com, id:cdef)");
 	});
 
-	it("list: replaces an email too short to mask instead of printing it", async () => {
+	it("list: replaces a value the head/tail mask cannot conceal", async () => {
 		// `doctor` and friends share this printer and are what users paste
-		// into issues. A head/tail mask has no room in eight characters, so
-		// the value is replaced outright rather than returned verbatim.
+		// into issues. `first4...last4` conceals nothing below thirteen
+		// characters, and padding must not clear the cutoff on its own.
 		vi.resetModules();
 		tempHome = await createTempHome();
 		await seedPool(tempHome, [
@@ -221,6 +221,14 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 				accountId: "acct_0000abcdef",
 				accountIdSource: "token",
 				refreshToken: "refresh-a",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+			{
+				email: "  me@x.io12  ",
+				accountId: "acct_0000abcdef",
+				accountIdSource: "token",
+				refreshToken: "refresh-b",
 				addedAt: 1000,
 				lastUsed: 2000,
 			},
@@ -238,6 +246,37 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 
 		expect(rows[0]).toContain("(*****, id:cdef)");
 		expect(rows[0]).not.toContain("me@x.io");
+		expect(rows[1]).toContain("(*****, id:cdef)");
+		expect(rows[1]).not.toContain("me@x");
+	});
+
+	it("status: omits the id suffix when the account id was masked outright", async () => {
+		// The suffix is only safe because it reveals no more than the masked
+		// `accountId` printed beside it. When that field is `*****`, four raw
+		// characters of a short id can be the entire id.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "user@example.com",
+				accountId: "ab12cd",
+				accountIdSource: "token",
+				refreshToken: "refresh-token",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["status", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const account = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])).accounts[0];
+		expect(account.accountId).toBe("*****");
+		expect(account.idSuffix).toBeUndefined();
+		expect(JSON.stringify(account)).not.toContain("12cd");
 	});
 
 	it("rejects unknown positional commands instead of installing", async () => {

@@ -357,26 +357,37 @@ function normalizeStandaloneStorage(storage) {
 	};
 }
 
-// A short value has no room for a head/tail mask, and `doctor` output is the
-// thing users paste into issues, so it is replaced outright rather than
-// returned verbatim: an email such as `me@x.io` is eight characters and would
-// otherwise print in full wherever masking is supposed to be on.
+const MASKED_VALUE = "*****";
+// The head/tail mask keeps eight characters, so it conceals nothing worth
+// concealing below thirteen: `me@x.io` would print in full and `me@x.io12`
+// all but its middle character. `doctor` output is what users paste into
+// issues, so anything shorter is replaced outright instead. Input is trimmed
+// first, or `" me@x.io "` clears the cutoff on padding alone and drops back
+// into the partial mask.
+const MASK_MIN_LENGTH = 13;
+
 function maskValue(value, includeSensitive) {
-	if (includeSensitive || typeof value !== "string" || !value) return value;
-	if (value.length <= 8) return "*****";
-	return `${value.slice(0, 4)}...${value.slice(-4)}`;
+	if (includeSensitive || typeof value !== "string") return value;
+	const trimmed = value.trim();
+	if (!trimmed) return trimmed;
+	if (trimmed.length < MASK_MIN_LENGTH) return MASKED_VALUE;
+	return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
 
 // Six characters when the id is shown in full, matching what the
-// in-conversation surfaces print as `id:`. Four when it is masked, which is
-// the tail `maskValue` discloses as `accountId` in the same payload, so the
-// printed identity never reveals more of an id than the field beside it.
-// Both read the same normalized id, or a trailing space would shift
-// `maskValue`'s window and disclose one character more than this suffix.
+// in-conversation surfaces print as `id:`. Four when it is head/tail masked,
+// which is the tail `maskValue` already discloses as `accountId` in the same
+// payload, so the printed identity never reveals more of an id than the field
+// beside it. Nothing at all when the id was too short for that mask: the
+// `accountId` next to it is then `*****`, and four raw characters of a short
+// id can be the whole id.
 function accountIdSuffix(accountId, includeSensitive) {
 	if (!accountId) return undefined;
-	const width = includeSensitive ? 6 : 4;
-	return accountId.length > width ? accountId.slice(-width) : accountId;
+	if (includeSensitive) {
+		return accountId.length > 6 ? accountId.slice(-6) : accountId;
+	}
+	if (accountId.length < MASK_MIN_LENGTH) return undefined;
+	return accountId.slice(-4);
 }
 
 function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
