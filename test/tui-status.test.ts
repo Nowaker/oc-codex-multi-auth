@@ -182,25 +182,35 @@ describe("TUI prompt status helpers", () => {
 	});
 
 	it("adds reset time to compact status only when quota is low", () => {
-		const resetStatus = formatPromptStatusText({
-			quota: {
-				...quota,
-				limits: [
-					{ label: "5h", leftPercent: 8, resetAtMs: Date.now() + 60_000 },
-					{ label: "7d", leftPercent: 83 },
-				],
-			},
-			width: 120,
-		});
-
-		expect(resetStatus).toMatch(/5h 8% resets \d{2}:\d{2}/);
-		expect(resetStatus).toContain("7d 83%");
-		expect(
-			formatPromptStatusText({
-				quota,
+		// Pinned to midday. On the real clock a reset one minute out lands on
+		// tomorrow whenever the suite runs in the last minute before local
+		// midnight, and the day-context formatter then renders "Sat 00:00",
+		// which the leading digits below reject.
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(2026, 8, 5, 12, 0));
+		try {
+			const resetStatus = formatPromptStatusText({
+				quota: {
+					...quota,
+					limits: [
+						{ label: "5h", leftPercent: 8, resetAtMs: Date.now() + 60_000 },
+						{ label: "7d", leftPercent: 83 },
+					],
+				},
 				width: 120,
-			}),
-		).not.toContain("resets");
+			});
+
+			expect(resetStatus).toMatch(/5h 8% resets \d{2}:\d{2}/);
+			expect(resetStatus).toContain("7d 83%");
+			expect(
+				formatPromptStatusText({
+					quota,
+					width: 120,
+				}),
+			).not.toContain("resets");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("formats quota details for the command dialog", () => {
@@ -368,6 +378,28 @@ describe("formatResetTime day context", () => {
 		vi.useRealTimers();
 	});
 
+	it("keeps an unknown width inside the narrowest terminal it stands in for", () => {
+		// The renderer reports no width during an early render or from a
+		// detached renderer, and this branch also covers a 40-column
+		// terminal. A budget wider than that wraps the line and pushes the
+		// prompt, with nothing here able to detect it happened.
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 1,
+				accountCount: 3,
+				accountEmail: "someone@student.university.edu",
+				limits: [
+					{ label: "5h", leftPercent: 8, resetAtMs: new Date(2026, 8, 15, 2, 25).getTime() },
+					{ label: "7d", leftPercent: 83 },
+				],
+			},
+		});
+
+		expect(out.length).toBeLessThanOrEqual(32);
+		expect(out).not.toBe("");
+	});
+
 	it("keeps time-only format for same-day resets", () => {
 		const out = formatPromptStatusText({
 			quota: {
@@ -407,9 +439,12 @@ describe("formatResetTime day context", () => {
 		expect(out).toBe(`7d 0% resets ${dateLabel} ${timeLabel(2, 25)}`);
 	});
 
-	it("uses absolute date at exactly seven calendar days across DST (America/New_York)", () => {
-		// 2026-03-02 -> 2026-03-09 is seven calendar days but 167 hours in
-		// America/New_York; a millisecond division would misread it as six.
+	it("uses absolute date at exactly seven calendar days over a DST weekend", () => {
+		// 2026-03-02 -> 2026-03-09 is seven calendar days. In a zone that
+		// springs forward that weekend (America/New_York among them) the same
+		// gap is 167 hours, and a millisecond division reads it as six days
+		// and renders "Mon", repeating today's weekday. The assertion holds in
+		// any zone; it only exercises the DST path when the runner is in one.
 		vi.setSystemTime(new Date(2026, 2, 2, 12, 0));
 		const reset = new Date(2026, 2, 9, 2, 25);
 		const expected = `${reset.toLocaleDateString(undefined, { month: "short", day: "2-digit" })} ${reset.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}`;
