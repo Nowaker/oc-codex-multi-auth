@@ -82,6 +82,38 @@ export function isGeneratedAccountLabel(label: string | undefined): boolean {
 }
 
 /**
+ * Whether a stored label is one this plugin generated for *this* account.
+ *
+ * {@link isGeneratedAccountLabel} answers a softer question - may a login
+ * replace this label - and deliberately treats any trailing `[id:…]` as
+ * generated, because the worst case there is that a login overwrites a name
+ * with a fresh one. Deleting a label outright is not reversible, and
+ * `codex-label` accepts any string, so `Work [id:mine]` is a name someone is
+ * allowed to have typed.
+ *
+ * Every generator here emits the account's own id suffix in that marker, so
+ * the stricter test compares it against what this account's id would produce.
+ * A label carrying an arbitrary word, someone else's suffix, or belonging to
+ * an account with no stored id to compare against, is left alone.
+ *
+ * A user who types a label ending in their own real id suffix is
+ * indistinguishable from the generator and loses it. Nothing in the stored
+ * data separates those two cases; the alternative is deleting every
+ * `[id:…]` label, which is the strictly worse trade.
+ */
+export function isStaleGeneratedAccountLabel(
+	label: string | undefined,
+	accountId: string | undefined,
+): boolean {
+	const normalizedLabel = toStringValue(label);
+	const normalizedId = toStringValue(accountId);
+	if (!normalizedLabel || !normalizedId) return false;
+	const marker = normalizedLabel.match(GENERATED_LABEL_PATTERN)?.[0];
+	if (!marker) return false;
+	return marker === ` [id:${formatAccountIdSuffix(normalizedId)}]`;
+}
+
+/**
  * Extracts account ID from a JWT payload.
  */
 function extractAccountIdFromPayload(payload: JWTPayload | Record<string, unknown> | null): string | undefined {

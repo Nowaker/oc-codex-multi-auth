@@ -8,7 +8,7 @@
  */
 
 import { createLogger } from "../logger.js";
-import { extractAccountUserId } from "../auth/token-utils.js";
+import { extractAccountUserId, isStaleGeneratedAccountLabel } from "../auth/token-utils.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { AccountStorageV2DetectionSchema } from "../schemas.js";
 import { StorageError } from "./errors.js";
@@ -32,6 +32,49 @@ import {
 const log = createLogger("storage");
 
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
+
+/**
+ * Drops a label an earlier build generated from an API-platform organization.
+ *
+ * Builds up to 6.17 named a ChatGPT account after an organization read from
+ * the `id_token_add_organizations` claims, storing a personal subscription as
+ * "<api org> (role:owner) [id:c487c4]". 6.18 stopped generating that label and
+ * clears it on login, since every surface prints `accountLabel` verbatim while
+ * the email and account id already render from their own fields.
+ *
+ * Login is the only thing that clears it, and a refresh token rotates for
+ * months without one, so a pool written by an older build shows the wrong
+ * organization indefinitely. Doing it here instead means the first read or
+ * write by a build that no longer generates the label drops it, with no
+ * re-authentication.
+ *
+ * Only the generated shape goes. `isStaleGeneratedAccountLabel` requires the
+ * trailing `[id:…]` marker to hold this account's own id suffix, which is what
+ * every generator here emits, so a name someone typed with `codex-label` is
+ * left alone even when it happens to end in `[id:mine]`. Deleting a label has
+ * no undo, so the looser `isGeneratedAccountLabel` - which governs whether a
+ * login may *replace* a label - is deliberately not the predicate used here.
+ *
+ * This runs on every read and write rather than once behind a storage-version
+ * bump: v3 carries no marker to gate on, and adding one would mean a v4
+ * migration for a check that is a single regex per account and idempotent
+ * once the label is gone. The cost of retiring it later is a code deletion,
+ * not a data migration.
+ */
+function dropStaleGeneratedLabel(account: AccountMetadataV3): AccountMetadataV3 {
+  const label = account.accountLabel;
+  if (typeof label !== "string" || !label.trim()) return account;
+  if (!isStaleGeneratedAccountLabel(label, account.accountId)) return account;
+  const next = { ...account };
+  delete next.accountLabel;
+  // A user-visible field is disappearing, so say so: without this an account
+  // renaming itself from "DreamHost API (role:owner) [id:c487c4]" to
+  // "Account 1" leaves nothing behind to diagnose.
+  log.info("dropping stale generated account label", {
+    accountIdSuffix: account.accountId?.slice(-6),
+  });
+  return next;
+}
 
 /**
  * Normalizes and validates account storage data, migrating from v1 to v3 if needed.
@@ -123,9 +166,10 @@ export function normalizeAccountStorage(
   );
 
   const accountsWithMemberIdentity = validAccounts.map((account) => {
-    if (account.accountUserId?.trim()) return account;
-    const accountUserId = extractAccountUserId(account.accessToken);
-    return accountUserId ? { ...account, accountUserId } : account;
+    const named = dropStaleGeneratedLabel(account);
+    if (named.accountUserId?.trim()) return named;
+    const accountUserId = extractAccountUserId(named.accessToken);
+    return accountUserId ? { ...named, accountUserId } : named;
   });
   const deduplicatedAccounts = deduplicateAccountsForStorage(accountsWithMemberIdentity);
 

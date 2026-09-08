@@ -307,6 +307,29 @@ function mergeStandaloneAccounts(target, source) {
 	return mergeStandaloneAccounts(source, target);
 }
 
+// Mirror of `isStaleGeneratedAccountLabel` / `dropStaleGeneratedLabel` in
+// lib/auth/token-utils.ts and lib/storage/normalize.ts. The standalone CLI
+// reads the pool through this normalizer and never through the compiled
+// `normalizeAccountStorage`, so without the mirror `status`, `list`, `health`,
+// `doctor` and `dashboard` keep printing the org-derived label the plugin
+// itself now drops - next to the account id, which is the identity the label
+// was misnaming. The marker must hold this account's own id suffix so a name
+// set with `codex-label` survives.
+const GENERATED_LABEL_PATTERN = /\s\[id:[^\]]*\]$/;
+
+function dropStaleStandaloneLabel(account) {
+	const label = typeof account?.accountLabel === "string" ? account.accountLabel.trim() : "";
+	const accountId = typeof account?.accountId === "string" ? account.accountId.trim() : "";
+	if (!label || !accountId) return account;
+	const marker = label.match(GENERATED_LABEL_PATTERN)?.[0];
+	if (!marker) return account;
+	const suffix = accountId.length > 6 ? accountId.slice(-6) : accountId;
+	if (marker !== ` [id:${suffix}]`) return account;
+	const next = { ...account };
+	delete next.accountLabel;
+	return next;
+}
+
 function normalizeStandaloneStorage(storage) {
 	if (!Array.isArray(storage.accounts)) return storage;
 	const accounts = [...storage.accounts];
@@ -324,7 +347,9 @@ function normalizeStandaloneStorage(storage) {
 			if (sourceIndex === i) break;
 		}
 	}
-	const normalizedAccounts = accounts.filter((_, index) => !removed.has(index));
+	const normalizedAccounts = accounts
+		.filter((_, index) => !removed.has(index))
+		.map(dropStaleStandaloneLabel);
 	return {
 		...storage,
 		accounts: normalizedAccounts,
@@ -332,9 +357,37 @@ function normalizeStandaloneStorage(storage) {
 	};
 }
 
+const MASKED_VALUE = "*****";
+// The head/tail mask keeps eight characters, so it conceals nothing worth
+// concealing below thirteen: `me@x.io` would print in full and `me@x.io12`
+// all but its middle character. `doctor` output is what users paste into
+// issues, so anything shorter is replaced outright instead. Input is trimmed
+// first, or `" me@x.io "` clears the cutoff on padding alone and drops back
+// into the partial mask.
+const MASK_MIN_LENGTH = 13;
+
 function maskValue(value, includeSensitive) {
-	if (includeSensitive || typeof value !== "string" || value.length <= 8) return value;
-	return `${value.slice(0, 4)}...${value.slice(-4)}`;
+	if (includeSensitive || typeof value !== "string") return value;
+	const trimmed = value.trim();
+	if (!trimmed) return trimmed;
+	if (trimmed.length < MASK_MIN_LENGTH) return MASKED_VALUE;
+	return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+
+// Six characters when the id is shown in full, matching what the
+// in-conversation surfaces print as `id:`. Four when it is head/tail masked,
+// which is the tail `maskValue` already discloses as `accountId` in the same
+// payload, so the printed identity never reveals more of an id than the field
+// beside it. Nothing at all when the id was too short for that mask: the
+// `accountId` next to it is then `*****`, and four raw characters of a short
+// id can be the whole id.
+function accountIdSuffix(accountId, includeSensitive) {
+	if (!accountId) return undefined;
+	if (includeSensitive) {
+		return accountId.length > 6 ? accountId.slice(-6) : accountId;
+	}
+	if (accountId.length < MASK_MIN_LENGTH) return undefined;
+	return accountId.slice(-4);
 }
 
 function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
@@ -345,21 +398,27 @@ function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 		.filter(({ account }) => !normalizedTag ||
 			(Array.isArray(account?.accountTags) &&
 				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)))
-		.map(({ account, index }) => ({
-			index,
-			label: account?.accountLabel ?? `Account ${index + 1}`,
-			email: maskValue(account?.email, includeSensitive),
-			accountId: maskValue(account?.accountId, includeSensitive),
-			accountIdSource: account?.accountIdSource,
-			enabled: account?.enabled !== false,
-			hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
-			hasAccessToken: typeof account?.accessToken === "string" && account.accessToken.length > 0,
-			expiresAt: account?.expiresAt,
-			expired: typeof account?.expiresAt === "number" ? account.expiresAt <= Date.now() : undefined,
-			tags: Array.isArray(account?.accountTags) ? account.accountTags : [],
-			note: account?.accountNote,
-			rateLimitResetTimes: account?.rateLimitResetTimes ?? {},
-		}));
+		.map(({ account, index }) => {
+			const trimmedId =
+				typeof account?.accountId === "string" ? account.accountId.trim() : "";
+			const accountId = trimmedId || undefined;
+			return {
+				index,
+				label: account?.accountLabel ?? `Account ${index + 1}`,
+				email: maskValue(account?.email, includeSensitive),
+				accountId: maskValue(accountId, includeSensitive),
+				idSuffix: accountIdSuffix(accountId, includeSensitive),
+				accountIdSource: account?.accountIdSource,
+				enabled: account?.enabled !== false,
+				hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
+				hasAccessToken: typeof account?.accessToken === "string" && account.accessToken.length > 0,
+				expiresAt: account?.expiresAt,
+				expired: typeof account?.expiresAt === "number" ? account.expiresAt <= Date.now() : undefined,
+				tags: Array.isArray(account?.accountTags) ? account.accountTags : [],
+				note: account?.accountNote,
+				rateLimitResetTimes: account?.rateLimitResetTimes ?? {},
+			};
+		});
 }
 
 function printStandaloneResult(command, payload, json) {
@@ -373,7 +432,11 @@ function printStandaloneResult(command, payload, json) {
 	console.log(`Accounts: ${payload.totalAccounts}`);
 	if (Array.isArray(payload.accounts)) {
 		for (const account of payload.accounts) {
-			console.log(`- [${account.index}] ${account.label} enabled=${account.enabled} refresh=${account.hasRefreshToken} access=${account.hasAccessToken}`);
+			const identity = [account.email, account.idSuffix ? `id:${account.idSuffix}` : undefined]
+				.filter(Boolean)
+				.join(", ");
+			const name = identity ? `${account.label} (${identity})` : account.label;
+			console.log(`- [${account.index}] ${name} enabled=${account.enabled} refresh=${account.hasRefreshToken} access=${account.hasAccessToken}`);
 		}
 	}
 	if (payload.error) console.log(`Error: ${payload.error}`);
