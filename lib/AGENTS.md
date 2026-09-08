@@ -83,7 +83,7 @@ lib/
 | Error types | `errors.ts`, `error-sentinels.ts` | StorageError and structured sentinel errors |
 | Health monitoring | `health.ts` | account health status |
 | Account display / masking | `account-display.ts` | label-preferred rendering, `maskEmail` behavior |
-| Reset credits | `codex-reset.ts` | banked rate-limit reset credit list/redeem |
+| Reset credits | `codex-reset.ts`, `codex-usage.ts` | banked rate-limit reset credit list/redeem; `codex-usage.ts` reads the same counts off the usage endpoint for `codex-limits`, sharing `normalizeResetCreditCount` so both agree |
 | Parallel probes | `parallel-probe.ts` | concurrent health checks |
 | Runtime helpers | `runtime.ts` | routing visibility, metrics, pure helper types |
 | Graceful shutdown | `shutdown.ts` | cleanup on exit |

@@ -86,6 +86,25 @@ function toTrimmedString(value: unknown): string | null {
 }
 
 /**
+ * Read a reset-credit counter the server stated.
+ *
+ * A count is a whole number of redeemable resets, so a negative, fractional,
+ * non-finite or non-numeric value is a payload this code cannot read rather
+ * than a zero: truncating `1.9` to `1` would silently paper over a malformed
+ * response. Returning `null` leaves the fallback to each caller, which is why
+ * the two reset-credit surfaces stay consistent about what "sane" means
+ * without sharing a fallback policy they do not agree on. The list endpoint
+ * below derives the count from the credits it also sent; the usage endpoint,
+ * which sends no list, reports the count as unknown.
+ */
+export function normalizeResetCreditCount(value: unknown): number | null {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+		return null;
+	}
+	return value;
+}
+
+/**
  * Normalize the list response.
  *
  * Credits without an `id` are dropped: an id is required to redeem, so an
@@ -113,11 +132,9 @@ export function parseCodexResetCredits(
 		});
 	}
 
-	const reported = payload.available_count;
 	const availableCount =
-		typeof reported === "number" && Number.isFinite(reported) && reported >= 0
-			? Math.trunc(reported)
-			: credits.filter((credit) => credit.isAvailable).length;
+		normalizeResetCreditCount(payload.available_count) ??
+		credits.filter((credit) => credit.isAvailable).length;
 
 	return { availableCount, credits };
 }

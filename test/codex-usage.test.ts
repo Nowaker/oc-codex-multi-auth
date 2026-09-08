@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
 	deduplicateUsageAccountIndices,
 	fetchCodexUsage,
+	formatResetCredits,
 	formatUsageLimitSummary,
 	formatUsageReset,
 	getUsageQuotaExhaustedResetAtMs,
@@ -529,7 +530,11 @@ describe("disabled usage windows (issue #194)", () => {
 		expect(usage.resetCredits).toEqual({ available: 3, applicableNow: 3 });
 	});
 
-	it("reports nothing when the applicable count is stated but cannot be true", () => {
+	it("keeps the banked count when the applicable count cannot be true", () => {
+		// The two counts are separate fields. An unreadable applicable count
+		// says nothing about the banked total that arrived beside it, and
+		// dropping both would print "Credits: 0" over two real resets while
+		// `codex-reset` reports them from the list endpoint.
 		const unreadable = (applicable: unknown) =>
 			parseCodexUsagePayload({
 				rate_limit_reset_credits: {
@@ -538,11 +543,34 @@ describe("disabled usage windows (issue #194)", () => {
 				},
 			}).resetCredits;
 
-		expect(unreadable(-1)).toBeNull();
-		expect(unreadable(Number.NaN)).toBeNull();
-		expect(unreadable("1")).toBeNull();
+		expect(unreadable(-1)).toEqual({ available: 2, applicableNow: null });
+		expect(unreadable(Number.NaN)).toEqual({ available: 2, applicableNow: null });
+		expect(unreadable("1")).toEqual({ available: 2, applicableNow: null });
 		// A subset cannot outnumber the set it is drawn from.
-		expect(unreadable(3)).toBeNull();
+		expect(unreadable(3)).toEqual({ available: 2, applicableNow: null });
+		// A count is a whole number of resets: truncating 1.9 to 1 would hide
+		// a malformed payload behind a plausible-looking answer.
+		expect(unreadable(1.9)).toEqual({ available: 2, applicableNow: null });
+	});
+
+	it("rejects a fractional banked count outright", () => {
+		// No second field to fall back on here, so an unreadable banked count
+		// makes the whole reading unknown rather than a truncated guess.
+		expect(
+			parseCodexUsagePayload({
+				rate_limit_reset_credits: { available_count: 0.9 },
+			}).resetCredits,
+		).toBeNull();
+	});
+
+	it("says which banked resets can be redeemed right now", () => {
+		expect(formatResetCredits({ available: 2, applicableNow: 2 })).toBe("2 banked");
+		expect(formatResetCredits({ available: 2, applicableNow: 1 })).toBe(
+			"2 banked (1 applicable now)",
+		);
+		expect(formatResetCredits({ available: 2, applicableNow: null })).toBe(
+			"2 banked (applicable now unknown)",
+		);
 	});
 });
 
