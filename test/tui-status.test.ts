@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
 	formatPromptStatusText,
@@ -10,16 +10,17 @@ import {
 	type PromptStatusMessage,
 } from "../lib/tui-status.js";
 
+const sep = ` ${String.fromCharCode(183)} `;
+const quota: CompactQuotaStatus = {
+	type: "ready",
+	limits: [
+		{ label: "5h", leftPercent: 88 },
+		{ label: "7d", leftPercent: 83 },
+	],
+	stale: false,
+};
+
 describe("TUI prompt status helpers", () => {
-	const sep = ` ${String.fromCharCode(183)} `;
-	const quota: CompactQuotaStatus = {
-		type: "ready",
-		limits: [
-			{ label: "5h", leftPercent: 88 },
-			{ label: "7d", leftPercent: 83 },
-		],
-		stale: false,
-	};
 
 	it("formats prompt status text from supplied quota labels", () => {
 		expect(
@@ -181,25 +182,35 @@ describe("TUI prompt status helpers", () => {
 	});
 
 	it("adds reset time to compact status only when quota is low", () => {
-		const resetStatus = formatPromptStatusText({
-			quota: {
-				...quota,
-				limits: [
-					{ label: "5h", leftPercent: 8, resetAtMs: Date.now() + 60_000 },
-					{ label: "7d", leftPercent: 83 },
-				],
-			},
-			width: 120,
-		});
-
-		expect(resetStatus).toMatch(/5h 8% resets \d{2}:\d{2}/);
-		expect(resetStatus).toContain("7d 83%");
-		expect(
-			formatPromptStatusText({
-				quota,
+		// Pinned to midday. On the real clock a reset one minute out lands on
+		// tomorrow whenever the suite runs in the last minute before local
+		// midnight, and the day-context formatter then renders "Sat 00:00",
+		// which the leading digits below reject.
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(2026, 8, 5, 12, 0));
+		try {
+			const resetStatus = formatPromptStatusText({
+				quota: {
+					...quota,
+					limits: [
+						{ label: "5h", leftPercent: 8, resetAtMs: Date.now() + 60_000 },
+						{ label: "7d", leftPercent: 83 },
+					],
+				},
 				width: 120,
-			}),
-		).not.toContain("resets");
+			});
+
+			expect(resetStatus).toMatch(/5h 8% resets \d{2}:\d{2}/);
+			expect(resetStatus).toContain("7d 83%");
+			expect(
+				formatPromptStatusText({
+					quota,
+					width: 120,
+				}),
+			).not.toContain("resets");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("formats quota details for the command dialog", () => {
@@ -333,5 +344,117 @@ describe("TUI prompt status helpers", () => {
 		};
 
 		expect(resolvePromptReasoningVariant({ config })).toBe("xhigh");
+	});
+});
+
+describe("formatResetTime day context", () => {
+	// Fake timers freeze both Date.now() and new Date() so the formatter's
+	// "now" and the fixed reset timestamps land on deterministic dates.
+	const now = new Date(2026, 8, 5, 12, 0); // 2026-09-05T12:00 local
+	// Expected labels are derived from the runtime's own Intl formatting so
+	// the assertions hold under any default locale.
+	const weekdayLabel = new Date(2026, 8, 8, 2, 25).toLocaleDateString(
+		undefined,
+		{ weekday: "short" },
+	);
+	const dateLabel = new Date(2026, 8, 15, 2, 25).toLocaleDateString(undefined, {
+		month: "short",
+		day: "2-digit",
+	});
+	const timeLabel = (h: number, m: number) =>
+		new Date(2026, 8, 5, h, m)
+			.toLocaleTimeString(undefined, {
+				hour: "2-digit",
+				minute: "2-digit",
+				hour12: false,
+			})
+			.replace(/^24/, "00");
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(now);
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("keeps an unknown width inside the narrowest terminal it stands in for", () => {
+		// The renderer reports no width during an early render or from a
+		// detached renderer, and this branch also covers a 40-column
+		// terminal. A budget wider than that wraps the line and pushes the
+		// prompt, with nothing here able to detect it happened.
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 1,
+				accountCount: 3,
+				accountEmail: "someone@student.university.edu",
+				limits: [
+					{ label: "5h", leftPercent: 8, resetAtMs: new Date(2026, 8, 15, 2, 25).getTime() },
+					{ label: "7d", leftPercent: 83 },
+				],
+			},
+		});
+
+		expect(out.length).toBeLessThanOrEqual(32);
+		expect(out).not.toBe("");
+	});
+
+	it("keeps time-only format for same-day resets", () => {
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				limits: [
+					{ label: "5h", leftPercent: 8, resetAtMs: new Date(2026, 8, 5, 18, 30).getTime() },
+				],
+			},
+			width: 120,
+		});
+		expect(out).toBe(`5h 8% resets ${timeLabel(18, 30)}`);
+	});
+
+	it("adds weekday for resets within the coming week", () => {
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				limits: [
+					{ label: "7d", leftPercent: 0, resetAtMs: new Date(2026, 8, 8, 2, 25).getTime() },
+				],
+			},
+			width: 120,
+		});
+		expect(out).toBe(`7d 0% resets ${weekdayLabel} ${timeLabel(2, 25)}`);
+	});
+
+	it("uses absolute date beyond a week", () => {
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				limits: [
+					{ label: "7d", leftPercent: 0, resetAtMs: new Date(2026, 8, 15, 2, 25).getTime() },
+				],
+			},
+			width: 120,
+		});
+		expect(out).toBe(`7d 0% resets ${dateLabel} ${timeLabel(2, 25)}`);
+	});
+
+	it("uses absolute date at exactly seven calendar days over a DST weekend", () => {
+		// 2026-03-02 -> 2026-03-09 is seven calendar days. In a zone that
+		// springs forward that weekend (America/New_York among them) the same
+		// gap is 167 hours, and a millisecond division reads it as six days
+		// and renders "Mon", repeating today's weekday. The assertion holds in
+		// any zone; it only exercises the DST path when the runner is in one.
+		vi.setSystemTime(new Date(2026, 2, 2, 12, 0));
+		const reset = new Date(2026, 2, 9, 2, 25);
+		const expected = `${reset.toLocaleDateString(undefined, { month: "short", day: "2-digit" })} ${reset.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				limits: [{ label: "7d", leftPercent: 0, resetAtMs: reset.getTime() }],
+			},
+			width: 120,
+		});
+		expect(out).toBe(`7d 0% resets ${expected}`);
 	});
 });
