@@ -9,6 +9,7 @@ import {
 	deduplicateUsageAccountIndices,
 	ensureCodexUsageAccessToken,
 	fetchCodexUsage,
+	formatResetCredits,
 	formatUsageLimitSummary,
 	formatUsageLimitTitle,
 	getUsageQuotaExhaustedResetAtMs,
@@ -243,6 +244,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						sharesActiveCredential,
 						planType: usage.planType,
 						credits: usage.credits,
+						resetCredits: usage.resetCredits,
 						limits: usage.limits,
 					});
 
@@ -275,6 +277,11 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 								`  ${formatUiKeyValue(ui, "Credits", usage.credits, "muted")}`,
 							);
 						}
+						if (usage.resetCredits && usage.resetCredits.available > 0) {
+							lines.push(
+								`  ${formatUiKeyValue(ui, "Resets", formatResetCredits(usage.resetCredits), "muted")}`,
+							);
+						}
 					} else {
 						lines.push(`${displayLabel}${activeSuffix}:`);
 						for (const window of [usage.primary, usage.secondary]) {
@@ -299,6 +306,11 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						}
 						if (usage.credits) {
 							lines.push(`  Credits: ${usage.credits}`);
+						}
+						if (usage.resetCredits && usage.resetCredits.available > 0) {
+							lines.push(
+								`  Resets: ${formatResetCredits(usage.resetCredits)}`,
+							);
 						}
 					}
 				} catch (error) {

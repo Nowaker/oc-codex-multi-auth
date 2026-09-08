@@ -687,6 +687,14 @@ export async function runLimitsCommand(parsed, options = {}) {
 			}
 			entry.planType = usage.planType;
 			entry.credits = usage.credits;
+			// Raw counts stay in `resetCredits` and the rendered line lives in
+			// its own field: embedding the English summary inside the counts
+			// object would make `--json` consumers parse presentation text to
+			// reach a number that is already beside it.
+			entry.resetCredits = usage.resetCredits;
+			entry.resetCreditsSummary = usage.resetCredits
+				? usageMod.formatResetCredits(usage.resetCredits)
+				: null;
 			entry.limits = usage.limits;
 		} catch (error) {
 			// `ensureCodexUsageAccessToken` can surface a raw OAuth refresh
@@ -738,6 +746,9 @@ function printLimitsResult(payload, json) {
 		}
 		if (account.planType) console.log(`  Plan: ${account.planType}`);
 		if (account.credits) console.log(`  Credits: ${account.credits}`);
+		if (account.resetCredits && account.resetCredits.available > 0) {
+			console.log(`  Resets: ${account.resetCreditsSummary}`);
+		}
 	}
 	if (payload.nextAction) console.log(`Next: ${payload.nextAction}`);
 }

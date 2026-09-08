@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { extractAccountId } from "./accounts.js";
 import { extractAccountUserId } from "./auth/token-utils.js";
 import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
+import { normalizeResetCreditCount } from "./codex-reset.js";
 import { CODEX_BASE_URL, PLUGIN_NAME } from "./constants.js";
 import {
 	createDeactivatedWorkspaceError,
@@ -50,6 +51,11 @@ export type UsageCredits = {
 	balance?: string | null;
 } | null;
 
+export type UsageResetCredits = {
+	available_count?: number | null;
+	applicable_available_count?: number | null;
+} | null;
+
 export type UsagePayload = {
 	plan_type?: string;
 	rate_limit?: UsageRateLimit;
@@ -60,6 +66,7 @@ export type UsagePayload = {
 		rate_limit?: UsageRateLimit;
 	}> | null;
 	credits?: UsageCredits;
+	rate_limit_reset_credits?: UsageResetCredits;
 };
 
 export type UsageLimitPayload = {
@@ -76,9 +83,16 @@ export type AdditionalUsageLimit = {
 	window: LimitWindow;
 };
 
+export type ResetCreditCounts = {
+	available: number;
+	/** `null` when the server stated a count this code cannot read. */
+	applicableNow: number | null;
+};
+
 export type CodexUsageSummary = {
 	planType: string | null;
 	credits: string | null;
+	resetCredits: ResetCreditCounts | null;
 	primary: LimitWindow;
 	secondary: LimitWindow;
 	codeReview: LimitWindow;
@@ -233,6 +247,62 @@ export function formatUsageCredits(
 	}
 	if (credits.has_credits) return "available";
 	return undefined;
+}
+
+/**
+ * Read the redeemable rate-limit resets the usage response already carries.
+ *
+ * These are a different currency from `credits`, and an account routinely
+ * holds both readings at once: a spent purchase balance alongside banked
+ * resets. Reporting only `credits` therefore says "you have nothing" while a
+ * full reset is waiting to be redeemed.
+ *
+ * `applicable_available_count` is the subset redeemable right now, which is
+ * smaller than the banked count whenever no window is exhausted yet. A
+ * response that omits it predates the field rather than reporting zero, so it
+ * defaults to the banked count - defaulting to zero would report every banked
+ * reset as unusable. Omitted means absent OR null: this endpoint sends a
+ * literal JSON null for a field it has no value for, which is how
+ * `secondary_window` arrives on every single-window plan.
+ *
+ * A count the server did state and this code cannot read is a different thing,
+ * and defaulting it would invent an answer. A negative, fractional,
+ * non-numeric or larger-than-banked applicable count therefore reports
+ * `applicableNow: null`, because over-reporting sends someone to redeem a
+ * credit that is not there.
+ *
+ * Only `applicableNow` goes unknown, not the whole reading: the banked count
+ * is a separate field that arrived intact, and dropping it would print
+ * "Credits: 0" while a full reset waits to be redeemed - the exact failure
+ * this function exists to fix. `codex-reset` reads the same banked total from
+ * the list endpoint, so discarding it here would also make the two surfaces
+ * disagree about the same account in the same session.
+ */
+export function parseUsageResetCredits(
+	source: UsageResetCredits | undefined,
+): ResetCreditCounts | null {
+	if (typeof source !== "object" || source === null) return null;
+	const available = normalizeResetCreditCount(source.available_count);
+	if (available === null) return null;
+
+	const stated = source.applicable_available_count;
+	if (stated === undefined || stated === null) {
+		return { available, applicableNow: available };
+	}
+	const applicableNow = normalizeResetCreditCount(stated);
+	if (applicableNow === null || applicableNow > available) {
+		return { available, applicableNow: null };
+	}
+	return { available, applicableNow };
+}
+
+export function formatResetCredits(counts: ResetCreditCounts): string {
+	if (counts.applicableNow === null) {
+		return `${counts.available} banked (applicable now unknown)`;
+	}
+	return counts.applicableNow === counts.available
+		? `${counts.available} banked`
+		: `${counts.available} banked (${counts.applicableNow} applicable now)`;
 }
 
 export function formatAdditionalUsageLimitName(
@@ -399,6 +469,7 @@ export function parseCodexUsagePayload(
 	return {
 		planType: source.plan_type ?? null,
 		credits: credits ?? null,
+		resetCredits: parseUsageResetCredits(source.rate_limit_reset_credits),
 		primary,
 		secondary,
 		codeReview,
