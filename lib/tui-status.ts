@@ -388,7 +388,11 @@ function maxStatusChars(width: number | undefined): number {
 	if (width >= 96) return 52;
 	if (width >= 78) return 42;
 	if (width >= 60) return 32;
-	return 12;
+	// Clamped, not a flat 12: below twelve columns a 12-character budget is
+	// wider than the terminal itself, and the line wraps and pushes the
+	// prompt. Nothing fits at that size, and printing nothing is the correct
+	// answer rather than printing something that does not fit.
+	return Math.min(12, width);
 }
 
 export function formatPromptStatusText(params: {

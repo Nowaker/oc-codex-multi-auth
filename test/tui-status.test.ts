@@ -556,6 +556,29 @@ describe("formatResetTime day context", () => {
 		vi.useRealTimers();
 	});
 
+	it("never renders wider than the terminal, at any width", () => {
+		// The narrowest tier was a flat 12, which is wider than the terminal
+		// itself below twelve columns: a 40-column check caught the unknown-width
+		// case, but nothing covered a genuinely tiny one. Printing nothing beats
+		// printing a line that wraps and pushes the prompt.
+		const overruns: string[] = [];
+		for (let width = 1; width <= 130; width += 1) {
+			const out = formatPromptStatusText({
+				variant: "xhigh",
+				quota: {
+					...quota,
+					accountIndex: 2,
+					accountCount: 3,
+					accountEmail: "someone@eng.university.edu",
+				},
+				width,
+				maskEmail: true,
+			});
+			if (out.length > width) overruns.push(`w=${width} len=${out.length}`);
+		}
+		expect(overruns).toEqual([]);
+	});
+
 	it("keeps an unknown width inside the narrowest terminal it stands in for", () => {
 		// The renderer reports no width during an early render or from a
 		// detached renderer, and this branch also covers a 40-column
