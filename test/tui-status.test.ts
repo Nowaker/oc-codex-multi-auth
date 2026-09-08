@@ -275,11 +275,15 @@ describe("TUI prompt status helpers", () => {
 		// the flat form as a second try at the same rung, turning masking on
 		// removes the account from a 78-column line entirely - identifying the
 		// account less rather than more, which is the opposite of the point.
+		// The domain is long enough that the partial hint overruns the
+		// 78-column budget by a clear margin and fits the 120-column one with
+		// room to spare, so the two assertions do not sit on a boundary that a
+		// change to the budget table could tip.
 		const masked = {
 			...quota,
 			accountIndex: 2,
 			accountCount: 3,
-			accountEmail: "user2@example.com",
+			accountEmail: "someone@eng.university.edu",
 		};
 
 		expect(
@@ -287,7 +291,7 @@ describe("TUI prompt status helpers", () => {
 		).toBe(`[*****]${sep}5h 88%${sep}7d 83%`);
 		expect(
 			formatPromptStatusText({ quota: masked, width: 120, maskEmail: true }),
-		).toBe(`[us***@example.com]${sep}5h 88%${sep}7d 83%`);
+		).toBe(`[so***@eng.university.edu]${sep}5h 88%${sep}7d 83%`);
 	});
 
 	it("reduces a multi-address account value to one masked address", () => {
