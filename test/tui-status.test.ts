@@ -118,7 +118,7 @@ describe("TUI prompt status helpers", () => {
 				width: 120,
 				maskEmail: true,
 			}),
-		).toBe(`[*****]${sep}5h 88%${sep}7d 83%`);
+		).toBe(`[us***@example.com]${sep}5h 88%${sep}7d 83%`);
 
 		expect(
 			formatPromptStatusText({
@@ -131,7 +131,7 @@ describe("TUI prompt status helpers", () => {
 				width: 120,
 				maskEmail: true,
 			}),
-		).toBe(`[*****]${sep}5h 88%${sep}7d 83%`);
+		).toBe(`[us***@example.com]${sep}5h 88%${sep}7d 83%`);
 	});
 
 	it("preserves account email in prompt status when masking is disabled", () => {
@@ -239,6 +239,184 @@ describe("TUI prompt status helpers", () => {
 		expect(details).toContain("Updated: just now");
 	});
 
+	it("partial mask keeps accounts distinguishable in prompt status", () => {
+		const one = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 1,
+				accountCount: 3,
+				accountEmail: "javi.ortiz.1982@gmail.com",
+			},
+			width: 120,
+			maskEmail: true,
+		});
+		const two = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 2,
+				accountCount: 3,
+				accountEmail: "neil@example.com",
+			},
+			width: 120,
+			maskEmail: true,
+		});
+		expect(one).toContain("[ja***@gmail.com]");
+		expect(two).toContain("[ne***@example.com]");
+		expect(one).not.toContain("javi.ortiz.1982@gmail.com");
+	});
+
+	it("falls back to a flat mask for account values without an email pattern", () => {
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 1,
+				accountCount: 3,
+				accountEmail: "user-without-at-sign",
+			},
+			width: 120,
+			maskEmail: true,
+		});
+		expect(out).toContain("[*****]");
+		expect(out).not.toContain("user-without-at-sign");
+	});
+
+	it("falls back to the flat mask rather than dropping the account", () => {
+		// The partial hint is twelve characters longer than the flat one, and
+		// the ladder drops the account hint when a rung does not fit. Without
+		// the flat form as a second try at the same rung, turning masking on
+		// removes the account from a 78-column line entirely - identifying the
+		// account less rather than more, which is the opposite of the point.
+		// The domain is long enough that the partial hint overruns the
+		// 78-column budget by a clear margin and fits the 120-column one with
+		// room to spare, so the two assertions do not sit on a boundary that a
+		// change to the budget table could tip.
+		const masked = {
+			...quota,
+			accountIndex: 2,
+			accountCount: 3,
+			accountEmail: "someone@eng.university.edu",
+		};
+
+		expect(
+			formatPromptStatusText({ quota: masked, width: 78, maskEmail: true }),
+		).toBe(`[*****]${sep}5h 88%${sep}7d 83%`);
+		expect(
+			formatPromptStatusText({ quota: masked, width: 120, maskEmail: true }),
+		).toBe(`[so***@eng.university.edu]${sep}5h 88%${sep}7d 83%`);
+	});
+
+	it("reduces a multi-address account value to one masked address", () => {
+		// The hint is an identity for one account, so it takes the address and
+		// discards the rest rather than masking in place. Substituting in
+		// place is what would keep the second address, or a real name, beside
+		// the mask.
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 1,
+				accountCount: 3,
+				accountEmail: "alice@example.com;bob@corp.com",
+			},
+			width: 120,
+			maskEmail: true,
+		});
+		expect(out).toContain("[al***@example.com]");
+		expect(out).not.toContain("alice@example.com");
+		expect(out).not.toContain("bob@corp.com");
+	});
+
+	it("keeps no identifying text around the address it masks", () => {
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 1,
+				accountCount: 3,
+				accountEmail: "Neil Smith neil@example.com",
+			},
+			width: 120,
+			maskEmail: true,
+		});
+		expect(out).toContain("[ne***@example.com]");
+		expect(out).not.toContain("Neil Smith");
+	});
+
+	it("flattens an account value whose separator is not an address boundary", () => {
+		// `/` is not a separator the token scan splits on, so both addresses
+		// land in one match. A partial mask keeps everything after the first
+		// `@`, which here is the whole of the second address.
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 1,
+				accountCount: 3,
+				accountEmail: "alice@example.com/bob@corp.com",
+			},
+			width: 120,
+			maskEmail: true,
+		});
+		expect(out).toContain("[*****]");
+		expect(out).not.toContain("bob");
+		expect(out).not.toContain("corp.com");
+	});
+
+	it("flattens an account value that has an @ but is not an address", () => {
+		// `maskEmailForDisplay` keeps everything from the first `@` onward,
+		// which for free text is the free text.
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 1,
+				accountCount: 3,
+				accountEmail: "Team @ Acme Corp",
+			},
+			width: 120,
+			maskEmail: true,
+		});
+		expect(out).toContain("[*****]");
+		expect(out).not.toContain("Acme");
+	});
+
+	it("masks every address in a label, whatever punctuation joins them", () => {
+		// The details dialog keeps the label's structure, so masking there is
+		// in place. Each token carrying an `@` is masked on its own, and a
+		// token carrying two is flattened rather than half-masked.
+		const details = formatQuotaDetailsText(
+			{
+				...quota,
+				accountIndex: 2,
+				accountCount: 3,
+				accountEmail: "alice@example.com",
+				accountLabel: "Shared: alice@example.com;bob@corp.com and carol@x.io/dave@y.io",
+				source: "headers",
+				fetchedAt: 1_000,
+			},
+			31_000,
+			{ maskEmail: true },
+		);
+
+		expect(details).toContain("al***@example.com;bo***@corp.com");
+		expect(details).toContain("*****");
+		expect(details).not.toContain("bob@corp.com");
+		expect(details).not.toContain("carol");
+		expect(details).not.toContain("dave");
+		expect(details).not.toContain("y.io");
+	});
+
+	it("masks emails embedded in free-text account labels", () => {
+		const out = formatPromptStatusText({
+			quota: {
+				...quota,
+				accountIndex: 2,
+				accountCount: 3,
+				accountLabel: "Account 2 (user2@example.com)",
+			},
+			width: 120,
+			maskEmail: true,
+		});
+		expect(out).toContain("[us***@example.com]");
+		expect(out).not.toContain("user2@example.com");
+	});
+
 	it("masks account email in quota details when requested", () => {
 		const details = formatQuotaDetailsText(
 			{
@@ -254,7 +432,7 @@ describe("TUI prompt status helpers", () => {
 			{ maskEmail: true },
 		);
 
-		expect(details).toContain("Account: [*****] (Account 2 (*****))");
+		expect(details).toContain("Account: [ne***@example.com] (Account 2 (ne***@example.com))");
 		expect(details).not.toContain("neil@example.com");
 		expect(details).toContain("5h: 88% left");
 	});
