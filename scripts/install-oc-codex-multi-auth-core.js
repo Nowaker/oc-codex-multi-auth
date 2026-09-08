@@ -307,6 +307,29 @@ function mergeStandaloneAccounts(target, source) {
 	return mergeStandaloneAccounts(source, target);
 }
 
+// Mirror of `isStaleGeneratedAccountLabel` / `dropStaleGeneratedLabel` in
+// lib/auth/token-utils.ts and lib/storage/normalize.ts. The standalone CLI
+// reads the pool through this normalizer and never through the compiled
+// `normalizeAccountStorage`, so without the mirror `status`, `list`, `health`,
+// `doctor` and `dashboard` keep printing the org-derived label the plugin
+// itself now drops - next to the account id, which is the identity the label
+// was misnaming. The marker must hold this account's own id suffix so a name
+// set with `codex-label` survives.
+const GENERATED_LABEL_PATTERN = /\s\[id:[^\]]*\]$/;
+
+function dropStaleStandaloneLabel(account) {
+	const label = typeof account?.accountLabel === "string" ? account.accountLabel.trim() : "";
+	const accountId = typeof account?.accountId === "string" ? account.accountId.trim() : "";
+	if (!label || !accountId) return account;
+	const marker = label.match(GENERATED_LABEL_PATTERN)?.[0];
+	if (!marker) return account;
+	const suffix = accountId.length > 6 ? accountId.slice(-6) : accountId;
+	if (marker !== ` [id:${suffix}]`) return account;
+	const next = { ...account };
+	delete next.accountLabel;
+	return next;
+}
+
 function normalizeStandaloneStorage(storage) {
 	if (!Array.isArray(storage.accounts)) return storage;
 	const accounts = [...storage.accounts];
@@ -324,7 +347,9 @@ function normalizeStandaloneStorage(storage) {
 			if (sourceIndex === i) break;
 		}
 	}
-	const normalizedAccounts = accounts.filter((_, index) => !removed.has(index));
+	const normalizedAccounts = accounts
+		.filter((_, index) => !removed.has(index))
+		.map(dropStaleStandaloneLabel);
 	return {
 		...storage,
 		accounts: normalizedAccounts,
@@ -332,8 +357,13 @@ function normalizeStandaloneStorage(storage) {
 	};
 }
 
+// A short value has no room for a head/tail mask, and `doctor` output is the
+// thing users paste into issues, so it is replaced outright rather than
+// returned verbatim: an email such as `me@x.io` is eight characters and would
+// otherwise print in full wherever masking is supposed to be on.
 function maskValue(value, includeSensitive) {
-	if (includeSensitive || typeof value !== "string" || value.length <= 8) return value;
+	if (includeSensitive || typeof value !== "string" || !value) return value;
+	if (value.length <= 8) return "*****";
 	return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
@@ -341,11 +371,12 @@ function maskValue(value, includeSensitive) {
 // in-conversation surfaces print as `id:`. Four when it is masked, which is
 // the tail `maskValue` discloses as `accountId` in the same payload, so the
 // printed identity never reveals more of an id than the field beside it.
+// Both read the same normalized id, or a trailing space would shift
+// `maskValue`'s window and disclose one character more than this suffix.
 function accountIdSuffix(accountId, includeSensitive) {
-	const trimmed = typeof accountId === "string" ? accountId.trim() : "";
-	if (!trimmed) return undefined;
+	if (!accountId) return undefined;
 	const width = includeSensitive ? 6 : 4;
-	return trimmed.length > width ? trimmed.slice(-width) : trimmed;
+	return accountId.length > width ? accountId.slice(-width) : accountId;
 }
 
 function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
@@ -356,22 +387,27 @@ function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 		.filter(({ account }) => !normalizedTag ||
 			(Array.isArray(account?.accountTags) &&
 				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)))
-		.map(({ account, index }) => ({
-			index,
-			label: account?.accountLabel ?? `Account ${index + 1}`,
-			email: maskValue(account?.email, includeSensitive),
-			accountId: maskValue(account?.accountId, includeSensitive),
-			idSuffix: accountIdSuffix(account?.accountId, includeSensitive),
-			accountIdSource: account?.accountIdSource,
-			enabled: account?.enabled !== false,
-			hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
-			hasAccessToken: typeof account?.accessToken === "string" && account.accessToken.length > 0,
-			expiresAt: account?.expiresAt,
-			expired: typeof account?.expiresAt === "number" ? account.expiresAt <= Date.now() : undefined,
-			tags: Array.isArray(account?.accountTags) ? account.accountTags : [],
-			note: account?.accountNote,
-			rateLimitResetTimes: account?.rateLimitResetTimes ?? {},
-		}));
+		.map(({ account, index }) => {
+			const trimmedId =
+				typeof account?.accountId === "string" ? account.accountId.trim() : "";
+			const accountId = trimmedId || undefined;
+			return {
+				index,
+				label: account?.accountLabel ?? `Account ${index + 1}`,
+				email: maskValue(account?.email, includeSensitive),
+				accountId: maskValue(accountId, includeSensitive),
+				idSuffix: accountIdSuffix(accountId, includeSensitive),
+				accountIdSource: account?.accountIdSource,
+				enabled: account?.enabled !== false,
+				hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
+				hasAccessToken: typeof account?.accessToken === "string" && account.accessToken.length > 0,
+				expiresAt: account?.expiresAt,
+				expired: typeof account?.expiresAt === "number" ? account.expiresAt <= Date.now() : undefined,
+				tags: Array.isArray(account?.accountTags) ? account.accountTags : [],
+				note: account?.accountNote,
+				rateLimitResetTimes: account?.rateLimitResetTimes ?? {},
+			};
+		});
 }
 
 function printStandaloneResult(command, payload, json) {

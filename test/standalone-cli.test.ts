@@ -7,6 +7,15 @@ async function createTempHome() {
 	return mkdtemp(join(tmpdir(), "oc-codex-standalone-"));
 }
 
+// The identity group is the last `(…)` before the trailing `enabled=` flags.
+// Slicing between the first `(` and the first `)` instead would grab
+// `(role:owner)` out of any label that carries parentheses of its own.
+function extractIdentity(line: string) {
+	const head = line.slice(0, line.indexOf(" enabled="));
+	const open = head.lastIndexOf("(");
+	return open === -1 ? "" : head.slice(open);
+}
+
 async function seedPool(home: string, accounts: unknown[]) {
 	const opencodeDir = join(home, ".opencode");
 	await mkdir(opencodeDir, { recursive: true });
@@ -149,11 +158,86 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const identities = logSpy.mock.calls
 			.map((call) => String(call[0]))
 			.filter((line) => line.startsWith("- ["))
-			.map((line) => line.slice(line.indexOf("("), line.indexOf(")") + 1));
+			.map(extractIdentity);
 
 		expect(identities).toHaveLength(2);
 		expect(identities[0]).toBe("(dup@....com, id:aaaa)");
 		expect(identities[1]).toBe("(dup@....com, id:bbbb)");
+	});
+
+	it("list: drops the org-derived label the plugin no longer generates", async () => {
+		// The standalone CLI reads the pool through its own normalizer, so
+		// without a mirror of the drop it keeps printing the wrong
+		// organization beside the very account id that label was misnaming.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "personal@example.com",
+				accountId: "acct_9f21c487c4",
+				accountLabel: "DreamHost API (role:owner) [id:c487c4]",
+				accountIdSource: "token",
+				refreshToken: "refresh-a",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+			{
+				// A name someone typed. The marker does not hold this
+				// account's id suffix, so it is not the plugin's to delete.
+				email: "work@example.com",
+				accountId: "acct_0000abcdef",
+				accountLabel: "Work [id:mine]",
+				accountIdSource: "token",
+				refreshToken: "refresh-b",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["list"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const rows = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.startsWith("- ["));
+
+		expect(rows[0]).toContain("Account 1 (pers....com, id:87c4)");
+		expect(rows[0]).not.toContain("DreamHost");
+		expect(rows[1]).toContain("Work [id:mine] (work....com, id:cdef)");
+	});
+
+	it("list: replaces an email too short to mask instead of printing it", async () => {
+		// `doctor` and friends share this printer and are what users paste
+		// into issues. A head/tail mask has no room in eight characters, so
+		// the value is replaced outright rather than returned verbatim.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "me@x.io",
+				accountId: "acct_0000abcdef",
+				accountIdSource: "token",
+				refreshToken: "refresh-a",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["list"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const rows = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.startsWith("- ["));
+
+		expect(rows[0]).toContain("(*****, id:cdef)");
+		expect(rows[0]).not.toContain("me@x.io");
 	});
 
 	it("rejects unknown positional commands instead of installing", async () => {
