@@ -55,6 +55,7 @@ describe("default quota fetch path", () => {
 	const directories: string[] = [];
 
 	beforeEach(async () => {
+		vi.stubEnv("CODEX_AUTH_QUOTA_DISPLAY", "free");
 		vi.clearAllMocks();
 		persistUsageQuotaExhaustion.mockResolvedValue(false);
 		persistUsageQuotaRecovery.mockResolvedValue(false);
@@ -64,6 +65,7 @@ describe("default quota fetch path", () => {
 	});
 
 	afterEach(async () => {
+		vi.unstubAllEnvs();
 		setStoragePathDirect(null);
 		await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 	});

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -357,7 +357,12 @@ describe("quota threshold transitions", () => {
 describe("quota monitor lifecycle", () => {
 	const tempDirectories: string[] = [];
 
+	beforeEach(() => {
+		vi.stubEnv("CODEX_AUTH_QUOTA_DISPLAY", "free");
+	});
+
 	afterEach(async () => {
+		vi.unstubAllEnvs();
 		vi.useRealTimers();
 		setStoragePathDirect(null);
 		await Promise.all(tempDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -483,7 +488,11 @@ describe("quota monitor lifecycle", () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
-	it("notifies when only the weekly window crosses a threshold", async () => {
+	it.each([
+		["free", "20%"],
+		["used", "80%"],
+	])("notifies in %s mode when only the weekly window crosses a threshold", async (mode, weeklyPercent) => {
+		vi.stubEnv("CODEX_AUTH_QUOTA_DISPLAY", mode);
 		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
 		tempDirectories.push(directory);
 		setStoragePathDirect(join(directory, "accounts.json"));
@@ -511,7 +520,7 @@ describe("quota monitor lifecycle", () => {
 		expect(notify).toHaveBeenCalledOnce();
 		expect(notify).toHaveBeenCalledWith(
 			"Codex quota status",
-			"5h: 50% | resets unavailable\nWeekly: 20% | resets unavailable",
+			`5h: 50% | resets unavailable\nWeekly: ${weeklyPercent} | resets unavailable`,
 		);
 	});
 
