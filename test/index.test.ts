@@ -174,6 +174,7 @@ vi.mock("../lib/config.js", () => ({
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
 	getCodexTuiMaskEmail: vi.fn(() => false),
+	getQuotaDisplay: vi.fn(() => "free"),
 	getBeginnerSafeMode: () => false,
 	loadPluginConfig: () => ({}),
 }));
@@ -1747,6 +1748,95 @@ describe("OpenAIOAuthPlugin", () => {
 				"https://chatgpt.com/backend-api/wham/usage",
 				expect.objectContaining({ method: "GET" }),
 			);
+		});
+
+		it("reports consumption instead of headroom when quotaDisplay is used", async () => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getQuotaDisplay).mockReturnValue("used");
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: {
+								used_percent: 13,
+								limit_window_seconds: 18000,
+							},
+							secondary_window: {
+								used_percent: 36,
+								limit_window_seconds: 604800,
+							},
+						},
+						code_review_rate_limit: {
+							primary_window: {
+								used_percent: 0,
+								limit_window_seconds: 604800,
+							},
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			try {
+				const result = await plugin.tool["codex-limits"].execute();
+
+				expect(result).toContain("5h limit: 13% used");
+				expect(result).toContain("Weekly limit: 36% used");
+				expect(result).toContain("Code review: 0% used");
+				expect(result).not.toContain("left");
+			} finally {
+				vi.mocked(configModule.getQuotaDisplay).mockReturnValue("free");
+			}
+		});
+
+		it("keeps the numeric usage fields identical to the free-mode reading", async () => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getQuotaDisplay).mockReturnValue("used");
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: {
+								used_percent: 13,
+								limit_window_seconds: 18000,
+							},
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			try {
+				const parsed = JSON.parse(
+					await plugin.tool["codex-limits"].execute({ format: "json" }),
+				);
+				expect(parsed.accounts[0].limits[0]).toMatchObject({
+					name: "5h limit",
+					usedPercent: 13,
+					leftPercent: 87,
+					summary: "13% used",
+				});
+			} finally {
+				vi.mocked(configModule.getQuotaDisplay).mockReturnValue("free");
+			}
 		});
 
 		it("blocks a fully spent usage quota before round-robin can spend Credits", async () => {

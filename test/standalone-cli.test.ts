@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,10 +26,24 @@ async function seedPool(home: string, accounts: unknown[]) {
 	);
 }
 
+const QUOTA_DISPLAY_ENV = "CODEX_AUTH_QUOTA_DISPLAY";
+
 describe("standalone oc-codex-multi-auth CLI commands", () => {
 	let tempHome: string | null = null;
+	let previousQuotaDisplay: string | undefined;
+
+	// These cases load the real `dist/lib/config.js`, whose config path is the
+	// developer's own `~/.opencode`, not the temp home handed to `runInstaller`.
+	// Pinning the env override - which outranks the file - keeps a machine that
+	// has opted into `used` from failing every `% left` assertion below.
+	beforeEach(() => {
+		previousQuotaDisplay = process.env[QUOTA_DISPLAY_ENV];
+		process.env[QUOTA_DISPLAY_ENV] = "free";
+	});
 
 	afterEach(async () => {
+		if (previousQuotaDisplay === undefined) delete process.env[QUOTA_DISPLAY_ENV];
+		else process.env[QUOTA_DISPLAY_ENV] = previousQuotaDisplay;
 		vi.restoreAllMocks();
 		if (tempHome) {
 			await rm(tempHome, { recursive: true, force: true });
@@ -545,6 +559,30 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const printed = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
 		expect(printed).toContain("5h limit: 82% left");
 		expect(printed).toContain("Weekly limit: 58% left");
+	});
+
+	it("limits: reports consumption instead of headroom when quotaDisplay is used", async () => {
+		process.env[QUOTA_DISPLAY_ENV] = "used";
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => usagePayload,
+			text: async () => JSON.stringify(usagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const printed = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(printed).toContain("5h limit: 18% used");
+		expect(printed).toContain("Weekly limit: 42% used");
+		expect(printed).not.toContain("% left");
 	});
 
 	it("limits: --tag only contacts matching accounts", async () => {

@@ -297,6 +297,41 @@ Primary config files:
 - `~/.config/opencode/tui.json`
 - `~/.opencode/openai-codex-auth-config.json`
 
+### Quota percentage display
+
+Every quota percentage a person reads is worded as the headroom still left,
+which is how Codex itself reports a quota:
+
+```text
+5h limit: 88% left      # codex-limits, quota details dialog
+5h 88%                  # TUI prompt status line
+```
+
+Set `quotaDisplay` to `"used"` to report consumption instead:
+
+```json
+{
+  "quotaDisplay": "used"
+}
+```
+
+```text
+5h limit: 12% used
+5h 12%
+```
+
+Add it to `~/.opencode/openai-codex-auth-config.json`, or set
+`CODEX_AUTH_QUOTA_DISPLAY=used`, then quit and restart OpenCode. The setting
+covers the TUI prompt status line and quota details dialog, `codex-limits`,
+the standalone `limits` CLI, the interactive account check, and the macOS
+quota notifications below.
+
+It changes wording only. Quota exhaustion, rotation blocks, notification
+thresholds, and the status line's warning/danger colouring all stay keyed on
+the percentage remaining, so a nearly spent account still colours red while
+reading `95%`. The `usedPercent` and `leftPercent` fields in `--json` /
+`format="json"` output are unaffected.
+
 ### Desktop quota notifications
 
 Quota notifications are an optional macOS-only feature. Separately, the quota
@@ -317,6 +352,10 @@ Account identities are omitted for readability and lock-screen privacy:
 5h: 10% | resets 02:00 | another account resets 22:30
 Weekly: 72% | resets 22:30 on Aug 30
 ```
+
+The percentage follows `quotaDisplay`, so the same two lines read `90%` and
+`28%` under `"used"`. `thresholds` are always remaining-percent values
+regardless.
 
 ```json
 {
@@ -420,6 +459,7 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_GLYPHS=ascii\|unicode\|auto` | Force terminal glyph style |
 | `CODEX_TUI_MASK_EMAIL=0/1` | Mask account emails across account-display surfaces (list/status/limits/health/dashboard/menus + TUI quota status) |
 | `CODEX_TUI_MASK_EMAIL_DETAILS=0/1` | Also hide account email in quota details when prompt masking is enabled |
+| `CODEX_AUTH_QUOTA_DISPLAY=free\|used` | Word quota percentages as headroom left (default, matching Codex) or as consumption |
 | `CODEX_AUTH_PER_PROJECT_ACCOUNTS=0/1` | Disable/enable per-project account pools |
 | `CODEX_AUTH_AUTO_UPDATE=0/1` | Disable/enable daily npm update check and cache refresh |
 | `CODEX_AUTH_ROTATION_STRATEGY=hybrid\|sticky\|round-robin` | Account selection strategy |

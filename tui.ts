@@ -5,8 +5,10 @@ import type { JSX } from "@opentui/solid";
 import {
 	getCodexTuiMaskEmail,
 	getCodexTuiMaskEmailInQuotaDetails,
+	getQuotaDisplay,
 	loadPluginConfig,
 } from "./lib/config.js";
+import type { QuotaDisplayMode } from "./lib/quota-display.js";
 import {
 	createUsageAccountFingerprint,
 	ensureCodexUsageAccessToken,
@@ -288,10 +290,16 @@ export function shouldRefreshQuotaForEvent(event: Event): boolean {
 	}
 }
 
+type PromptStatusOptions = {
+	maskEmail: boolean;
+	maskEmailInQuotaDetails: boolean;
+	quotaDisplay: QuotaDisplayMode;
+};
+
 function createPromptStatus(
 	api: TuiPluginApi,
 	solid: SolidRuntime,
-	options: { maskEmail: boolean; maskEmailInQuotaDetails: boolean },
+	options: PromptStatusOptions,
 ): JSX.Element {
 	const [quota, setQuota] = solid.createSignal<CompactQuotaStatus>({
 		type: "loading",
@@ -397,6 +405,7 @@ function createPromptStatus(
 					quota: quota(),
 					width: api.renderer.width,
 					maskEmail: options.maskEmail,
+					quotaDisplay: options.quotaDisplay,
 				});
 			},
 			get fg() {
@@ -418,10 +427,7 @@ function createPromptStatus(
 	return node;
 }
 
-function showQuotaDetails(
-	api: TuiPluginApi,
-	options: { maskEmail: boolean; maskEmailInQuotaDetails: boolean },
-): void {
+function showQuotaDetails(api: TuiPluginApi, options: PromptStatusOptions): void {
 	void refreshQuotaStatus(api).then(
 		(status) => {
 			api.ui.dialog.replace(() =>
@@ -429,6 +435,7 @@ function showQuotaDetails(
 					title: "Codex quota",
 					message: formatQuotaDetailsText(status, Date.now(), {
 						maskEmail: options.maskEmail && options.maskEmailInQuotaDetails,
+						quotaDisplay: options.quotaDisplay,
 					}),
 					onConfirm: () => api.ui.dialog.clear(),
 				}),
@@ -450,9 +457,10 @@ const module: TuiPluginModule = {
 	id: "oc-codex-multi-auth.status",
 	async tui(api) {
 		const pluginConfig = loadPluginConfig();
-		const promptOptions = {
+		const promptOptions: PromptStatusOptions = {
 			maskEmail: getCodexTuiMaskEmail(pluginConfig),
 			maskEmailInQuotaDetails: getCodexTuiMaskEmailInQuotaDetails(pluginConfig),
+			quotaDisplay: getQuotaDisplay(pluginConfig),
 		};
 		const [{ createElement, spread }, { createSignal, onCleanup }] =
 			await Promise.all([import("@opentui/solid"), import("solid-js")]);

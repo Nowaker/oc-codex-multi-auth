@@ -19,6 +19,7 @@ import {
 	persistUsageQuotaExhaustion,
 	resolveCodexUsageAccountId,
 } from "../codex-usage.js";
+import { getQuotaDisplay, loadPluginConfig } from "../config.js";
 import { PLUGIN_NAME } from "../constants.js";
 import { logWarn } from "../logger.js";
 import {
@@ -76,6 +77,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 		} = {}) {
 			const ui = resolveUiRuntime();
 			const maskEmail = resolveMaskEmail();
+			const quotaDisplay = getQuotaDisplay(loadPluginConfig());
 			const outputFormat = normalizeToolOutputFormat(format);
 			const includeSensitiveOutput = includeSensitive === true;
 			const storage = await loadAccounts();
@@ -207,7 +209,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						accessToken: credentials.accessToken,
 						organizationId: effectiveAccount.organizationId,
 					});
-					const usage = parseCodexUsagePayload(payload);
+					const usage = parseCodexUsagePayload(payload, quotaDisplay);
 					const quotaExhaustedResetAtMs = getUsageQuotaExhaustedResetAtMs(
 						[usage.primary, usage.secondary],
 					);
@@ -253,17 +255,17 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						for (const window of [usage.primary, usage.secondary]) {
 							if (!hasUsageWindow(window)) continue;
 							lines.push(
-								`  ${formatUiKeyValue(ui, formatUsageLimitTitle(window.windowMinutes), formatUsageLimitSummary(window), "muted")}`,
+								`  ${formatUiKeyValue(ui, formatUsageLimitTitle(window.windowMinutes), formatUsageLimitSummary(window, quotaDisplay), "muted")}`,
 							);
 						}
 						if (hasUsageWindow(usage.codeReview)) {
 							lines.push(
-								`  ${formatUiKeyValue(ui, "Code review", formatUsageLimitSummary(usage.codeReview), "muted")}`,
+								`  ${formatUiKeyValue(ui, "Code review", formatUsageLimitSummary(usage.codeReview, quotaDisplay), "muted")}`,
 							);
 						}
 						for (const limit of usage.additionalLimits) {
 							lines.push(
-								`  ${formatUiKeyValue(ui, limit.name, formatUsageLimitSummary(limit.window), "muted")}`,
+								`  ${formatUiKeyValue(ui, limit.name, formatUsageLimitSummary(limit.window, quotaDisplay), "muted")}`,
 							);
 						}
 						const planLabel = formatPlanType(usage.planType);
@@ -287,17 +289,17 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						for (const window of [usage.primary, usage.secondary]) {
 							if (!hasUsageWindow(window)) continue;
 							lines.push(
-								`  ${formatUsageLimitTitle(window.windowMinutes)}: ${formatUsageLimitSummary(window)}`,
+								`  ${formatUsageLimitTitle(window.windowMinutes)}: ${formatUsageLimitSummary(window, quotaDisplay)}`,
 							);
 						}
 						if (hasUsageWindow(usage.codeReview)) {
 							lines.push(
-								`  Code review: ${formatUsageLimitSummary(usage.codeReview)}`,
+								`  Code review: ${formatUsageLimitSummary(usage.codeReview, quotaDisplay)}`,
 							);
 						}
 						for (const limit of usage.additionalLimits) {
 							lines.push(
-								`  ${limit.name}: ${formatUsageLimitSummary(limit.window)}`,
+								`  ${limit.name}: ${formatUsageLimitSummary(limit.window, quotaDisplay)}`,
 							);
 						}
 						const planLabel = formatPlanType(usage.planType);

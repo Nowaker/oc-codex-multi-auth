@@ -31,6 +31,7 @@ lib/
 ├── parallel-probe.ts       # parallel health checks
 ├── proactive-refresh.ts    # token refresh before expiry
 ├── prompts/                # Codex/OpenCode prompts and ETag caches
+├── quota-display.ts        # free/used wording for every human-readable quota percentage
 ├── quota-notification-state.ts # cross-process threshold/delivery state file
 ├── quota-notifications.ts  # aggregate quota poller and threshold transitions
 ├── recovery.ts             # recovery barrel / compatibility entry
@@ -80,6 +81,7 @@ lib/
 | Backups/import/export | `storage/backup.ts`, `storage/export-import.ts` | timestamped backups and dry-run import preview |
 | Tool registry | `tools/index.ts` | `ToolContext`, `createToolRegistry` |
 | TUI quota status | `tui-status.ts`, `tui-quota-cache.ts`, `codex-usage.ts` | prompt quota display and usage cache |
+| Quota percentage wording | `quota-display.ts` | `quotaDisplay` free/used rendering shared by the TUI, `codex-limits`, the standalone CLI, and notifications; presentation only, so exhaustion and tone stay on the remaining percentage |
 | Error types | `errors.ts`, `error-sentinels.ts` | StorageError and structured sentinel errors |
 | Health monitoring | `health.ts` | account health status |
 | Account display / masking | `account-display.ts` | label-preferred rendering, `maskEmail` behavior |
