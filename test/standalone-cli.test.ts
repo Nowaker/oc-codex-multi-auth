@@ -1,10 +1,19 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 async function createTempHome() {
 	return mkdtemp(join(tmpdir(), "oc-codex-standalone-"));
+}
+
+// The identity group is the last `(…)` before the trailing `enabled=` flags.
+// Slicing between the first `(` and the first `)` instead would grab
+// `(role:owner)` out of any label that carries parentheses of its own.
+function extractIdentity(line: string) {
+	const head = line.slice(0, line.indexOf(" enabled="));
+	const open = head.lastIndexOf("(");
+	return open === -1 ? "" : head.slice(open);
 }
 
 async function seedPool(home: string, accounts: unknown[]) {
@@ -17,10 +26,24 @@ async function seedPool(home: string, accounts: unknown[]) {
 	);
 }
 
+const QUOTA_DISPLAY_ENV = "CODEX_AUTH_QUOTA_DISPLAY";
+
 describe("standalone oc-codex-multi-auth CLI commands", () => {
 	let tempHome: string | null = null;
+	let previousQuotaDisplay: string | undefined;
+
+	// These cases load the real `dist/lib/config.js`, whose config path is the
+	// developer's own `~/.opencode`, not the temp home handed to `runInstaller`.
+	// Pinning the env override - which outranks the file - keeps a machine that
+	// has opted into `used` from failing every `% left` assertion below.
+	beforeEach(() => {
+		previousQuotaDisplay = process.env[QUOTA_DISPLAY_ENV];
+		process.env[QUOTA_DISPLAY_ENV] = "free";
+	});
 
 	afterEach(async () => {
+		if (previousQuotaDisplay === undefined) delete process.env[QUOTA_DISPLAY_ENV];
+		else process.env[QUOTA_DISPLAY_ENV] = previousQuotaDisplay;
 		vi.restoreAllMocks();
 		if (tempHome) {
 			await rm(tempHome, { recursive: true, force: true });
@@ -149,11 +172,125 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const identities = logSpy.mock.calls
 			.map((call) => String(call[0]))
 			.filter((line) => line.startsWith("- ["))
-			.map((line) => line.slice(line.indexOf("("), line.indexOf(")") + 1));
+			.map(extractIdentity);
 
 		expect(identities).toHaveLength(2);
 		expect(identities[0]).toBe("(dup@....com, id:aaaa)");
 		expect(identities[1]).toBe("(dup@....com, id:bbbb)");
+	});
+
+	it("list: drops the org-derived label the plugin no longer generates", async () => {
+		// The standalone CLI reads the pool through its own normalizer, so
+		// without a mirror of the drop it keeps printing the wrong
+		// organization beside the very account id that label was misnaming.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "personal@example.com",
+				accountId: "acct_9f21c487c4",
+				accountLabel: "DreamHost API (role:owner) [id:c487c4]",
+				accountIdSource: "token",
+				refreshToken: "refresh-a",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+			{
+				// A name someone typed. The marker does not hold this
+				// account's id suffix, so it is not the plugin's to delete.
+				email: "work@example.com",
+				accountId: "acct_0000abcdef",
+				accountLabel: "Work [id:mine]",
+				accountIdSource: "token",
+				refreshToken: "refresh-b",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["list"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const rows = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.startsWith("- ["));
+
+		expect(rows[0]).toContain("Account 1 (pers....com, id:87c4)");
+		expect(rows[0]).not.toContain("DreamHost");
+		expect(rows[1]).toContain("Work [id:mine] (work....com, id:cdef)");
+	});
+
+	it("list: replaces a value the head/tail mask cannot conceal", async () => {
+		// `doctor` and friends share this printer and are what users paste
+		// into issues. `first4...last4` conceals nothing below thirteen
+		// characters, and padding must not clear the cutoff on its own.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "me@x.io",
+				accountId: "acct_0000abcdef",
+				accountIdSource: "token",
+				refreshToken: "refresh-a",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+			{
+				email: "  me@x.io12  ",
+				accountId: "acct_0000abcdef",
+				accountIdSource: "token",
+				refreshToken: "refresh-b",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["list"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const rows = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.startsWith("- ["));
+
+		expect(rows[0]).toContain("(*****, id:cdef)");
+		expect(rows[0]).not.toContain("me@x.io");
+		expect(rows[1]).toContain("(*****, id:cdef)");
+		expect(rows[1]).not.toContain("me@x");
+	});
+
+	it("status: omits the id suffix when the account id was masked outright", async () => {
+		// The suffix is only safe because it reveals no more than the masked
+		// `accountId` printed beside it. When that field is `*****`, four raw
+		// characters of a short id can be the entire id.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await seedPool(tempHome, [
+			{
+				email: "user@example.com",
+				accountId: "ab12cd",
+				accountIdSource: "token",
+				refreshToken: "refresh-token",
+				addedAt: 1000,
+				lastUsed: 2000,
+			},
+		]);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["status", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const account = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])).accounts[0];
+		expect(account.accountId).toBe("*****");
+		expect(account.idSuffix).toBeUndefined();
+		expect(JSON.stringify(account)).not.toContain("12cd");
 	});
 
 	it("rejects unknown positional commands instead of installing", async () => {
@@ -422,6 +559,30 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const printed = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
 		expect(printed).toContain("5h limit: 82% left");
 		expect(printed).toContain("Weekly limit: 58% left");
+	});
+
+	it("limits: reports consumption instead of headroom when quotaDisplay is used", async () => {
+		process.env[QUOTA_DISPLAY_ENV] = "used";
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => usagePayload,
+			text: async () => JSON.stringify(usagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const printed = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(printed).toContain("5h limit: 18% used");
+		expect(printed).toContain("Weekly limit: 42% used");
+		expect(printed).not.toContain("% left");
 	});
 
 	it("limits: --tag only contacts matching accounts", async () => {

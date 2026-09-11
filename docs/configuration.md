@@ -198,6 +198,7 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
   "codexTuiGlyphMode": "ascii",
   "maskEmail": false,
   "maskEmailInQuotaDetails": false,
+  "quotaDisplay": "free",
   "beginnerSafeMode": false,
   "fastSession": false,
   "fastSessionStrategy": "hybrid",
@@ -262,6 +263,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `codexTuiGlyphMode` | `ascii` | glyph set for codex ui (`ascii`, `unicode`, `auto`) |
 | `maskEmail` | `false` | masks account emails across account-display surfaces: the TUI prompt quota status, command output (`codex-list`, `codex-status`, `codex-limits`, `codex-health`, `codex-dashboard`, `codex-refresh`, `codex-switch`, `codex-label`, `codex-tag`, `codex-note`, `codex-remove`), the interactive account menu, and the standalone login menu. Account labels (set via `codex-label`) are preferred and always shown; emails are reduced to a masked form such as `us***@example.com`. Raw emails are still emitted in `--includeSensitive` JSON output, which is opt-in. |
 | `maskEmailInQuotaDetails` | `false` | also masks the active account email in the quota details dialog when `maskEmail` is enabled |
+| `quotaDisplay` | `free` | wording of every quota percentage a person reads: `free` reports the headroom left (`5h limit: 88% left`), matching how Codex itself reports a quota; `used` reports consumption instead (`5h limit: 12% used`). Covers the TUI prompt status line and quota details dialog, `codex-limits`, the standalone `limits` CLI, the interactive account check, and macOS quota notifications. Presentation only: exhaustion, rotation blocks, notification thresholds, and the status line's warning/danger colouring stay keyed on the remaining percentage, and the `usedPercent` / `leftPercent` fields in JSON output are unchanged. |
 | `beginnerSafeMode` | `false` | enables conservative beginner-safe runtime behavior for retries and recovery |
 | `fastSession` | `false` | forces low-latency settings per request (`reasoningEffort=none/low`, `reasoningSummary=auto`, `textVerbosity=low`) |
 | `fastSessionStrategy` | `hybrid` | `hybrid` speeds simple turns and keeps full-depth for complex prompts; `always` forces fast mode every turn |
@@ -424,6 +426,7 @@ override any config with env vars (boolean values are truthy only for `"1"`):
 | `CODEX_TUI_GLYPHS=unicode` | override glyph mode (`ascii`, `unicode`, `auto`) |
 | `CODEX_TUI_MASK_EMAIL=1` | mask account emails across account-display surfaces (TUI prompt quota status, command output, interactive account menu, and standalone login menu) |
 | `CODEX_TUI_MASK_EMAIL_DETAILS=1` | also mask the active account email in quota details when prompt masking is enabled |
+| `CODEX_AUTH_QUOTA_DISPLAY=free\|used` | word quota percentages as headroom left (default) or as consumption |
 | `CODEX_AUTH_PREWARM=0` | disable startup prewarm when legacy transform is enabled (native mode does not prewarm) |
 | `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS=60000` | refresh OAuth tokens this many ms before expiry |
 | `CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS=60000` | debounce rate-limit toast notifications |

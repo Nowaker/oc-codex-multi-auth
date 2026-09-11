@@ -10,6 +10,11 @@ import {
 	type RetryProfile,
 } from "./request/retry-budget.js";
 import { logWarn } from "./logger.js";
+import {
+	DEFAULT_QUOTA_DISPLAY_MODE,
+	QUOTA_DISPLAY_MODES,
+	type QuotaDisplayMode,
+} from "./quota-display.js";
 import { stripEffortSuffix } from "./request/helpers/effort-suffix.js";
 import {
 	isWindowsLockError,
@@ -30,6 +35,7 @@ const TUI_GLYPH_MODES = new Set(["ascii", "unicode", "auto"]);
 const REQUEST_TRANSFORM_MODES = new Set(["native", "legacy"]);
 const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const RETRY_PROFILES = new Set(["conservative", "balanced", "aggressive"]);
+const QUOTA_DISPLAY_MODE_SET: ReadonlySet<string> = new Set(QUOTA_DISPLAY_MODES);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -72,6 +78,7 @@ const DEFAULT_CONFIG: PluginConfig = {
 	codexTuiGlyphMode: "ascii",
 	maskEmail: false,
 	maskEmailInQuotaDetails: false,
+	quotaDisplay: DEFAULT_QUOTA_DISPLAY_MODE,
 	beginnerSafeMode: false,
 	fastSession: false,
 	fastSessionStrategy: "hybrid",
@@ -660,6 +667,23 @@ export function getCodexTuiMaskEmailInQuotaDetails(
 		"CODEX_TUI_MASK_EMAIL_DETAILS",
 		pluginConfig.maskEmailInQuotaDetails,
 		false,
+	);
+}
+
+/**
+ * Whether quota percentages are worded as headroom or as consumption.
+ *
+ * Defaults to `free`, which is how Codex itself reports a quota. Only the
+ * wording changes: exhaustion, rotation blocks, notification thresholds and
+ * the status line's warning/danger colouring all stay keyed on the remaining
+ * percentage.
+ */
+export function getQuotaDisplay(pluginConfig: PluginConfig): QuotaDisplayMode {
+	return resolveStringSetting(
+		"CODEX_AUTH_QUOTA_DISPLAY",
+		pluginConfig.quotaDisplay,
+		DEFAULT_QUOTA_DISPLAY_MODE,
+		QUOTA_DISPLAY_MODE_SET,
 	);
 }
 

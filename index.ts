@@ -95,6 +95,7 @@ import {
 	getCodexTuiGlyphMode,
 	getBeginnerSafeMode,
 	getCodexTuiMaskEmail,
+	getQuotaDisplay,
 	loadPluginConfig,
 } from "./lib/config.js";
 import {
@@ -3574,20 +3575,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								);
 							};
 
+							const authQuotaDisplay = getQuotaDisplay(authPluginConfig);
 							const formatCodexQuotaLine = (usage: CodexUsageSummary): string => {
 								const parts: string[] = [];
 								for (const window of [usage.primary, usage.secondary]) {
 									if (!hasUsageWindow(window)) continue;
 									parts.push(
-										`${formatUsageLimitTitle(window.windowMinutes)} ${formatUsageLimitSummary(window)}`,
+										`${formatUsageLimitTitle(window.windowMinutes)} ${formatUsageLimitSummary(window, authQuotaDisplay)}`,
 									);
 								}
 								if (hasUsageWindow(usage.codeReview)) {
-									parts.push(`Code review ${formatUsageLimitSummary(usage.codeReview)}`);
+									parts.push(
+										`Code review ${formatUsageLimitSummary(usage.codeReview, authQuotaDisplay)}`,
+									);
 								}
 								for (const limit of usage.additionalLimits) {
 									if (hasUsageWindow(limit.window)) {
-										parts.push(`${limit.name} ${formatUsageLimitSummary(limit.window)}`);
+										parts.push(
+											`${limit.name} ${formatUsageLimitSummary(limit.window, authQuotaDisplay)}`,
+										);
 									}
 								}
 								const planLabel = formatPlanType(usage.planType);
@@ -3825,7 +3831,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 												organizationId: account.organizationId,
 												normalizeAccountErrors: true,
 											});
-											const usage = parseCodexUsagePayload(payload);
+											const usage = parseCodexUsagePayload(payload, authQuotaDisplay);
 											ok += 1;
 											console.log(
 												`[${i + 1}/${total}] ${label}: ${formatCodexQuotaLine(usage)}`,

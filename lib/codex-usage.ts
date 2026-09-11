@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { extractAccountId } from "./accounts.js";
 import { extractAccountUserId } from "./auth/token-utils.js";
 import { getFetchTimeoutMs, loadPluginConfig } from "./config.js";
+import { normalizeResetCreditCount } from "./codex-reset.js";
 import { CODEX_BASE_URL, PLUGIN_NAME } from "./constants.js";
 import {
 	createDeactivatedWorkspaceError,
@@ -10,6 +11,11 @@ import {
 } from "./error-sentinels.js";
 import { logWarn } from "./logger.js";
 import { MODEL_FAMILIES } from "./prompts/codex.js";
+import {
+	DEFAULT_QUOTA_DISPLAY_MODE,
+	formatNamedQuotaPercent,
+	type QuotaDisplayMode,
+} from "./quota-display.js";
 import {
 	isQuotaWindowExhausted,
 	MAX_QUOTA_RESET_HORIZON_MS,
@@ -84,7 +90,8 @@ export type AdditionalUsageLimit = {
 
 export type ResetCreditCounts = {
 	available: number;
-	applicableNow: number;
+	/** `null` when the server stated a count this code cannot read. */
+	applicableNow: number | null;
 };
 
 export type CodexUsageSummary = {
@@ -211,11 +218,16 @@ export function formatUsageLimitTitle(
 	return `${formatUsageWindowLabel(windowMinutes)} limit`;
 }
 
-export function formatUsageLimitSummary(window: LimitWindow): string {
+export function formatUsageLimitSummary(
+	window: LimitWindow,
+	mode: QuotaDisplayMode = DEFAULT_QUOTA_DISPLAY_MODE,
+): string {
 	const left = getUsageLeftPercent(window.usedPercent);
 	const reset = formatUsageReset(window.resetAtMs);
-	if (left !== undefined && reset) return `${left}% left (resets ${reset})`;
-	if (left !== undefined) return `${left}% left`;
+	const percent =
+		left !== undefined ? formatNamedQuotaPercent(left, mode) : undefined;
+	if (percent && reset) return `${percent} (resets ${reset})`;
+	if (percent) return percent;
 	if (reset) return `resets ${reset}`;
 	return "unavailable";
 }
@@ -223,6 +235,7 @@ export function formatUsageLimitSummary(window: LimitWindow): string {
 export function toUsageLimitPayload(
 	name: string,
 	window: LimitWindow,
+	mode: QuotaDisplayMode = DEFAULT_QUOTA_DISPLAY_MODE,
 ): UsageLimitPayload {
 	return {
 		name,
@@ -231,7 +244,7 @@ export function toUsageLimitPayload(
 			typeof window.usedPercent === "number" ? window.usedPercent : null,
 		leftPercent: getUsageLeftPercent(window.usedPercent) ?? null,
 		resetAtMs: window.resetAtMs ?? null,
-		summary: formatUsageLimitSummary(window),
+		summary: formatUsageLimitSummary(window, mode),
 	};
 }
 
@@ -245,13 +258,6 @@ export function formatUsageCredits(
 	}
 	if (credits.has_credits) return "available";
 	return undefined;
-}
-
-function toResetCreditCount(value: unknown): number | null {
-	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-		return null;
-	}
-	return Math.trunc(value);
 }
 
 /**
@@ -271,28 +277,40 @@ function toResetCreditCount(value: unknown): number | null {
  * `secondary_window` arrives on every single-window plan.
  *
  * A count the server did state and this code cannot read is a different thing,
- * and defaulting it would invent an answer. A negative, non-numeric or
- * larger-than-banked applicable count makes the whole reading unknown rather
- * than fully applicable, because over-reporting sends someone to redeem a
+ * and defaulting it would invent an answer. A negative, fractional,
+ * non-numeric or larger-than-banked applicable count therefore reports
+ * `applicableNow: null`, because over-reporting sends someone to redeem a
  * credit that is not there.
+ *
+ * Only `applicableNow` goes unknown, not the whole reading: the banked count
+ * is a separate field that arrived intact, and dropping it would print
+ * "Credits: 0" while a full reset waits to be redeemed - the exact failure
+ * this function exists to fix. `codex-reset` reads the same banked total from
+ * the list endpoint, so discarding it here would also make the two surfaces
+ * disagree about the same account in the same session.
  */
 export function parseUsageResetCredits(
 	source: UsageResetCredits | undefined,
 ): ResetCreditCounts | null {
 	if (typeof source !== "object" || source === null) return null;
-	const available = toResetCreditCount(source.available_count);
+	const available = normalizeResetCreditCount(source.available_count);
 	if (available === null) return null;
 
 	const stated = source.applicable_available_count;
 	if (stated === undefined || stated === null) {
 		return { available, applicableNow: available };
 	}
-	const applicableNow = toResetCreditCount(stated);
-	if (applicableNow === null || applicableNow > available) return null;
+	const applicableNow = normalizeResetCreditCount(stated);
+	if (applicableNow === null || applicableNow > available) {
+		return { available, applicableNow: null };
+	}
 	return { available, applicableNow };
 }
 
 export function formatResetCredits(counts: ResetCreditCounts): string {
+	if (counts.applicableNow === null) {
+		return `${counts.available} banked (applicable now unknown)`;
+	}
 	return counts.applicableNow === counts.available
 		? `${counts.available} banked`
 		: `${counts.available} banked (${counts.applicableNow} applicable now)`;
@@ -416,6 +434,7 @@ export async function persistUsageQuotaExhaustion(
  */
 export function parseCodexUsagePayload(
 	payload: UsagePayload | null | undefined,
+	mode: QuotaDisplayMode = DEFAULT_QUOTA_DISPLAY_MODE,
 ): CodexUsageSummary {
 	const source: UsagePayload =
 		typeof payload === "object" && payload !== null ? payload : {};
@@ -449,14 +468,18 @@ export function parseCodexUsagePayload(
 	for (const window of [primary, secondary]) {
 		if (!hasUsageWindow(window)) continue;
 		limits.push(
-			toUsageLimitPayload(formatUsageLimitTitle(window.windowMinutes), window),
+			toUsageLimitPayload(
+				formatUsageLimitTitle(window.windowMinutes),
+				window,
+				mode,
+			),
 		);
 	}
 	if (hasUsageWindow(codeReview)) {
-		limits.push(toUsageLimitPayload("Code review", codeReview));
+		limits.push(toUsageLimitPayload("Code review", codeReview, mode));
 	}
 	for (const limit of additionalLimits) {
-		limits.push(toUsageLimitPayload(limit.name, limit.window));
+		limits.push(toUsageLimitPayload(limit.name, limit.window, mode));
 	}
 
 	return {

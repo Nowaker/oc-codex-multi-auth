@@ -67,6 +67,24 @@ describe("parseCodexResetCredits", () => {
 		expect(summary.availableCount).toBe(2);
 	});
 
+	it("derives the available count when the server states an unreadable one", () => {
+		// `codex-limits` reads the same counter off the usage endpoint through
+		// the shared `normalizeResetCreditCount`, so both surfaces agree on
+		// what a sane count is. Only the fallback differs: this endpoint sends
+		// the credits themselves and can count them, and the usage endpoint
+		// does not.
+		const credits = [
+			{ id: "a", status: "available" },
+			{ id: "b", status: "available" },
+		];
+
+		expect(parseCodexResetCredits({ available_count: 1.7, credits }).availableCount).toBe(2);
+		expect(parseCodexResetCredits({ available_count: -1, credits }).availableCount).toBe(2);
+		expect(
+			parseCodexResetCredits({ available_count: Number.NaN, credits }).availableCount,
+		).toBe(2);
+	});
+
 	it("drops credits without an id, since they cannot be redeemed", () => {
 		const summary = parseCodexResetCredits({
 			credits: [{ status: "available" }, { id: "  ", status: "available" }],

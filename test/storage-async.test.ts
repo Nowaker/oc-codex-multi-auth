@@ -142,6 +142,7 @@ describe("Storage Module - Async Operations", () => {
         accounts: [
           {
             refreshToken: "token1",
+            accountId: "acct_9f21c487c4",
             accountLabel: "DreamHost API (role:owner) [id:c487c4]",
             email: "personal@example.com",
             addedAt: 1000,
@@ -152,9 +153,11 @@ describe("Storage Module - Async Operations", () => {
       };
 
       const result = normalizeAccountStorage(input);
-      expect(result?.accounts[0]).not.toHaveProperty("accountLabel");
-      expect(result?.accounts[0]?.email).toBe("personal@example.com");
-      expect(result?.accounts[0]?.refreshToken).toBe("token1");
+      expect(result).not.toBeNull();
+      const account = result!.accounts[0]!;
+      expect(account).not.toHaveProperty("accountLabel");
+      expect(account.email).toBe("personal@example.com");
+      expect(account.refreshToken).toBe("token1");
     });
 
     it("keeps a label the user set with codex-label", () => {
@@ -169,9 +172,51 @@ describe("Storage Module - Async Operations", () => {
       };
 
       const result = normalizeAccountStorage(input);
-      expect(result?.accounts[0]?.accountLabel).toBe("Work");
-      expect(result?.accounts[1]?.accountLabel).toBe("");
-      expect(result?.accounts[2]).not.toHaveProperty("accountLabel");
+      expect(result).not.toBeNull();
+      expect(result!.accounts[0]!.accountLabel).toBe("Work");
+      expect(result!.accounts[1]!.accountLabel).toBe("");
+      expect(result!.accounts[2]!).not.toHaveProperty("accountLabel");
+    });
+
+    it("keeps a user label that ends in a bracketed id of its own", () => {
+      // `codex-label` accepts any string, so the trailing `[id:…]` marker is
+      // not on its own proof the plugin wrote the label. Only a marker
+      // holding this account's own id suffix is, and deleting is not
+      // reversible.
+      const input = {
+        version: 3,
+        accounts: [
+          {
+            refreshToken: "token1",
+            accountId: "acct_9f21c487c4",
+            accountLabel: "Work [id:mine]",
+            addedAt: 1000,
+            lastUsed: 2000,
+          },
+          {
+            refreshToken: "token2",
+            accountId: "acct_0000abcdef",
+            accountLabel: "Personal [id:c487c4]",
+            addedAt: 1000,
+            lastUsed: 2000,
+          },
+          {
+            // No stored id to compare the marker against, so nothing is
+            // provably generated and the label stays.
+            refreshToken: "token3",
+            accountLabel: "Legacy [id:c487c4]",
+            addedAt: 1000,
+            lastUsed: 2000,
+          },
+        ],
+        activeIndex: 0,
+      };
+
+      const result = normalizeAccountStorage(input);
+      expect(result).not.toBeNull();
+      expect(result!.accounts[0]!.accountLabel).toBe("Work [id:mine]");
+      expect(result!.accounts[1]!.accountLabel).toBe("Personal [id:c487c4]");
+      expect(result!.accounts[2]!.accountLabel).toBe("Legacy [id:c487c4]");
     });
 
     it("preserves per-family active indices", () => {
