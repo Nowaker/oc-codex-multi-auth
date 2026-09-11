@@ -2,6 +2,12 @@ import type { Config } from "@opencode-ai/sdk/v2";
 import { maskEmailForDisplay } from "./account-display.js";
 import { getEffortSuffix } from "./request/helpers/effort-suffix.js";
 import { formatPlanType } from "./auth/plan-tier.js";
+import {
+	DEFAULT_QUOTA_DISPLAY_MODE,
+	formatNamedQuotaPercent,
+	formatQuotaPercent,
+	type QuotaDisplayMode,
+} from "./quota-display.js";
 
 export type ReasoningVariant =
 	| "none"
@@ -279,10 +285,11 @@ function formatQuotaLimit(
 	limit: CompactQuotaLimit,
 	resetLimit: CompactQuotaLimit | undefined,
 	includeReset: boolean,
+	mode: QuotaDisplayMode,
 ): string | undefined {
 	if (!isPercent(limit.leftPercent)) return undefined;
 	const label = limit.label.trim() || "quota";
-	const base = `${label} ${limit.leftPercent}%`;
+	const base = `${label} ${formatQuotaPercent(limit.leftPercent, mode)}`;
 	const reset =
 		includeReset && limit === resetLimit ? formatResetTime(limit.resetAtMs) : undefined;
 	return reset ? `${base} resets ${reset}` : base;
@@ -347,19 +354,23 @@ function findResetLimitForStatus(
 function formatQuotaParts(
 	quota: CompactQuotaStatus,
 	includeReset: boolean,
+	mode: QuotaDisplayMode,
 ): string[] {
 	if (quota.type !== "ready") return [];
 	const resetLimit = includeReset
 		? findResetLimitForStatus(quota.limits)
 		: undefined;
 	return quota.limits
-		.map((limit) => formatQuotaLimit(limit, resetLimit, includeReset))
+		.map((limit) => formatQuotaLimit(limit, resetLimit, includeReset, mode))
 		.filter((part): part is string => Boolean(part));
 }
 
-function formatQuota(quota: CompactQuotaStatus): string | undefined {
+function formatQuota(
+	quota: CompactQuotaStatus,
+	mode: QuotaDisplayMode,
+): string | undefined {
 	if (quota.type === "ready") {
-		const parts = formatQuotaParts(quota, true);
+		const parts = formatQuotaParts(quota, true, mode);
 		return parts.length > 0 ? parts.join(STATUS_SEPARATOR) : undefined;
 	}
 	if (quota.type === "missing") return "no auth";
@@ -400,14 +411,16 @@ export function formatPromptStatusText(params: {
 	quota: CompactQuotaStatus;
 	width?: number;
 	maskEmail?: boolean;
+	quotaDisplay?: QuotaDisplayMode;
 }): string {
 	const variant = params.variant;
+	const mode = params.quotaDisplay ?? DEFAULT_QUOTA_DISPLAY_MODE;
 	const accountForms = formatAccountHints(params.quota, params.maskEmail);
-	const quotaParts = formatQuotaParts(params.quota, true);
-	const quotaPartsWithoutReset = formatQuotaParts(params.quota, false);
+	const quotaParts = formatQuotaParts(params.quota, true, mode);
+	const quotaPartsWithoutReset = formatQuotaParts(params.quota, false, mode);
 	const quota = quotaParts.length > 0
 		? quotaParts.join(STATUS_SEPARATOR)
-		: formatQuota(params.quota);
+		: formatQuota(params.quota, mode);
 	const primaryQuota = quotaParts[0] ?? quota;
 	const quotaWithoutReset = quotaPartsWithoutReset.length > 0
 		? quotaPartsWithoutReset.join(STATUS_SEPARATOR)
@@ -568,19 +581,22 @@ function formatUpdatedAge(fetchedAt: number | undefined, now: number): string {
 	return `${days}d ago`;
 }
 
-function formatDetailsLimit(limit: CompactQuotaLimit): string {
+function formatDetailsLimit(
+	limit: CompactQuotaLimit,
+	mode: QuotaDisplayMode,
+): string {
 	const label = limit.label.trim() || "quota";
-	const left = isPercent(limit.leftPercent)
-		? `${limit.leftPercent}% left`
+	const percent = isPercent(limit.leftPercent)
+		? formatNamedQuotaPercent(limit.leftPercent, mode)
 		: "unavailable";
 	const reset = formatReset(limit.resetAtMs);
-	return reset ? `${label}: ${left}, resets ${reset}` : `${label}: ${left}`;
+	return reset ? `${label}: ${percent}, resets ${reset}` : `${label}: ${percent}`;
 }
 
 export function formatQuotaDetailsText(
 	quota: CompactQuotaStatus,
 	now = Date.now(),
-	options: { maskEmail?: boolean } = {},
+	options: { maskEmail?: boolean; quotaDisplay?: QuotaDisplayMode } = {},
 ): string {
 	if (quota.type === "loading") return "Quota is loading.";
 	if (quota.type === "missing") return "No Codex OAuth account is configured.";
@@ -598,7 +614,9 @@ export function formatQuotaDetailsText(
 		lines.push(`Account: ${accountHint}`);
 	}
 	for (const limit of quota.limits) {
-		lines.push(formatDetailsLimit(limit));
+		lines.push(
+			formatDetailsLimit(limit, options.quotaDisplay ?? DEFAULT_QUOTA_DISPLAY_MODE),
+		);
 	}
 	// Named through formatPlanType like the stored copy, so one seat does not
 	// print "Business" in codex-list and "team" here in the same session.

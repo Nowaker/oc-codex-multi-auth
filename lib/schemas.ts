@@ -18,6 +18,7 @@ export const PluginConfigSchema = z.object({
 	codexTuiGlyphMode: z.enum(["ascii", "unicode", "auto"]).optional(),
 	maskEmail: z.boolean().optional(),
 	maskEmailInQuotaDetails: z.boolean().optional(),
+	quotaDisplay: z.enum(["free", "used"]).optional(),
 	beginnerSafeMode: z.boolean().optional(),
 	fastSession: z.boolean().optional(),
 	fastSessionStrategy: z.enum(["hybrid", "always"]).optional(),

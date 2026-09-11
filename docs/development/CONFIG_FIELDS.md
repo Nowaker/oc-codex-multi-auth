@@ -227,6 +227,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `codexTuiGlyphMode` | `ascii` | `CODEX_TUI_GLYPHS` | `ascii` / `unicode` / `auto` |
 | `maskEmail` | `false` | `CODEX_TUI_MASK_EMAIL` | Mask account emails on display surfaces |
 | `maskEmailInQuotaDetails` | `false` | `CODEX_TUI_MASK_EMAIL_DETAILS` | Also mask email in quota details |
+| `quotaDisplay` | `free` | `CODEX_AUTH_QUOTA_DISPLAY` | Word quota percentages as `free` headroom or `used` consumption; presentation only |
 | `beginnerSafeMode` | `false` | `CODEX_AUTH_BEGINNER_SAFE_MODE` | Conservative retries and recovery |
 | `fastSession` | `false` | `CODEX_AUTH_FAST_SESSION` | Force low-latency reasoning/verbosity |
 | `fastSessionStrategy` | `hybrid` | `CODEX_AUTH_FAST_SESSION_STRATEGY` | `hybrid` or `always` |
