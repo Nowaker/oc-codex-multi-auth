@@ -44,7 +44,6 @@ function buildCtx(options: { v2Enabled?: boolean } = {}): ToolContext {
 		resolveActiveIndex: () => 0,
 		formatCommandAccountLabel,
 		formatRateLimitEntry: () => null,
-		getQuotaExhaustedUntil: () => null,
 		formatQuotaExhaustionEntry: () => null,
 		buildJsonAccountIdentity: (
 			index: number,

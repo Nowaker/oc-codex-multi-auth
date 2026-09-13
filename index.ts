@@ -1837,7 +1837,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			resolveActiveIndex,
 			getRateLimitResetTimeForFamily,
 			formatRateLimitEntry,
-			getQuotaExhaustedUntil,
 			formatQuotaExhaustionEntry,
 			buildJsonAccountIdentity,
 			buildRoutingVisibilitySnapshot,
