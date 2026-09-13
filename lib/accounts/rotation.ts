@@ -150,16 +150,25 @@ export class AccountRotation {
 	 * Health/token/freshness-weighted selection. The historical default.
 	 *
 	 * When at least one account is selectable this returns the best-scoring one.
-	 * When NONE is — every account disabled, rate-limited or cooling down —
-	 * `selectHybridAccount` deliberately falls back to the least-recently-used
-	 * account instead of returning null, because retrying a blocked account
-	 * beats refusing to send anything (a single-account pool has nowhere to fail
-	 * over to, and a persisted block can outlive the limit that caused it).
+	 * When NONE is — every account disabled, rate-limited, quota-exhausted or
+	 * cooling down — `selectHybridAccount` deliberately falls back to the
+	 * least-recently-used account instead of returning null, because retrying a
+	 * blocked account beats refusing to send anything (a single-account pool has
+	 * nowhere to fail over to, and a persisted block can outlive the limit that
+	 * caused it).
 	 *
 	 * So a returned account is NOT a promise that it is selectable. Callers that
 	 * need that guarantee must consult `getSelectionExplainability`, which is
 	 * what `codex-doctor` does. {@link getCurrentOrNextForFamilySticky} and
 	 * {@link getCurrentOrNextForFamily} return null in the same situation.
+	 *
+	 * The request path overrides this last-resort behavior: when the fallback
+	 * account is marked ineligible in the selection explainability, the request
+	 * loop discards it instead of sending it upstream, so an all-blocked pool
+	 * waits out (or fails on) the block rather than retrying it — which is also
+	 * what allows model fallback to degrade the model when every account is
+	 * blocked. The last-resort retry still applies to callers that do not
+	 * re-check eligibility (for example `codex-doctor` probing).
 	 */
 	getCurrentOrNextForFamilyHybrid(
 		family: ModelFamily,
