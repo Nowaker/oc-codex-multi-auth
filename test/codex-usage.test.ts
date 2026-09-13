@@ -160,6 +160,40 @@ describe("codex usage helpers", () => {
 			expect(persisted?.accounts[0]?.quotaExhaustedUntil).toBe(resetAtMs);
 			// It no longer forges a per-family rate-limit block for every model.
 			expect(persisted?.accounts[0]?.rateLimitResetTimes ?? {}).toEqual({});
+			// The stamp is dated so cross-process saves can compare it against a
+			// doctor-clear tombstone.
+			expect(persisted?.accounts[0]?.quotaExhaustedStampAt).toEqual(expect.any(Number));
+		} finally {
+			setStoragePathDirect(null);
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("displaces a doctor-clear tombstone when the poller re-stamps the account", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "usage-quota-persist-"));
+		try {
+			setStoragePathDirect(join(directory, "accounts.json"));
+			// Doctor cleared an active stamp; the record carries the tombstone.
+			const clearedAt = Date.now() - 60_000;
+			const account = {
+				refreshToken: "refresh-1",
+				accountId: "account-1",
+				addedAt: 0,
+				lastUsed: 0,
+				quotaExhaustedClearedAt: clearedAt,
+			};
+			await saveAccounts({ version: 3, accounts: [account], activeIndex: 0 });
+			const resetAtMs = Date.now() + 86_400_000;
+
+			expect(await persistUsageQuotaExhaustion(account, resetAtMs)).toBe(true);
+
+			const persisted = await loadAccounts();
+			// The poller's authoritative evidence is newer than the clear, so the
+			// stamp lands and the tombstone goes — otherwise the next save from
+			// any process would drop the freshly recorded block.
+			expect(persisted?.accounts[0]?.quotaExhaustedUntil).toBe(resetAtMs);
+			expect(persisted?.accounts[0]?.quotaExhaustedStampAt).toEqual(expect.any(Number));
+			expect(persisted?.accounts[0]?.quotaExhaustedClearedAt).toBeUndefined();
 		} finally {
 			setStoragePathDirect(null);
 			await rm(directory, { recursive: true, force: true });

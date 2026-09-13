@@ -134,12 +134,27 @@ export interface AccountMetadataV3 {
 	lastSwitchReason?: "rate-limit" | "initial" | "rotation";
 	rateLimitResetTimes?: RateLimitStateV3;
 	coolingDownUntil?: number;
-	/**
-	 * Ms epoch until which this account's shared subscription quota (the
-	 * `/wham/usage` primary/secondary window) is spent. Account-wide, distinct
-	 * from the per-family/per-model blocks in `rateLimitResetTimes`.
-	 */
-	quotaExhaustedUntil?: number;
+  /**
+   * Ms epoch until which this account's shared subscription quota (the
+   * `/wham/usage` primary/secondary window) is spent. Account-wide, distinct
+   * from the per-family/per-model blocks in `rateLimitResetTimes`.
+   */
+  quotaExhaustedUntil?: number;
+  /**
+   * When {@link quotaExhaustedUntil} was written by an authoritative source
+   * (quota-429 header or usage poll). Used with
+   * {@link quotaExhaustedClearedAt} to keep cross-process saves monotonic:
+   * a stamp predating a doctor clear must not be resurrected by a process
+   * still holding it in memory.
+   */
+  quotaExhaustedStampAt?: number;
+  /**
+   * When `codex-doctor --fix` last cleared an ACTIVE quota-exhaustion stamp.
+   * Tombstone for the cross-process merge: a stale in-memory stamp whose
+   * {@link quotaExhaustedStampAt} is not newer than this value stays cleared.
+   * Never set alongside a live stamp — stamp writers delete it.
+   */
+  quotaExhaustedClearedAt?: number;
 	cooldownReason?: CooldownReason;
 }
 

@@ -34,6 +34,8 @@ export interface StaleStateAccount {
 	cooldownReason?: string;
 	rateLimitResetTimes?: Record<string, number | undefined>;
 	quotaExhaustedUntil?: number;
+	quotaExhaustedStampAt?: number;
+	quotaExhaustedClearedAt?: number;
 }
 
 export interface ClearedStaleState {
@@ -74,6 +76,16 @@ export function clearRefreshedAccountStaleState(
 		typeof account.quotaExhaustedUntil === "number" && account.quotaExhaustedUntil > now;
 	if (account.quotaExhaustedUntil !== undefined) {
 		delete account.quotaExhaustedUntil;
+		delete account.quotaExhaustedStampAt;
+		// Tombstone for the cross-process merge: another opencode process can
+		// still hold the cleared stamp in memory, and its next saveToDisk would
+		// resurrect the block (the #218 monotonic merge only ever adopts
+		// longer stamps, never drops its own). Dating the clear lets the merge
+		// distinguish "stale snapshot" (stamp written before the clear) from
+		// "new authoritative evidence" (stamp written after, which wins).
+		if (hadActiveQuotaExhaustion) {
+			account.quotaExhaustedClearedAt = now;
+		}
 	}
 
 	let clearedRateLimitKeys = 0;

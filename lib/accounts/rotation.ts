@@ -481,6 +481,11 @@ export class AccountRotation {
 			return false;
 		}
 		account.quotaExhaustedUntil = resetAt;
+		// Provenance for the cross-process merge: a stamp whose write time is
+		// not newer than a doctor-clear tombstone must not be resurrected by a
+		// stale-snapshot save. Every authoritative write re-dates the stamp.
+		account.quotaExhaustedStampAt = now;
+		delete account.quotaExhaustedClearedAt;
 		account.lastRateLimitReason = "quota";
 		return true;
 	}

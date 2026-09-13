@@ -56,6 +56,8 @@ export function clearExpiredRateLimits(entity: RateLimitedEntity): void {
 export interface QuotaExhaustibleEntity {
 	/** Ms epoch until which this account's shared subscription quota is spent. */
 	quotaExhaustedUntil?: number;
+	/** When the stamp was written; see AccountMetadataV3. */
+	quotaExhaustedStampAt?: number;
 }
 
 /**
@@ -87,6 +89,7 @@ export function clearExpiredQuotaExhaustion(
 	const until = entity.quotaExhaustedUntil;
 	if (until !== undefined && (!Number.isFinite(until) || now >= until)) {
 		delete entity.quotaExhaustedUntil;
+		delete entity.quotaExhaustedStampAt;
 	}
 }
 

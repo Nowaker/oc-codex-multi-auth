@@ -79,6 +79,8 @@ export class AccountPersistence {
 						? { ...account.rateLimitResetTimes }
 						: undefined,
 				quotaExhaustedUntil: account.quotaExhaustedUntil,
+				quotaExhaustedStampAt: account.quotaExhaustedStampAt,
+				quotaExhaustedClearedAt: account.quotaExhaustedClearedAt,
 				coolingDownUntil: account.coolingDownUntil,
 				cooldownReason: account.cooldownReason,
 			})),
@@ -110,6 +112,7 @@ export class AccountPersistence {
 				// ids the refresh token participates in the identity key, and
 				// adopting a rotated token would change which disk record this
 				// account matches.
+				this.applyDiskQuotaClearTombstones(storage, current);
 				this.adoptLongerDiskRateLimits(storage, current);
 				this.adoptNewerDiskCredentials(storage, current);
 			}
@@ -169,13 +172,24 @@ export class AccountPersistence {
 				}
 
 				// Account-wide quota exhaustion is monotonic like the per-family
-				// blocks: keep whichever side's stamp runs longer.
+				// blocks: keep whichever side's stamp runs longer. A doctor-clear
+				// tombstone on the disk record outranks a snapshot stamp that was
+				// not written after the clear (see applyDiskQuotaClearTombstones);
+				// a stamp that IS newer displaces the tombstone.
+				const diskClearedAt = record.quotaExhaustedClearedAt;
+				const mineStampIsNewerThanClear =
+					typeof diskClearedAt !== "number" ||
+					(typeof mine.quotaExhaustedStampAt === "number" &&
+						mine.quotaExhaustedStampAt > diskClearedAt);
 				if (
 					typeof mine.quotaExhaustedUntil === "number" &&
 					mine.quotaExhaustedUntil > now &&
-					mine.quotaExhaustedUntil > (record.quotaExhaustedUntil ?? 0)
+					mine.quotaExhaustedUntil > (record.quotaExhaustedUntil ?? 0) &&
+					mineStampIsNewerThanClear
 				) {
 					merged.quotaExhaustedUntil = mine.quotaExhaustedUntil;
+					merged.quotaExhaustedStampAt = mine.quotaExhaustedStampAt;
+					delete merged.quotaExhaustedClearedAt;
 				}
 
 				if (typeof mine.lastUsed === "number" && mine.lastUsed > (record.lastUsed ?? 0)) {
@@ -186,6 +200,54 @@ export class AccountPersistence {
 				return merged;
 			}),
 		};
+	}
+
+	/**
+	 * Keep a `codex-doctor --fix` quota-stamp clear that landed on disk after
+	 * this process loaded its snapshot.
+	 *
+	 * The #218 monotonic merge is one-directional by design: it adopts longer
+	 * stamps so a stale process cannot wipe out a fresh week-long block, but
+	 * that same direction resurrects a stamp a doctor verification just
+	 * cleared — this process still holds the stamp in memory and writes it
+	 * back verbatim on its next save. The doctor clear cannot distinguish
+	 * "stale snapshot" from "new evidence" through values alone, so it dates
+	 * its clear (`quotaExhaustedClearedAt`) and every authoritative stamp
+	 * write dates itself (`quotaExhaustedStampAt`). A stamp at least as old
+	 * as the clear stays cleared; a newer stamp (real 429/poller evidence
+	 * recorded after the clear) wins and is kept.
+	 *
+	 * Stamps without provenance (`quotaExhaustedStampAt` undefined — written
+	 * by pre-upgrade builds or hand-edited files) are treated as predating
+	 * the clear, so the tombstone stays effective across mixed-version pools.
+	 * The cost of a wrongly-suppressed legacy stamp is one upstream 429 that
+	 * immediately re-stamps the account.
+	 */
+	private applyDiskQuotaClearTombstones(
+		outgoing: AccountStorageV3,
+		disk: AccountStorageV3,
+	): void {
+		const diskByIdentity = new Map<string, AccountMetadataV3>();
+		for (const record of disk.accounts) {
+			diskByIdentity.set(getWorkspaceIdentityKey(record), record);
+		}
+
+		for (const mine of outgoing.accounts) {
+			if (!mine) continue;
+			const theirs = diskByIdentity.get(getWorkspaceIdentityKey(mine));
+			const clearedAt = theirs?.quotaExhaustedClearedAt;
+			if (
+				typeof clearedAt !== "number" ||
+				!Number.isFinite(clearedAt) ||
+				mine.quotaExhaustedUntil === undefined
+			) {
+				continue;
+			}
+			if ((mine.quotaExhaustedStampAt ?? 0) > clearedAt) continue;
+			delete mine.quotaExhaustedUntil;
+			delete mine.quotaExhaustedStampAt;
+			mine.quotaExhaustedClearedAt = clearedAt;
+		}
 	}
 
 	/**
@@ -226,7 +288,8 @@ export class AccountPersistence {
 			// per-family blocks below are adopted (#218): a second process may have
 			// recorded a week-long block after this one loaded. Handled before the
 			// `theirResets` guard so a disk record carrying only a quota stamp is
-			// not skipped.
+			// not skipped. The stamp's provenance travels with it, and a freshly
+			// adopted stamp displaces any tombstone (stamp writers never set both).
 			const theirQuota = theirs?.quotaExhaustedUntil;
 			if (
 				typeof theirQuota === "number" &&
@@ -235,6 +298,8 @@ export class AccountPersistence {
 				theirQuota > (mine.quotaExhaustedUntil ?? 0)
 			) {
 				mine.quotaExhaustedUntil = theirQuota;
+				mine.quotaExhaustedStampAt = theirs?.quotaExhaustedStampAt;
+				delete mine.quotaExhaustedClearedAt;
 			}
 			const theirResets = theirs?.rateLimitResetTimes;
 			if (!theirResets) continue;

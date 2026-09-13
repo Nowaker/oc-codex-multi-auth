@@ -57,6 +57,10 @@ export interface ManagedAccount {
 	lastRateLimitReason?: RateLimitReason;
 	rateLimitResetTimes: RateLimitStateV3;
 	quotaExhaustedUntil?: number;
+	/** When the quota-exhaustion stamp was written; see AccountMetadataV3. */
+	quotaExhaustedStampAt?: number;
+	/** Doctor-clear tombstone; see AccountMetadataV3. */
+	quotaExhaustedClearedAt?: number;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
 }
@@ -390,6 +394,8 @@ export class AccountState {
 						lastSwitchReason: account.lastSwitchReason,
 						rateLimitResetTimes: account.rateLimitResetTimes ?? {},
 						quotaExhaustedUntil: account.quotaExhaustedUntil,
+						quotaExhaustedStampAt: account.quotaExhaustedStampAt,
+						quotaExhaustedClearedAt: account.quotaExhaustedClearedAt,
 						coolingDownUntil: account.coolingDownUntil,
 						cooldownReason: account.cooldownReason,
 					};

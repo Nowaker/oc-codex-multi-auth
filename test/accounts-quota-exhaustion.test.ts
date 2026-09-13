@@ -88,6 +88,35 @@ describe("account-wide quota exhaustion state", () => {
 		expect(manager.getCurrentOrNextForFamily("gpt-5.1")?.accountId).toBe("acct-1");
 	});
 
+	// (c2) — authoritative writes carry provenance and displace the tombstone
+	it("markQuotaExhausted dates the stamp and displaces a doctor-clear tombstone", () => {
+		const now = Date.now();
+		const clearedAt = now - 60_000;
+		const manager = new AccountManager(undefined, {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "token-1",
+					accountId: "acct-1",
+					addedAt: now,
+					lastUsed: now,
+					// A doctor clear landed earlier; a fresh authoritative 429
+					// must outrank it.
+					quotaExhaustedClearedAt: clearedAt,
+				},
+			],
+		});
+		const account = manager.getCurrentAccount()!;
+		const before = Date.now();
+
+		expect(manager.markQuotaExhausted(account, now + 86_400_000, "codex")).toBe(true);
+
+		expect(account.quotaExhaustedUntil).toBe(now + 86_400_000);
+		expect(account.quotaExhaustedStampAt).toBeGreaterThanOrEqual(before);
+		expect(account.quotaExhaustedClearedAt).toBeUndefined();
+	});
+
 	// (d)
 	it("getMinWaitTimeForFamily returns the quota-exhaustion wait when it is the only block", () => {
 		const now = Date.now();

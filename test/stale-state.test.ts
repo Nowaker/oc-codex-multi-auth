@@ -75,6 +75,33 @@ describe("clearRefreshedAccountStaleState", () => {
 		expect(account.quotaExhaustedUntil).toBeUndefined();
 	});
 
+	it("dates the quota-exhaustion clear so cross-process saves cannot resurrect it", () => {
+		const before = Date.now();
+		const account: StaleStateAccount = {
+			quotaExhaustedUntil: Date.now() + 7 * 24 * 60 * 60 * 1000,
+			quotaExhaustedStampAt: Date.now() - 3_600_000,
+		};
+
+		clearRefreshedAccountStaleState(account);
+
+		// The tombstone postdates the cleared stamp's write, which is exactly
+		// what the persistence merge checks to keep the clear sticky.
+		expect(account.quotaExhaustedClearedAt).toBeGreaterThanOrEqual(before);
+		expect(account.quotaExhaustedStampAt).toBeUndefined();
+	});
+
+	it("does not tombstone an already-expired quota stamp (nothing to resurrect)", () => {
+		const account: StaleStateAccount = {
+			quotaExhaustedUntil: Date.now() - 1_000,
+		};
+
+		const result = clearRefreshedAccountStaleState(account);
+
+		expect(result.clearedQuotaExhaustion).toBe(false);
+		expect(account.quotaExhaustedUntil).toBeUndefined();
+		expect(account.quotaExhaustedClearedAt).toBeUndefined();
+	});
+
 	it("aggregates across multiple accounts", () => {
 		const accounts: StaleStateAccount[] = [
 			{ coolingDownUntil: Date.now() + 600_000, cooldownReason: "auth-failure" },

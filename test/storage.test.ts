@@ -1403,6 +1403,8 @@ describe("storage", () => {
             expiresAt: 1e400,
             coolingDownUntil: NaN,
             quotaExhaustedUntil: "not-a-number",
+            quotaExhaustedStampAt: "garbage",
+            quotaExhaustedClearedAt: 1e400,
             rateLimitResetTimes: { codex: 1e400, "gpt-5.1": 12345, broken: "soon" },
           },
         ],
@@ -1416,6 +1418,8 @@ describe("storage", () => {
       expect(account?.expiresAt).toBeUndefined();
       expect(account?.coolingDownUntil).toBeUndefined();
       expect(account?.quotaExhaustedUntil).toBeUndefined();
+      expect(account?.quotaExhaustedStampAt).toBeUndefined();
+      expect(account?.quotaExhaustedClearedAt).toBeUndefined();
       expect(account?.rateLimitResetTimes).toEqual({ "gpt-5.1": 12345 });
     });
 

@@ -407,6 +407,11 @@ export async function persistUsageQuotaExhaustion(
 				continue;
 			}
 			storedAccount.quotaExhaustedUntil = resetAt;
+			// Authoritative write: date the stamp and drop any doctor-clear
+			// tombstone so this newer evidence is not suppressed by a
+			// cross-process merge against an older clear.
+			storedAccount.quotaExhaustedStampAt = now;
+			delete storedAccount.quotaExhaustedClearedAt;
 			changed = true;
 		}
 		if (changed) await persist(current);
