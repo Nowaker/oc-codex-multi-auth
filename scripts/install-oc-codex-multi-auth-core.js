@@ -257,8 +257,28 @@ async function readStandaloneStorage(path) {
 	try {
 		const raw = await readFile(path, "utf-8");
 		const parsed = JSON.parse(raw);
+		// Shape validation, not just parse validation: a JSON array, scalar, or
+		// object without an `accounts` array is unreadable by the plugin runtime
+		// too (normalizeAccountStorage rejects it), so reporting it as a healthy
+		// empty pool (exit 0, "No accounts configured") hides the corruption
+		// from scripted callers that key on exit codes.
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return { storage: null, error: "Storage file must be a JSON object with an accounts array." };
+		}
+		// Forward-compat mirror of the runtime guard: a newer schema version
+		// must not be shown as readable accounts by this build.
+		const version = parsed.version;
+		if (typeof version === "number" && Number.isFinite(version) && version > 3) {
+			return {
+				storage: null,
+				error: `Unsupported account storage schema version ${version}; this build supports up to version 3.`,
+			};
+		}
+		if (!Array.isArray(parsed.accounts)) {
+			return { storage: null, error: "Storage file must be a JSON object with an accounts array." };
+		}
 		return {
-			storage: parsed && typeof parsed === "object" ? normalizeStandaloneStorage(parsed) : null,
+			storage: normalizeStandaloneStorage(parsed),
 			error: null,
 		};
 	} catch (error) {
@@ -512,9 +532,29 @@ export async function runWarmCommand(parsed, options = {}) {
 	// persisted to the SAME file the rest of the toolchain reads.
 	storageMod.setStoragePathDirect(storagePath);
 
-	const storage = await storageMod.loadAccounts();
+	let storage = null;
+	try {
+		storage = await storageMod.loadAccounts();
+	} catch (error) {
+		// Typed storage errors (e.g. UNSUPPORTED_SCHEMA_VERSION) carry the
+		// upgrade hint; surface them rather than crashing the CLI.
+		const hint = error && typeof error.hint === "string" ? ` ${error.hint}` : "";
+		const payload = { command: "warm", storagePath, error: `${formatErrorForLog(error)}${hint}` };
+		printWarmResult(payload, parsed.json);
+		return { exitCode: 1, action: "warm", storagePath };
+	}
 	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
 	if (accounts.length === 0) {
+		// `loadAccounts` swallows parse/IO errors and returns null. Probe the
+		// file so a corrupt storage fails like `status`/`doctor` do (exit 1)
+		// instead of reporting a healthy empty pool. ENOENT stays a silent
+		// empty pool: a missing file legitimately means no accounts yet.
+		const probe = await readStandaloneStorage(storagePath);
+		if (probe.error) {
+			const payload = { command: "warm", storagePath, error: probe.error };
+			printWarmResult(payload, parsed.json);
+			return { exitCode: 1, action: "warm", storagePath };
+		}
 		const payload = {
 			command: "warm",
 			storagePath,
@@ -618,9 +658,27 @@ export async function runLimitsCommand(parsed, options = {}) {
 	// persisted to the SAME file the rest of the toolchain reads.
 	storageMod.setStoragePathDirect(storagePath);
 
-	const storage = await storageMod.loadAccounts();
+	let storage = null;
+	try {
+		storage = await storageMod.loadAccounts();
+	} catch (error) {
+		// Typed storage errors (e.g. UNSUPPORTED_SCHEMA_VERSION) carry the
+		// upgrade hint; surface them rather than crashing the CLI.
+		const hint = error && typeof error.hint === "string" ? ` ${error.hint}` : "";
+		const payload = { command: "limits", storagePath, error: `${formatErrorForLog(error)}${hint}` };
+		printLimitsResult(payload, parsed.json);
+		return { exitCode: 1, action: "limits", storagePath };
+	}
 	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
 	if (accounts.length === 0) {
+		// Same probe contract as `warm`: a corrupt file exits 1 like
+		// `status`/`doctor`; a missing file stays a silent empty pool.
+		const probe = await readStandaloneStorage(storagePath);
+		if (probe.error) {
+			const payload = { command: "limits", storagePath, error: probe.error };
+			printLimitsResult(payload, parsed.json);
+			return { exitCode: 1, action: "limits", storagePath };
+		}
 		const payload = {
 			command: "limits",
 			storagePath,
@@ -794,14 +852,31 @@ export async function runStandaloneCommand(command, argv = [], options = {}) {
 			if (parsed.configPath) process.env.CODEX_KEYCHAIN = "0";
 			storageMod.setStoragePathDirect(storagePath);
 			shutdownMod.setShutdownOwnsProcess(true);
-			storage = await storageMod.loadAccounts();
-			if (!storage) {
+			try {
+				storage = await storageMod.loadAccounts();
+			} catch (loadError) {
+				// Typed storage errors (UNSUPPORTED_SCHEMA_VERSION, unknown V2)
+				// carry exact in-tree copy plus an upgrade/recovery hint, and the
+				// load never got far enough to attempt a repair. Surface them on
+				// the error channel (exit 1) instead of the generic catch below,
+				// which is reserved for unknown throws so upstream failure text
+				// never reaches output unredacted.
+				if (loadError && typeof loadError.code === "string") {
+					const hint = typeof loadError.hint === "string" ? ` ${loadError.hint}` : "";
+					error = `${formatErrorForLog(loadError)}${hint}`;
+				} else {
+					throw loadError;
+				}
+			}
+			if (!storage && !error) {
 				// `loadAccounts` swallows JSON parse/IO errors and returns null. In
 				// default-path mode the pre-read above was skipped (keychain routing
 				// may own the pool), so probe the JSON file here: a corrupt file must
 				// surface as a parse error (exit 1) instead of "No accounts
 				// configured" (exit 0). ENOENT stays silent - a missing file with an
-				// empty keychain legitimately means no accounts yet.
+				// empty keychain legitimately means no accounts yet. Skipped when a
+				// typed load error already set `error`; the probe would only
+				// overwrite the precise schema message with its own paraphrase.
 				const probe = await readStandaloneStorage(storagePath);
 				if (probe.error) error = probe.error;
 			}
