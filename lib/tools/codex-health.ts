@@ -10,6 +10,7 @@ import {
 	findDisabledTokenSourceDuplicates,
 	findConflictingBusinessMemberCredentials,
 	findStaleRecoverableAccounts,
+	findQuotaExhaustedAccounts,
 } from "../accounts/stale-state.js";
 import { formatUiHeader, formatUiItem, paintUiText } from "../ui/format.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
@@ -152,11 +153,13 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 			// (issue #171). Token verification is destructive to single-use refresh
 			// tokens, but this tool persists rotations before reporting health.
 			const staleRecoverable = findStaleRecoverableAccounts(storage.accounts);
+			const quotaExhausted = findQuotaExhaustedAccounts(storage.accounts);
 			const duplicateSlots = findDisabledTokenSourceDuplicates(storage.accounts);
 			const memberCredentialConflicts = findConflictingBusinessMemberCredentials(
 				storage.accounts,
 			);
 			const staleSlots = staleRecoverable.map((index) => index + 1);
+			const quotaSlots = quotaExhausted.map((index) => index + 1);
 			const dupSlots = duplicateSlots.map((index) => index + 1);
 			const memberConflictSlots = memberCredentialConflicts.map((indices) =>
 				indices.map((index) => index + 1),
@@ -164,6 +167,11 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 			if (staleSlots.length > 0) {
 				results.push(
 					`Stale state: ${staleSlots.length} account(s) blocked by a stale cooldown/rate-limit (slots: ${staleSlots.join(", ")}). Run \`codex-doctor --fix\`.`,
+				);
+			}
+			if (quotaSlots.length > 0) {
+				results.push(
+					`Quota exhausted: ${quotaSlots.length} account(s) carry an active quota-exhaustion stamp (slots: ${quotaSlots.join(", ")}). Stamps are set by the usage poller or a quota 429 and are usually real; \`codex-doctor --fix\` clears them after verification, and the next quota 429 re-establishes the block.`,
 				);
 			}
 			if (dupSlots.length > 0) {
@@ -191,6 +199,7 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 					unhealthyCount,
 					skippedCount,
 					staleRecoverableSlots: staleSlots,
+					quotaExhaustedSlots: quotaSlots,
 					disabledDuplicateSlots: dupSlots,
 					businessMemberConflictSlots: memberConflictSlots,
 					disabledWithFreshCredentialSlots: absorbedSlots,

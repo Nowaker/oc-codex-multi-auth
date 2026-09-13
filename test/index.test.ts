@@ -3432,6 +3432,30 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.staleRecoverableSlots).toContain(1);
 			expect(result.disabledDuplicateSlots).toContain(2);
 		});
+
+		it("reports quota exhaustion separately from stale state in health output", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r-quota",
+					email: "quota@example.com",
+					accountId: "org-QUOTA",
+					organizationId: "org-QUOTA",
+					accountIdSource: "org",
+					enabled: true,
+					quotaExhaustedUntil: Date.now() + 7 * 24 * 60 * 60 * 1000,
+				},
+			];
+			const text = (await plugin.tool["codex-health"].execute()) as string;
+			expect(text).toContain("Quota exhausted:");
+			expect(text).toContain("codex-doctor --fix");
+			expect(text).not.toContain("Stale state:");
+			const result = parseJsonOutput<{
+				staleRecoverableSlots: number[];
+				quotaExhaustedSlots: number[];
+			}>(await plugin.tool["codex-health"].execute({ format: "json" }));
+			expect(result.staleRecoverableSlots).toEqual([]);
+			expect(result.quotaExhaustedSlots).toContain(1);
+		});
 	});
 
 	describe("codex-remove tool", () => {

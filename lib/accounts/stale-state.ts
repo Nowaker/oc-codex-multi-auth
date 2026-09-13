@@ -247,6 +247,14 @@ export interface StaleStateScanAccount {
  * issue #171 that `codex-doctor --fix` can recover (a successful token refresh
  * proves the credential is alive, so the block is stale).
  *
+ * A future-dated `quotaExhaustedUntil` is deliberately NOT flagged here: unlike
+ * the legacy blanket `rateLimitResetTimes` stamps, quota exhaustion is written
+ * only by authoritative sources (the usage poller and quota-429 response
+ * headers with horizon guards), so a future stamp is real, not stale #171
+ * state. Quota-blocked accounts are surfaced separately through
+ * {@link findQuotaExhaustedAccounts} so diagnostics do not tell a user with a
+ * genuine week-long block that the block is stale.
+ *
  * This is read-only (it mutates nothing) so both `codex-health` and the
  * non-`--fix` `codex-doctor` path can surface the finding and point the user at
  * the repair. Expired cooldowns / rate-limits are ignored because the normal
@@ -267,9 +275,6 @@ export function findStaleRecoverableAccounts(
 		const hasFutureCooldown =
 			typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now;
 
-		const hasFutureQuotaExhaustion =
-			typeof account.quotaExhaustedUntil === "number" && account.quotaExhaustedUntil > now;
-
 		let hasFutureRateLimit = false;
 		if (account.rateLimitResetTimes) {
 			for (const reset of Object.values(account.rateLimitResetTimes)) {
@@ -280,7 +285,40 @@ export function findStaleRecoverableAccounts(
 			}
 		}
 
-		if (hasFutureCooldown || hasFutureRateLimit || hasFutureQuotaExhaustion) {
+		if (hasFutureCooldown || hasFutureRateLimit) {
+			blocked.push(i);
+		}
+	}
+	return blocked;
+}
+
+/**
+ * Identify enabled accounts carrying an active (future-dated) account-wide
+ * quota-exhaustion stamp. These blocks are authoritative, not stale #171
+ * state — they are written only by the usage poller or a quota 429 response
+ * and re-establish themselves after being cleared — so diagnostics must label
+ * them as quota exhaustion rather than "recoverable stale state".
+ *
+ * Read-only: mutates nothing. `codex-doctor --fix` still clears these stamps
+ * after a successful token verification (an explicit user action), which is
+ * why they are worth surfacing, but the next quota 429 or usage poll simply
+ * re-stamps the account.
+ *
+ * @returns the 0-based indexes of enabled accounts blocked by quota exhaustion.
+ */
+export function findQuotaExhaustedAccounts(
+	accounts: StaleStateScanAccount[],
+	now: number = nowMs(),
+): number[] {
+	const blocked: number[] = [];
+	for (let i = 0; i < accounts.length; i += 1) {
+		const account = accounts[i];
+		if (!account) continue;
+		if (account.enabled === false) continue;
+		if (
+			typeof account.quotaExhaustedUntil === "number" &&
+			account.quotaExhaustedUntil > now
+		) {
 			blocked.push(i);
 		}
 	}

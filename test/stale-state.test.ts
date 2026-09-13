@@ -6,6 +6,7 @@ import {
 	findDisabledAccountsWithFreshCredential,
 	findConflictingBusinessMemberCredentials,
 	findStaleRecoverableAccounts,
+	findQuotaExhaustedAccounts,
 	type StaleStateAccount,
 } from "../lib/accounts/stale-state.js";
 
@@ -205,8 +206,13 @@ describe("findStaleRecoverableAccounts", () => {
 		expect(findStaleRecoverableAccounts(accounts, NOW)).toEqual([0]);
 	});
 
-	it("flags an account blocked only by a future quota-exhaustion stamp", () => {
+	it("does not flag a quota-only block as stale (quota stamps are authoritative)", () => {
 		const accounts = [{ enabled: true, quotaExhaustedUntil: FUTURE }];
+		expect(findStaleRecoverableAccounts(accounts, NOW)).toEqual([]);
+	});
+
+	it("still flags an account whose cooldown is stale alongside a quota stamp", () => {
+		const accounts = [{ enabled: true, coolingDownUntil: FUTURE, quotaExhaustedUntil: FUTURE }];
 		expect(findStaleRecoverableAccounts(accounts, NOW)).toEqual([0]);
 	});
 
@@ -235,6 +241,30 @@ describe("findStaleRecoverableAccounts", () => {
 			{ enabled: true, rateLimitResetTimes: { "gpt-5.4": FUTURE, "gpt-5.4-mini": FUTURE } },
 		];
 		expect(findStaleRecoverableAccounts(accounts, NOW)).toEqual([0, 2]);
+	});
+});
+
+describe("findQuotaExhaustedAccounts", () => {
+	const NOW = 1_700_000_000_000;
+	const FUTURE = NOW + 7 * 24 * 60 * 60 * 1000;
+	const PAST = NOW - 3_600_000;
+
+	it("flags an enabled account blocked only by a future quota-exhaustion stamp", () => {
+		const accounts = [{ enabled: true, quotaExhaustedUntil: FUTURE }];
+		expect(findQuotaExhaustedAccounts(accounts, NOW)).toEqual([0]);
+	});
+
+	it("ignores an expired stamp and a disabled account", () => {
+		const accounts = [
+			{ enabled: true, quotaExhaustedUntil: PAST },
+			{ enabled: false, quotaExhaustedUntil: FUTURE },
+		];
+		expect(findQuotaExhaustedAccounts(accounts, NOW)).toEqual([]);
+	});
+
+	it("flags a quota stamp even when a stale cooldown is also present", () => {
+		const accounts = [{ enabled: true, coolingDownUntil: FUTURE, quotaExhaustedUntil: FUTURE }];
+		expect(findQuotaExhaustedAccounts(accounts, NOW)).toEqual([0]);
 	});
 });
 
