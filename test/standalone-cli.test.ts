@@ -467,6 +467,37 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		});
 	});
 
+	it("doctor: reports malformed default-path JSON as an error during --fix, not as success", async () => {
+		// Given a corrupt default storage file while the runtime swallows the
+		// parse failure (loadAccounts returns null instead of throwing).
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const accountsPath = join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json");
+		await mkdir(join(tempHome, ".opencode"), { recursive: true });
+		await writeFile(accountsPath, "{", "utf-8");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const repairDoctorAccounts = vi.fn().mockResolvedValue({ appliedFixes: [], fixErrors: [] });
+
+		// When default-path repair discovers nothing because the file is unparseable.
+		const result = await runInstaller(["doctor", "--fix", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			loadDoctorRuntime: async () => [
+				{ setStoragePathDirect: vi.fn(), loadAccounts: async () => null },
+				{ repairDoctorAccounts },
+				{ setShutdownOwnsProcess: vi.fn() },
+			],
+		});
+
+		// Then the parse error surfaces with a nonzero exit instead of
+		// "No accounts configured" (exit 0), and no repair is attempted.
+		expect(result.exitCode).toBe(1);
+		expect(repairDoctorAccounts).not.toHaveBeenCalled();
+		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
+			error: expect.any(String), message: "Storage could not be parsed.", fixApplied: false, fixErrors: [],
+		});
+	});
+
 	it.each(["discovery", "repair", "snapshot"])("doctor: redacts runtime %s failures without a JSON pool", async (stage) => {
 		// Given an injected backend that fails at one repair boundary.
 		vi.resetModules();

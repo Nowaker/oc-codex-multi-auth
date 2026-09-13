@@ -795,10 +795,22 @@ export async function runStandaloneCommand(command, argv = [], options = {}) {
 			storageMod.setStoragePathDirect(storagePath);
 			shutdownMod.setShutdownOwnsProcess(true);
 			storage = await storageMod.loadAccounts();
-			const repair = await repairMod.repairDoctorAccounts(storage?.accounts ?? []);
-			appliedFixes.push(...repair.appliedFixes);
-			fixErrors.push(...repair.fixErrors);
-			storage = (await storageMod.loadAccounts()) ?? storage;
+			if (!storage) {
+				// `loadAccounts` swallows JSON parse/IO errors and returns null. In
+				// default-path mode the pre-read above was skipped (keychain routing
+				// may own the pool), so probe the JSON file here: a corrupt file must
+				// surface as a parse error (exit 1) instead of "No accounts
+				// configured" (exit 0). ENOENT stays silent - a missing file with an
+				// empty keychain legitimately means no accounts yet.
+				const probe = await readStandaloneStorage(storagePath);
+				if (probe.error) error = probe.error;
+			}
+			if (!error) {
+				const repair = await repairMod.repairDoctorAccounts(storage?.accounts ?? []);
+				appliedFixes.push(...repair.appliedFixes);
+				fixErrors.push(...repair.fixErrors);
+				storage = (await storageMod.loadAccounts()) ?? storage;
+			}
 		} catch {
 			fixErrors.push("Doctor repair could not complete. Check the selected storage file and installed runtime.");
 		} finally {
