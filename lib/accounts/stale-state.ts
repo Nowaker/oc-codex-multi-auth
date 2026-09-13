@@ -33,6 +33,7 @@ export interface StaleStateAccount {
 	coolingDownUntil?: number;
 	cooldownReason?: string;
 	rateLimitResetTimes?: Record<string, number | undefined>;
+	quotaExhaustedUntil?: number;
 }
 
 export interface ClearedStaleState {
@@ -40,6 +41,8 @@ export interface ClearedStaleState {
 	clearedCooldown: boolean;
 	/** Number of rate-limit reset entries removed. */
 	clearedRateLimitKeys: number;
+	/** True when an active account-wide quota-exhaustion stamp was cleared. */
+	clearedQuotaExhaustion: boolean;
 }
 
 /**
@@ -67,6 +70,12 @@ export function clearRefreshedAccountStaleState(
 		delete account.cooldownReason;
 	}
 
+	const hadActiveQuotaExhaustion =
+		typeof account.quotaExhaustedUntil === "number" && account.quotaExhaustedUntil > now;
+	if (account.quotaExhaustedUntil !== undefined) {
+		delete account.quotaExhaustedUntil;
+	}
+
 	let clearedRateLimitKeys = 0;
 	if (account.rateLimitResetTimes) {
 		clearedRateLimitKeys = Object.keys(account.rateLimitResetTimes).length;
@@ -78,6 +87,7 @@ export function clearRefreshedAccountStaleState(
 	return {
 		clearedCooldown: hadActiveCooldown,
 		clearedRateLimitKeys,
+		clearedQuotaExhaustion: hadActiveQuotaExhaustion,
 	};
 }
 
@@ -86,6 +96,8 @@ export interface StaleStateRepairSummary {
 	cooldownsCleared: number;
 	/** Total rate-limit reset entries removed across all accounts. */
 	rateLimitKeysCleared: number;
+	/** Accounts that had an active quota-exhaustion stamp cleared. */
+	quotaExhaustionsCleared: number;
 }
 
 /**
@@ -98,12 +110,14 @@ export function clearRefreshedAccountsStaleState(
 ): StaleStateRepairSummary {
 	let cooldownsCleared = 0;
 	let rateLimitKeysCleared = 0;
+	let quotaExhaustionsCleared = 0;
 	for (const account of accounts) {
 		const cleared = clearRefreshedAccountStaleState(account);
 		if (cleared.clearedCooldown) cooldownsCleared += 1;
 		rateLimitKeysCleared += cleared.clearedRateLimitKeys;
+		if (cleared.clearedQuotaExhaustion) quotaExhaustionsCleared += 1;
 	}
-	return { cooldownsCleared, rateLimitKeysCleared };
+	return { cooldownsCleared, rateLimitKeysCleared, quotaExhaustionsCleared };
 }
 
 /**
@@ -224,6 +238,7 @@ export interface StaleStateScanAccount {
 	coolingDownUntil?: number;
 	cooldownReason?: string;
 	rateLimitResetTimes?: Record<string, number | undefined>;
+	quotaExhaustedUntil?: number;
 }
 
 /**
@@ -231,6 +246,14 @@ export interface StaleStateScanAccount {
  * cooldown and/or future-dated rate-limit reset — i.e. the exact dark state from
  * issue #171 that `codex-doctor --fix` can recover (a successful token refresh
  * proves the credential is alive, so the block is stale).
+ *
+ * A future-dated `quotaExhaustedUntil` is deliberately NOT flagged here: unlike
+ * the legacy blanket `rateLimitResetTimes` stamps, quota exhaustion is written
+ * only by authoritative sources (the usage poller and quota-429 response
+ * headers with horizon guards), so a future stamp is real, not stale #171
+ * state. Quota-blocked accounts are surfaced separately through
+ * {@link findQuotaExhaustedAccounts} so diagnostics do not tell a user with a
+ * genuine week-long block that the block is stale.
  *
  * This is read-only (it mutates nothing) so both `codex-health` and the
  * non-`--fix` `codex-doctor` path can surface the finding and point the user at
@@ -263,6 +286,39 @@ export function findStaleRecoverableAccounts(
 		}
 
 		if (hasFutureCooldown || hasFutureRateLimit) {
+			blocked.push(i);
+		}
+	}
+	return blocked;
+}
+
+/**
+ * Identify enabled accounts carrying an active (future-dated) account-wide
+ * quota-exhaustion stamp. These blocks are authoritative, not stale #171
+ * state — they are written only by the usage poller or a quota 429 response
+ * and re-establish themselves after being cleared — so diagnostics must label
+ * them as quota exhaustion rather than "recoverable stale state".
+ *
+ * Read-only: mutates nothing. `codex-doctor --fix` still clears these stamps
+ * after a successful token verification (an explicit user action), which is
+ * why they are worth surfacing, but the next quota 429 or usage poll simply
+ * re-stamps the account.
+ *
+ * @returns the 0-based indexes of enabled accounts blocked by quota exhaustion.
+ */
+export function findQuotaExhaustedAccounts(
+	accounts: StaleStateScanAccount[],
+	now: number = nowMs(),
+): number[] {
+	const blocked: number[] = [];
+	for (let i = 0; i < accounts.length; i += 1) {
+		const account = accounts[i];
+		if (!account) continue;
+		if (account.enabled === false) continue;
+		if (
+			typeof account.quotaExhaustedUntil === "number" &&
+			account.quotaExhaustedUntil > now
+		) {
 			blocked.push(i);
 		}
 	}
