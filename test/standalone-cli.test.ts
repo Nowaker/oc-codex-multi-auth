@@ -498,6 +498,107 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		});
 	});
 
+	it.each(["array", "scalar", "accounts-not-array"])("status: reports wrong-shape JSON (%s) as an error, not an empty pool", async (shape) => {
+		// Given a file that parses as JSON but is not an accounts object.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const accountsPath = join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json");
+		await mkdir(join(tempHome, ".opencode"), { recursive: true });
+		const contents =
+			shape === "array" ? "[1, 2, 3]"
+			: shape === "scalar" ? "\"hello\""
+			: "{\"version\": 3, \"accounts\": \"oops\"}";
+		await writeFile(accountsPath, contents, "utf-8");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		// When any pre-reading command reads the file.
+		const result = await runInstaller(["status", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		// Then corruption is reported with a nonzero exit instead of a healthy
+		// empty pool, matching the parse-error route.
+		expect(result.exitCode).toBe(1);
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.error).toContain("accounts array");
+		expect(output.totalAccounts).toBe(0);
+	});
+
+	it("status: reports a newer-schema storage file instead of showing it as readable", async () => {
+		// Given a file written by a newer plugin build (schema v4).
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const accountsPath = join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json");
+		await mkdir(join(tempHome, ".opencode"), { recursive: true });
+		await writeFile(accountsPath, JSON.stringify({ version: 4, activeIndex: 0, accounts: [] }), "utf-8");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		const result = await runInstaller(["status", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		// Then the pre-read refuses the newer schema with its own message
+		// instead of diverging from the runtime (which throws on it).
+		expect(result.exitCode).toBe(1);
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.error).toContain("version 4");
+	});
+
+	it("doctor --fix: surfaces the typed newer-schema error instead of a generic repair failure", async () => {
+		// Given a default-path v4 file, read through the SOURCE runtime so the
+		// forward-compat StorageError is thrown by real loadAccounts code.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const accountsPath = join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json");
+		await mkdir(join(tempHome, ".opencode"), { recursive: true });
+		await writeFile(accountsPath, JSON.stringify({ version: 4, activeIndex: 0, accounts: [] }), "utf-8");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		const result = await runInstaller(["doctor", "--fix", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			loadDoctorRuntime: loadSourceDoctorRuntime,
+		});
+
+		// Then the exact schema error (with upgrade hint) reaches the error
+		// channel with exit 1, and no generic "could not complete" repair text
+		// masks it.
+		expect(result.exitCode).toBe(1);
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.error).toContain("Unsupported account storage schema version 4");
+		expect(output.error).toContain("Upgrade the plugin");
+		expect(output.fixErrors).toEqual([]);
+		expect(output.fixApplied).toBe(false);
+	});
+
+	it.each([
+		["warm", "warm"],
+		["limits", "limits"],
+	])("%s: exits nonzero on a corrupt default storage file like status/doctor", async (command, action) => {
+		// Given a corrupt default file that the runtime load swallows to null.
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const accountsPath = join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json");
+		await mkdir(join(tempHome, ".opencode"), { recursive: true });
+		await writeFile(accountsPath, "{", "utf-8");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network call"));
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		const result = await runInstaller([command, "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		// Then the corruption is reported with a nonzero exit and no network
+		// call, instead of a silent "No accounts configured." exit 0.
+		expect(result).toMatchObject({ exitCode: 1, action, storagePath: accountsPath });
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		expect(output.error).toEqual(expect.any(String));
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
 	it.each(["discovery", "repair", "snapshot"])("doctor: redacts runtime %s failures without a JSON pool", async (stage) => {
 		// Given an injected backend that fails at one repair boundary.
 		vi.resetModules();

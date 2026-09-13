@@ -180,7 +180,7 @@ Choose only one of `--plugin-only`, `--modern`, `--full`, or `--legacy`. Use `up
 | `--json` | Machine-readable JSON output |
 | `--include-sensitive` | Include sensitive identity fields in JSON where applicable |
 | `--deep` | Deeper diagnostics (used with `doctor`; implied by `diag`) |
-| `--fix` | With `doctor`, refresh enabled accounts and clear stale cooldown, rate-limit, and quota-exhaustion markers only after successful verification. A cleared quota stamp re-establishes itself on the next quota 429 or usage poll. Exit nonzero if any repair fails, or if the storage file cannot be parsed. |
+| `--fix` | With `doctor`, refresh enabled accounts and clear stale cooldown, rate-limit, and quota-exhaustion markers only after successful verification. A cleared quota stamp re-establishes itself on the next quota 429 or usage poll. Exit nonzero if any repair fails, or if the storage file cannot be read (unparseable, wrong shape, or a newer schema version). |
 | `--tag <tag>` | Filter accounts by tag when listing |
 | `--config-path <path>` | Point at a specific accounts storage path |
 | `--help` / `-h` | Print usage |
