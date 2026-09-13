@@ -539,27 +539,37 @@ export class AccountRotation {
 		if (available.length > 0) return 0;
 		if (enabledAccounts.length === 0) return 0;
 
-		const waitTimes: number[] = [];
+		// Per-account semantics: an account is unavailable until its LAST active
+		// block clears (max over its own blocks), and the pool recovers when the
+		// FIRST account becomes available (min across accounts). Flattening
+		// every block into one list and taking the global min underestimates:
+		// a legacy all-family weekly stamp (6d) plus a newer quota stamp (2h)
+		// on the same account used to promise a 2h wait while the account
+		// stayed blocked for 6 days, sending the wait loop back to sleep in a
+		// cycle until the longer block elapsed.
+		const accountWaits: number[] = [];
 		const baseKey = getQuotaKey(family);
 		const modelKey = model ? getQuotaKey(family, model) : null;
 		const tokenQuotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
 
 		for (const account of enabledAccounts) {
+			const blocks: number[] = [];
+
 			const baseResetAt = account.rateLimitResetTimes[baseKey];
 			if (typeof baseResetAt === "number") {
-				waitTimes.push(Math.max(0, baseResetAt - now));
+				blocks.push(Math.max(0, baseResetAt - now));
 			}
 
 			if (modelKey) {
 				const modelResetAt = account.rateLimitResetTimes[modelKey];
 				if (typeof modelResetAt === "number") {
-					waitTimes.push(Math.max(0, modelResetAt - now));
+					blocks.push(Math.max(0, modelResetAt - now));
 				}
 			}
 
 			if (typeof account.coolingDownUntil === "number") {
-				waitTimes.push(Math.max(0, account.coolingDownUntil - now));
+				blocks.push(Math.max(0, account.coolingDownUntil - now));
 			}
 
 			// An account whose shared subscription quota is spent is blocked
@@ -569,7 +579,7 @@ export class AccountRotation {
 				typeof account.quotaExhaustedUntil === "number" &&
 				account.quotaExhaustedUntil > now
 			) {
-				waitTimes.push(account.quotaExhaustedUntil - now);
+				blocks.push(account.quotaExhaustedUntil - now);
 			}
 
 			// An account blocked only by a depleted local token bucket becomes
@@ -578,11 +588,15 @@ export class AccountRotation {
 			if (account.enabled !== false) {
 				const tokenWait = tokenTracker.msUntilToken(account.index, tokenQuotaKey);
 				if (tokenWait > 0 && Number.isFinite(tokenWait)) {
-					waitTimes.push(tokenWait);
+					blocks.push(tokenWait);
 				}
+			}
+
+			if (blocks.length > 0) {
+				accountWaits.push(Math.max(...blocks));
 			}
 		}
 
-		return waitTimes.length > 0 ? Math.min(...waitTimes) : 0;
+		return accountWaits.length > 0 ? Math.min(...accountWaits) : 0;
 	}
 }

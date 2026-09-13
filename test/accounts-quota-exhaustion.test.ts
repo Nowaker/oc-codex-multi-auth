@@ -116,6 +116,65 @@ describe("account-wide quota exhaustion state", () => {
 		expect(minWait).toBeLessThanOrEqual(wait);
 	});
 
+	// (d2) — per-account max semantics
+	it("getMinWaitTimeForFamily waits out an account's LONGEST block, not its shortest", () => {
+		// The upgrade path this PR itself creates: a legacy all-family weekly
+		// stamp (6d) coexisting with a newer, shorter quota stamp (2h) on the
+		// same account. The account is blocked until BOTH clear, so the pool
+		// wait is 6d; the old flattened-min returned 2h and left the wait loop
+		// waking to a still-blocked pool.
+		const now = Date.now();
+		const manager = new AccountManager(undefined, {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "token-1",
+					accountId: "acct-1",
+					addedAt: now,
+					lastUsed: now,
+					rateLimitResetTimes: { codex: now + 6 * 24 * 60 * 60 * 1000 },
+					quotaExhaustedUntil: now + 2 * 60 * 60 * 1000,
+				},
+			],
+		});
+
+		expect(manager.getCurrentOrNextForFamily("codex")).toBeNull();
+
+		const minWait = manager.getMinWaitTimeForFamily("codex");
+		expect(minWait).toBeGreaterThan(5 * 24 * 60 * 60 * 1000);
+		expect(minWait).toBeLessThanOrEqual(6 * 24 * 60 * 60 * 1000);
+	});
+
+	// (d3) — cross-account min semantics
+	it("getMinWaitTimeForFamily still recovers as soon as the FASTEST account unblocks", () => {
+		const now = Date.now();
+		const manager = new AccountManager(undefined, {
+			version: 3 as const,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "token-1",
+					accountId: "acct-1",
+					addedAt: now,
+					lastUsed: now,
+					quotaExhaustedUntil: now + 2 * 60 * 60 * 1000,
+				},
+				{
+					refreshToken: "token-2",
+					accountId: "acct-2",
+					addedAt: now,
+					lastUsed: now,
+					quotaExhaustedUntil: now + 30_000,
+				},
+			],
+		});
+
+		const minWait = manager.getMinWaitTimeForFamily("codex");
+		expect(minWait).toBeGreaterThan(0);
+		expect(minWait).toBeLessThanOrEqual(30_000);
+	});
+
 	// (e)
 	it("probes eligibility by dropping only expired stamps and never moving the rotation cursor", () => {
 		vi.useFakeTimers();
