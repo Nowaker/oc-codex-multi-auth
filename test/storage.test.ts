@@ -1386,6 +1386,64 @@ describe("storage", () => {
       expect(result?.activeIndex).toBe(1);
     });
 
+    it("sanitizes non-finite numeric timing fields instead of poisoning rotation math", () => {
+      // `JSON.parse` turns the literal 1e400 into Infinity; a hand-edited file
+      // can hold anything. An Infinity rate-limit stamp blocks the account
+      // forever (now < Infinity, and expiry can never fire) and makes
+      // getMinWaitTimeForFamily return Infinity, which downstream jitter math
+      // turns into NaN (hot retry) or an endless countdown.
+      const data = {
+        version: 3,
+        accounts: [
+          {
+            refreshToken: "t1",
+            accountId: "A",
+            addedAt: 1e400,
+            lastUsed: "nope",
+            expiresAt: 1e400,
+            coolingDownUntil: NaN,
+            quotaExhaustedUntil: "not-a-number",
+            rateLimitResetTimes: { codex: 1e400, "gpt-5.1": 12345, broken: "soon" },
+          },
+        ],
+      };
+      const result = normalizeAccountStorage(data);
+      const account = result?.accounts[0];
+      expect(account).toBeDefined();
+      // Non-finite values drop; finite values survive.
+      expect(account?.addedAt).toBe(0);
+      expect(account?.lastUsed).toBe(0);
+      expect(account?.expiresAt).toBeUndefined();
+      expect(account?.coolingDownUntil).toBeUndefined();
+      expect(account?.quotaExhaustedUntil).toBeUndefined();
+      expect(account?.rateLimitResetTimes).toEqual({ "gpt-5.1": 12345 });
+    });
+
+    it("keeps finite zero-valued timing fields through sanitization", () => {
+      // 0 is a legitimate value (expiresAt 0 forces a refresh); only non-finite
+      // or non-number values are dropped.
+      const data = {
+        version: 3,
+        accounts: [
+          {
+            refreshToken: "t1",
+            accountId: "A",
+            addedAt: 0,
+            lastUsed: 0,
+            expiresAt: 0,
+            rateLimitResetTimes: { codex: 0 },
+          },
+        ],
+      };
+      const result = normalizeAccountStorage(data);
+      expect(result?.accounts[0]).toMatchObject({
+        addedAt: 0,
+        lastUsed: 0,
+        expiresAt: 0,
+        rateLimitResetTimes: { codex: 0 },
+      });
+    });
+
     it("filters out accounts with empty refreshToken", () => {
       const data = {
         version: 3,

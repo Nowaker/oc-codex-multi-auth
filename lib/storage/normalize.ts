@@ -77,6 +77,64 @@ function dropStaleGeneratedLabel(account: AccountMetadataV3): AccountMetadataV3 
 }
 
 /**
+ * Boundary guard for the numeric timing fields on a stored account record.
+ *
+ * `JSON.parse` happily produces `Infinity` (from literals like `1e400`), and a
+ * hand-edited file can hold anything at all. The declared types say `number`,
+ * but nothing below the storage layer re-checks that, and a single non-finite
+ * value poisons rotation math in both directions:
+ *
+ *  - `Infinity` in `rateLimitResetTimes` blocks the account forever
+ *    (`nowMs() < Infinity` and `clearExpiredRateLimits` can never fire), and
+ *    `getMinWaitTimeForFamily` then returns `Infinity`, which the retry loop
+ *    feeds to `addJitter` — producing `NaN` (instant-return sleep, hot retry)
+ *    or `Infinity` (countdown that never ends).
+ *  - A non-number `quotaExhaustedUntil` fails every `typeof === "number"`
+ *    check, so rotation serves the account while diagnostics still report it.
+ *
+ * This runs on every load AND every save (the write path normalizes first), so
+ * a poisoned file is healed by the next persist even if a pre-sanitize build
+ * wrote it.
+ */
+function sanitizeAccountNumericState(account: AccountMetadataV3): AccountMetadataV3 {
+  const next = { ...account };
+
+  for (const key of [
+    "expiresAt",
+    "tokenRotatedAt",
+    "coolingDownUntil",
+    "quotaExhaustedUntil",
+  ] as const) {
+    const value = next[key];
+    if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+      delete next[key];
+    }
+  }
+
+  for (const key of ["addedAt", "lastUsed"] as const) {
+    const value = next[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      next[key] = 0;
+    }
+  }
+
+  if (next.rateLimitResetTimes) {
+    let dropped = false;
+    for (const [key, value] of Object.entries(next.rateLimitResetTimes)) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        delete next.rateLimitResetTimes[key];
+        dropped = true;
+      }
+    }
+    if (dropped && Object.keys(next.rateLimitResetTimes).length === 0) {
+      delete next.rateLimitResetTimes;
+    }
+  }
+
+  return next;
+}
+
+/**
  * Normalizes and validates account storage data, migrating from v1 to v3 if needed.
  * Handles deduplication, index clamping, and per-family active index mapping.
  * @param data - Raw storage data (unknown format)
@@ -166,7 +224,8 @@ export function normalizeAccountStorage(
   );
 
   const accountsWithMemberIdentity = validAccounts.map((account) => {
-    const named = dropStaleGeneratedLabel(account);
+    const sanitized = sanitizeAccountNumericState(account);
+    const named = dropStaleGeneratedLabel(sanitized);
     if (named.accountUserId?.trim()) return named;
     const accountUserId = extractAccountUserId(named.accessToken);
     return accountUserId ? { ...named, accountUserId } : named;
