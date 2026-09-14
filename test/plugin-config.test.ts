@@ -107,6 +107,9 @@ describe('Plugin Configuration', () => {
 	describe('loadPluginConfig', () => {
 		it('should return default config when file does not exist', () => {
 			mockExistsSync.mockReturnValue(false);
+			mockReadFileSync.mockImplementationOnce(() => {
+				throw Object.assign(new Error('missing config'), { code: 'ENOENT' });
+			});
 
 			const config = loadPluginConfig();
 
@@ -148,8 +151,8 @@ describe('Plugin Configuration', () => {
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
 			});
-			expect(mockExistsSync).toHaveBeenCalledWith(
-				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json')
+			expect(mockReadFileSync).toHaveBeenCalledWith(
+				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json'), 'utf-8'
 			);
 		});
 

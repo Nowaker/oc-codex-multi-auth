@@ -1,4 +1,4 @@
-import { readFileSync, statSync, promises as fs } from "node:fs";
+import { readFileSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -104,8 +104,7 @@ const DEFAULT_CONFIG: PluginConfig = {
 };
 
 let pluginConfigCache: {
-	readonly mtimeMs: number | null;
-	readonly size: number;
+	readonly content: string | undefined;
 	readonly config: PluginConfig;
 } | undefined;
 
@@ -121,26 +120,25 @@ export function resetPluginConfigCache(): void {
  */
 export function loadPluginConfig(): PluginConfig {
 	try {
-		const { mtimeMs, size } = statSync(CONFIG_PATH);
-		if (pluginConfigCache?.mtimeMs === mtimeMs && pluginConfigCache.size === size) {
+		const content = readFileSync(CONFIG_PATH, "utf-8");
+		if (pluginConfigCache?.content === content) {
 			return pluginConfigCache.config;
 		}
-		const config = readPluginConfig() ?? pluginConfigCache?.config ?? DEFAULT_CONFIG;
-		pluginConfigCache = { mtimeMs, size, config };
+		const config = readPluginConfig(content) ?? pluginConfigCache?.config ?? DEFAULT_CONFIG;
+		pluginConfigCache = { content, config };
 		return config;
 	} catch (error) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-			pluginConfigCache = { mtimeMs: null, size: 0, config: pluginConfigCache?.config ?? DEFAULT_CONFIG };
+			pluginConfigCache = { content: undefined, config: pluginConfigCache?.config ?? DEFAULT_CONFIG };
 		} else {
-			logWarn(`Failed to stat config from ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+			logWarn(`Failed to read config from ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		return pluginConfigCache?.config ?? DEFAULT_CONFIG;
 	}
 }
 
-function readPluginConfig(): PluginConfig | undefined {
+function readPluginConfig(fileContent: string): PluginConfig | undefined {
 	try {
-		const fileContent = readFileSync(CONFIG_PATH, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const userConfig = JSON.parse(normalizedFileContent) as unknown;
 		const hasFallbackEnvOverride =

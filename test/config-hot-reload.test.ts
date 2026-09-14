@@ -43,6 +43,21 @@ describe("config hot reload", () => {
 		expect(second.retryAllAccountsRateLimited).toBe(false);
 	});
 
+	it("reloads different same-size content with unchanged mtime", async () => {
+		const firstContent = '{"retryAllAccountsMaxRetries":1}';
+		const secondContent = '{"retryAllAccountsMaxRetries":2}';
+		expect(secondContent).toHaveLength(firstContent.length);
+		writeFileSync(configPath, firstContent);
+		utimesSync(configPath, 100, 100);
+		const { loadPluginConfig } = await import("../lib/config.js");
+		const first = loadPluginConfig();
+		writeFileSync(configPath, secondContent);
+		utimesSync(configPath, 100, 100);
+		const second = loadPluginConfig();
+		expect(second).not.toBe(first);
+		expect(second.retryAllAccountsMaxRetries).toBe(2);
+	});
+
 	it("reloads when mtime changes with the same size", async () => {
 		writeFileSync(configPath, '{"retryAllAccountsMaxRetries":1}');
 		const { loadPluginConfig } = await import("../lib/config.js");
