@@ -6,7 +6,7 @@ For install modes, the full tool list (with args), and standalone CLI commands (
 
 ---
 
-> **Quick Reset**: Most issues can be resolved by deleting `~/.local/share/opencode/auth.json` (or `~/.opencode/auth/openai.json` on older host layouts) and running `opencode auth login` again. Deleting host auth files only clears the host OAuth fallback. To fully clear pooled accounts, also remove `~/.opencode/oc-codex-multi-auth-accounts.json`, any project-specific account files under `~/.opencode/projects/<project-key>/`, and flagged account files (`*-flagged-accounts.json`). When `CODEX_KEYCHAIN=1` is active, stored accounts live in the OS keychain under service `oc-codex-multi-auth` rather than JSON, requiring `codex-keychain rollback` or OS keychain tools to clear. See [Privacy](privacy.md) for full cleanup procedures.
+> **Quick Reset**: Most issues can be resolved by clearing the `openai` entry in OpenCode's host auth store (`~/.local/share/opencode/auth.json`, or `%LOCALAPPDATA%/opencode/auth.json` on Windows; older host layouts used `~/.opencode/auth/openai.json`) and running `opencode auth login` again. Clearing the host auth entry only resets the host OAuth fallback. To fully clear pooled accounts, also remove `~/.opencode/oc-codex-multi-auth-accounts.json`, any project-specific account files under `~/.opencode/projects/<project-key>/`, and flagged account files (`*-flagged-accounts.json`). When `CODEX_KEYCHAIN=1` is active, stored accounts live in the OS keychain under service `oc-codex-multi-auth` rather than JSON, requiring `codex-keychain rollback` or OS keychain tools to clear. See [Privacy](privacy.md) for full cleanup procedures.
 
 If you prefer guided recovery before manual debugging, run:
 
