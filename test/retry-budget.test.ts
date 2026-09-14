@@ -43,6 +43,35 @@ describe("retry-budget", () => {
 		expect(tracker.getUsage().network).toBe(1);
 	});
 
+	it("verifies budget consumption semantics across error stages", () => {
+		const limits: RetryBudgetLimits = {
+			authRefresh: 2,
+			network: 2,
+			server: 2,
+			rateLimitShort: 2,
+			rateLimitGlobal: 1,
+			emptyResponse: 1,
+		};
+		const tracker = new RetryBudgetTracker(limits);
+
+		// An initial long-delay rate limit rotates without consuming rateLimitGlobal
+		expect(tracker.getUsage().rateLimitGlobal).toBe(0);
+		expect(tracker.getRemaining("rateLimitGlobal")).toBe(1);
+
+		// An invalidated 401 response triggers account rotation/cooldown without consuming authRefresh directly
+		expect(tracker.getUsage().authRefresh).toBe(0);
+		expect(tracker.getRemaining("authRefresh")).toBe(2);
+
+		// Global all-accounts blocked wait consumes rateLimitGlobal
+		expect(tracker.consume("rateLimitGlobal")).toBe(true);
+		expect(tracker.getRemaining("rateLimitGlobal")).toBe(0);
+		expect(tracker.consume("rateLimitGlobal")).toBe(false);
+
+		// Token refresh attempts consume authRefresh
+		expect(tracker.consume("authRefresh")).toBe(true);
+		expect(tracker.getUsage().authRefresh).toBe(1);
+	});
+
 	it("clones constructor limits to avoid external mutation", () => {
 		const limits: RetryBudgetLimits = {
 			authRefresh: 1,
