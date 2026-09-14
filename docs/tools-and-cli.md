@@ -97,7 +97,7 @@ Account indices are **1-based**. Destructive tools require an explicit confirm f
 | `codex-next` | `format?` — `text` \| `json` |
 | `codex-list` | `tag?`, `format?`, `includeSensitive?` |
 | `codex-switch` | `index?` — omit for interactive picker when supported |
-| `codex-warm` | `format="text"` or `format="json"` |
+| `codex-warm` | optional `format="text"` (default) or `format="json"` |
 | `codex-status` | `format?`, `includeSensitive?` |
 | `codex-limits` | `format?`, `includeSensitive?` |
 | `codex-reset` | `action?` (`status` \| `consume`), `creditId?`, `confirm?` (required true to redeem), `dryRun?`, `account?` (1-based), `format?`, `includeSensitive?` |
