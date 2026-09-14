@@ -14,6 +14,8 @@ import {
 	hasUsageWindow,
 	parseCodexUsagePayload,
 	persistUsageQuotaExhaustion,
+	persistUsageQuotaRecovery,
+	isUsageQuotaRecovered,
 	resolveCodexUsageActiveAccount,
 	type UsagePayload,
 } from "../lib/codex-usage.js";
@@ -21,6 +23,34 @@ import { loadAccounts, saveAccounts, type AccountStorageV3 } from "../lib/storag
 import { setStoragePathDirect } from "../lib/storage/state.js";
 
 describe("codex usage helpers", () => {
+	it.each([
+		{ windows: [{}, {}], recovered: false },
+		{ windows: [{ windowMinutes: 300, resetAtMs: 1234 }, {}], recovered: false },
+		{ windows: [{ usedPercent: 5 }, { windowMinutes: 10080 }], recovered: false },
+		{ windows: [{ windowMinutes: 0, usedPercent: 0 }, {}], recovered: false },
+		{ windows: [{ windowMinutes: 300, usedPercent: 10 }, {}], recovered: true },
+		{ windows: [{ usedPercent: 10 }, { usedPercent: 100, resetAtMs: Number.MAX_SAFE_INTEGER }], recovered: false },
+	])("recognizes recovered quota only from usable windows: $recovered", ({ windows, recovered }) => {
+		expect(isUsageQuotaRecovered(windows)).toBe(recovered);
+	});
+
+	it("clears matching quota stamps without touching model rate limits when recovery is persisted", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "usage-quota-recovery-"));
+		try {
+			setStoragePathDirect(join(directory, "accounts.json"));
+			const account = { refreshToken: "recovery", accountId: "recovered", addedAt: 0, lastUsed: 0,
+				quotaExhaustedUntil: 1234, rateLimitResetTimes: { codex: 5678 } };
+			await saveAccounts({ version: 3, activeIndex: 0, accounts: [account] });
+			expect(await persistUsageQuotaRecovery(account)).toBe(true);
+			const stored = await loadAccounts();
+			expect(stored?.accounts[0]?.quotaExhaustedUntil).toBeUndefined();
+			expect(stored?.accounts[0]?.rateLimitResetTimes).toEqual({ codex: 5678 });
+			expect(await persistUsageQuotaRecovery(account)).toBe(false);
+		} finally {
+			setStoragePathDirect(null);
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
 	it("formats same-day reset times on a locale-independent 24-hour clock", () => {
 		// Pinned well clear of midnight: a real clock would cross into the next
 		// day inside the 60s offset and take the "on <date>" branch instead.

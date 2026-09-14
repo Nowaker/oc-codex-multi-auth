@@ -158,6 +158,7 @@ export type WarmRequestStatus = "opened" | "exhausted";
 export interface WarmRequestResult {
 	status: WarmRequestStatus;
 	detail?: string;
+	rateLimited?: boolean;
 }
 
 /**
@@ -165,7 +166,7 @@ export interface WarmRequestResult {
  * caller retries; everything else is terminal for the account.
  */
 type WarmAttempt =
-	| { kind: "opened" }
+	| { kind: "opened"; rateLimited?: boolean }
 	| { kind: "exhausted"; detail: string }
 	| { kind: "unsupported-model"; errorBody: unknown; message: string };
 
@@ -236,7 +237,7 @@ async function attemptWarm(
 				accountId: params.accountId,
 				reason,
 			});
-			return { kind: "opened" };
+			return { kind: "opened", rateLimited: true };
 		}
 
 		// The account is not entitled to `model`. The live request path degrades
@@ -285,7 +286,9 @@ export async function warmAccountWindow(
 	const maxAttempts = getWarmMaxModelAttempts();
 	for (let i = 0; i < maxAttempts; i += 1) {
 		const attempt = await attemptWarm(params, model);
-		if (attempt.kind === "opened") return { status: "opened" };
+		if (attempt.kind === "opened") return attempt.rateLimited
+			? { status: "opened", rateLimited: true }
+			: { status: "opened" };
 		if (attempt.kind === "exhausted") {
 			return { status: "exhausted", detail: attempt.detail };
 		}

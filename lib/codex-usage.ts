@@ -419,6 +419,35 @@ export async function persistUsageQuotaExhaustion(
 	});
 }
 
+export function isUsageQuotaRecovered(windows: readonly LimitWindow[]): boolean {
+	const active = windows.filter(hasUsageWindow);
+	return active.length > 0 && active.every((window) =>
+		typeof window.usedPercent === "number" && Number.isFinite(window.usedPercent) &&
+		window.usedPercent >= 0 && window.usedPercent < 100,
+	);
+}
+
+export async function persistUsageQuotaRecovery(account: AccountMetadataV3): Promise<boolean> {
+	const usageKey = getUsageAccountDedupeKey(account);
+	if (!usageKey) return false;
+	return withAccountStorageTransaction(async (current, persist) => {
+		if (!current) return false;
+		let changed = false;
+		for (const storedAccount of current.accounts) {
+			if (getUsageAccountDedupeKey(storedAccount) !== usageKey) continue;
+			if (storedAccount.quotaExhaustedUntil === undefined) continue;
+			if (storedAccount.quotaExhaustedUntil !== account.quotaExhaustedUntil ||
+				storedAccount.quotaExhaustedStampAt !== account.quotaExhaustedStampAt) continue;
+			delete storedAccount.quotaExhaustedUntil;
+			delete storedAccount.quotaExhaustedStampAt;
+			storedAccount.quotaExhaustedClearedAt = Date.now();
+			changed = true;
+		}
+		if (changed) await persist(current);
+		return changed;
+	});
+}
+
 /**
  * Reduce a `/wham/usage` document to the summary the callers render.
  *

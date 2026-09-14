@@ -22,7 +22,9 @@
  */
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
-import { loadAccounts, type AccountMetadataV3, type AccountStorageV3 } from "../storage.js";
+import { loadAccounts, withAccountStorageTransaction, type AccountMetadataV3, type AccountStorageV3 } from "../storage.js";
+import { clearRefreshedAccountStaleState } from "../accounts/stale-state.js";
+import { findAccountIndexByIdentity } from "./refresh-account.js";
 import {
 	ensureCodexUsageAccessToken,
 	resolveCodexUsageAccountId,
@@ -43,6 +45,7 @@ import type { ToolContext } from "./index.js";
  */
 export function createWarmOne(
 	storage: AccountStorageV3,
+	succeeded?: Set<AccountMetadataV3>,
 ): (account: AccountMetadataV3) => Promise<WarmOutcome> {
 	return async (account: AccountMetadataV3): Promise<WarmOutcome> => {
 		const { accessToken } = await ensureCodexUsageAccessToken({ storage, account });
@@ -64,6 +67,7 @@ export function createWarmOne(
 				detail: result.detail ?? "quota/usage limit reached",
 			};
 		}
+		if (!result.rateLimited) succeeded?.add(account);
 		return { status: "warmed" };
 	};
 }
@@ -78,12 +82,15 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 	return tool({
 		description:
 			"Warm up all accounts by sending one lightweight request to each, starting their usage windows so weekly/5h quotas stagger instead of expiring together.",
-		args: {},
-		async execute() {
+		args: { format: tool.schema.enum(["text", "json"]).optional() },
+		async execute(args) {
 			const ui = resolveUiRuntime();
 			const maskEmail = resolveMaskEmail();
 			const storage = await loadAccounts();
 			if (!storage || storage.accounts.length === 0) {
+				if (args.format === "json") {
+					return JSON.stringify({ total: 0, warmedCount: 0, failedCount: 0, skippedCount: 0, blocksCleared: 0, results: [] });
+				}
 				if (ui.v2Enabled) {
 					return [
 						...formatUiHeader(ui, "Warm accounts"),
@@ -95,8 +102,44 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 				return "No Codex accounts configured. Run: opencode auth login";
 			}
 
-			const warmOne = createWarmOne(storage);
+			const succeeded = new Set<AccountMetadataV3>();
+			const warmOne = createWarmOne(storage, succeeded);
 			const summary = await warmAccounts(storage.accounts, warmOne);
+			let blocksCleared = 0;
+			let blockClearError: string | undefined;
+			try {
+				blocksCleared = await withAccountStorageTransaction(async (current, persist) => {
+					if (!current) return 0;
+					let cleared = 0;
+					for (const result of summary.results) {
+						if (result.status !== "warmed") continue;
+						const account = storage.accounts[result.index];
+						if (!account || !succeeded.has(account)) continue;
+						const record = current.accounts[findAccountIndexByIdentity(current.accounts, {
+							organizationId: account.organizationId, accountId: account.accountId,
+							accountUserId: account.accountUserId, refreshToken: account.refreshToken,
+						})];
+						if (!record || record.enabled === false) continue;
+						const hasBlocks = record.coolingDownUntil !== undefined || record.cooldownReason !== undefined ||
+							record.quotaExhaustedUntil !== undefined || Object.keys(record.rateLimitResetTimes ?? {}).length > 0;
+						clearRefreshedAccountStaleState(record);
+						if (hasBlocks) cleared += 1;
+					}
+					if (cleared > 0) await persist(current);
+					return cleared;
+				});
+				if (blocksCleared > 0) {
+					ctx.invalidateAccountManagerCache();
+					await ctx.reloadCachedAccountManager();
+				}
+			} catch {
+				blockClearError = "Failed to clear local blocks; warm results are unchanged.";
+			}
+			if (args.format === "json") {
+				return JSON.stringify({ total: summary.total, warmedCount: summary.warmedCount,
+					failedCount: summary.failedCount, skippedCount: summary.skippedCount, blocksCleared, blockClearError,
+					results: summary.results.map(({ index, status }) => ({ index, status })) });
+			}
 
 			const lines: string[] = ui.v2Enabled
 				? []
@@ -129,8 +172,9 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 
 			lines.push("");
 			lines.push(
-				`Summary: ${summary.warmedCount} warmed, ${summary.failedCount} failed, ${summary.skippedCount} skipped`,
+				`Summary: ${summary.warmedCount} warmed, ${summary.failedCount} failed, ${summary.skippedCount} skipped, ${blocksCleared} blocks cleared`,
 			);
+			if (blockClearError) lines.push(blockClearError);
 
 			if (ui.v2Enabled) {
 				return [
