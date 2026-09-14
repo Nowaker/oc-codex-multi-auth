@@ -1664,14 +1664,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			cachedAccountManager = null;
 			accountManagerPromise = null;
 			if (previous) {
-				previous.disposeShutdownHandler(true);
 				void previous
 					.flushPendingSave()
 					.catch((error: unknown) => {
 						logWarn(
 							`Failed to flush pending save while invalidating account manager: ${error instanceof Error ? error.message : String(error)}`,
 						);
-					});
+					}).finally(() => previous.disposeShutdownHandler());
 			}
 		};
 
@@ -2541,7 +2540,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							while (true) {
 						if (cachedAccountManager && cachedAccountManager !== accountManager) {
 						accountManager = cachedAccountManager;
-						allRateLimitedRetries = 0;
 						} else if (!cachedAccountManager) {
 						const reloaded = await AccountManager.loadFromDisk();
 						cachedAccountManager = reloaded;

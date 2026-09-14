@@ -10,6 +10,7 @@ const captured = vi.hoisted((): {
 	listener?: () => void;
 	onWatch?: () => void;
 	reads: Promise<unknown>[];
+	maxRetries?: number;
 } => ({ reads: [] }));
 vi.mock("node:fs", async (original) => ({
 	...await original<typeof import("node:fs")>(),
@@ -36,7 +37,8 @@ vi.mock("../lib/quota-notifications.js", () => ({
 vi.mock("../lib/auto-update-checker.js", () => ({ checkAndNotify: vi.fn(async () => {}) }));
 vi.mock("../lib/config.js", async (original) => ({
 	...await original<typeof import("../lib/config.js")>(),
-	loadPluginConfig: () => ({ perProjectAccounts: false, startupPrewarm: false, startupPreflight: false }),
+	loadPluginConfig: () => ({ perProjectAccounts: false, startupPrewarm: false, startupPreflight: false,
+		retryAllAccountsMaxRetries: captured.maxRetries }),
 }));
 vi.mock("../lib/storage.js", async (original) => ({
 	...await original<typeof import("../lib/storage.js")>(),
@@ -90,6 +92,7 @@ describe("accounts live reload", () => {
 		captured.listener = undefined;
 		captured.onWatch = undefined;
 		captured.reads.length = 0;
+		captured.maxRetries = undefined;
 		plugin = await Reflect.apply(OpenAIOAuthPlugin, undefined, [{
 			client: createOpencodeClient({ baseUrl: "http://localhost" }),
 		}]);
@@ -124,6 +127,64 @@ describe("accounts live reload", () => {
 		await tick();
 		await settle();
 		expect(load).not.toHaveBeenCalled();
+	});
+	it("flushes unpublished rate limits on ordinary credential-cache invalidation", async () => {
+		const manager = captured.context?.cachedAccountManagerRef.current;
+		if (!manager) throw new Error("Missing manager");
+		const account = manager.getCurrentAccount();
+		if (!account) throw new Error("Missing account");
+		manager.markRateLimited(account, 60_000, "codex");
+		manager.saveToDiskDebounced(10_000);
+		let flushed: Promise<void> | undefined;
+		const flush = manager.flushPendingSave.bind(manager);
+		vi.spyOn(manager, "flushPendingSave").mockImplementation(() => {
+			const pending = flush();
+			flushed = pending;
+			return pending;
+		});
+		captured.context?.invalidateAccountManagerCache();
+		await flushed;
+		const stored = JSON.parse(await fs.readFile(path, "utf8"));
+		expect(stored.accounts[0].rateLimitResetTimes.codex).toBe(Date.now() + 60_000);
+	});
+	it("does not reset a bounded retry budget when a peer writes an unchanged quota block", async () => {
+		captured.maxRetries = 1;
+		const manager = captured.context?.cachedAccountManagerRef.current;
+		if (!manager) throw new Error("Missing manager");
+		const account = manager.getCurrentAccount();
+		if (!account) throw new Error("Missing account");
+		const until = Date.now() + 86_400_000;
+		manager.markQuotaExhausted(account, until, "gpt-5.1");
+		let enteredWait: () => void = () => {};
+		const waiting = new Promise<void>((resolve) => { enteredWait = resolve; });
+		const minWait = manager.getMinWaitTimeForFamily.bind(manager);
+		vi.spyOn(manager, "getMinWaitTimeForFamily").mockImplementation((...args) => {
+			enteredWait();
+			return minWait(...args);
+		});
+		const controller = new AbortController();
+		let status: number | undefined;
+		const response = request("https://api.openai.com/v1/responses", {
+			method: "POST", signal: controller.signal,
+			body: JSON.stringify({ model: "gpt-5.1", stream: true, input: [] }),
+		}).then((result) => { status = result.status; }, (error: unknown) => {
+			if (!(error instanceof Error && error.name === "AbortError")) throw error;
+		});
+		try {
+			await waiting;
+			const reloaded = nextReload();
+			await fs.writeFile(path, JSON.stringify({ ...storage(true), accounts: [{ ...storage(true).accounts[0],
+				quotaExhaustedUntil: until, lastUsed: 2,
+			}] }));
+			await tick();
+			await settle();
+			await reloaded;
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(status).toBe(429);
+		} finally {
+			controller.abort();
+			await response;
+		}
 	});
 	it("resumes an already waiting request after an external quota clear", async () => {
 		const manager = captured.context?.cachedAccountManagerRef.current;
