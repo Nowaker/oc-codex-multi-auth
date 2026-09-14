@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
 	loadPluginConfig,
+	resetPluginConfigCache,
 	getCodexMode,
 	getCodexTuiV2,
 	getCodexTuiColorProfile,
@@ -39,6 +40,12 @@ vi.mock('node:fs', async () => {
 		...actual,
 		existsSync: vi.fn(),
 		readFileSync: vi.fn(),
+		statSync: vi.fn((filePath: fs.PathLike) => {
+			if (!fs.existsSync(filePath)) {
+				throw Object.assign(new Error('Config not found'), { code: 'ENOENT' });
+			}
+			return { mtimeMs: 0, size: 0 };
+		}),
 	};
 });
 
@@ -83,6 +90,7 @@ describe('Plugin Configuration', () => {
 			originalEnv[key] = process.env[key];
 		}
 		vi.clearAllMocks();
+		resetPluginConfigCache();
 	});
 
 	afterEach(() => {

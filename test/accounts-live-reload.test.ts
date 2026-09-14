@@ -1,0 +1,228 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { promises as fs } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createOpencodeClient } from "@opencode-ai/sdk";
+import type { ToolContext } from "../lib/tools/index.js";
+
+const captured = vi.hoisted((): {
+	context?: ToolContext;
+	listener?: () => void;
+	onWatch?: () => void;
+	reads: Promise<unknown>[];
+} => ({ reads: [] }));
+vi.mock("node:fs", async (original) => ({
+	...await original<typeof import("node:fs")>(),
+	watchFile: vi.fn((_path, _options, listener) => { captured.listener = listener; captured.onWatch?.(); }),
+	unwatchFile: vi.fn(),
+}));
+vi.mock("node:fs/promises", async (original) => {
+	const actual = await original<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		readFile: vi.fn((...args: Parameters<typeof actual.readFile>) => {
+			const pending = actual.readFile(...args);
+			captured.reads.push(pending.catch(() => undefined));
+			return pending;
+		}),
+	};
+});
+vi.mock("../lib/tools/index.js", () => ({
+	createToolRegistry: (context: ToolContext) => { captured.context = context; return {}; },
+}));
+vi.mock("../lib/quota-notifications.js", () => ({
+	createQuotaMonitor: () => ({ start() {}, dispose() {} }),
+}));
+vi.mock("../lib/auto-update-checker.js", () => ({ checkAndNotify: vi.fn(async () => {}) }));
+vi.mock("../lib/config.js", async (original) => ({
+	...await original<typeof import("../lib/config.js")>(),
+	loadPluginConfig: () => ({ perProjectAccounts: false, startupPrewarm: false, startupPreflight: false }),
+}));
+vi.mock("../lib/storage.js", async (original) => ({
+	...await original<typeof import("../lib/storage.js")>(),
+	setStoragePath: vi.fn(),
+}));
+
+import { OpenAIOAuthPlugin } from "../index.js";
+import { AccountManager } from "../lib/accounts.js";
+import * as logger from "../lib/logger.js";
+import { saveAccounts, setStoragePathDirect } from "../lib/storage.js";
+import { unwatchFile, watchFile } from "node:fs";
+
+describe("accounts live reload", () => {
+	let directory: string;
+	let path: string;
+	let plugin: Awaited<ReturnType<typeof OpenAIOAuthPlugin>>;
+	let request: typeof fetch;
+	const storage = (enabled: boolean) => ({
+		version: 3 as const,
+		accounts: [{ accountId: "test-account", refreshToken: "test-refresh", accessToken: "test-access",
+			expiresAt: Date.now() + 86_400_000, enabled, addedAt: 1, lastUsed: 1 }],
+		activeIndex: 0,
+	});
+	const drainReads = async () => {
+		while (captured.reads.length > 0) {
+			await Promise.allSettled(captured.reads.splice(0));
+		}
+	};
+	const tick = async () => {
+		expect(captured.listener).toBeTypeOf("function");
+		captured.listener?.();
+		await drainReads();
+	};
+	const settle = async () => {
+		await vi.advanceTimersByTimeAsync(500);
+		await drainReads();
+	};
+	const nextReload = () => {
+		return new Promise<void>((resolve) => {
+			vi.spyOn(logger, "logDebug").mockImplementation((message) => {
+				if (message === "Reloaded cached account manager after external accounts file change") resolve();
+			});
+		});
+	};
+	beforeEach(async () => {
+		vi.useFakeTimers();
+		directory = await fs.mkdtemp(join(tmpdir(), "accounts-live-reload-"));
+		path = join(directory, "accounts.json");
+		setStoragePathDirect(path);
+		await fs.writeFile(path, JSON.stringify(storage(true)));
+		captured.listener = undefined;
+		captured.onWatch = undefined;
+		captured.reads.length = 0;
+		plugin = await Reflect.apply(OpenAIOAuthPlugin, undefined, [{
+			client: createOpencodeClient({ baseUrl: "http://localhost" }),
+		}]);
+		const loader = plugin.auth?.loader;
+		if (!loader) throw new Error("Missing auth loader");
+		const sdk = await Reflect.apply(loader, undefined, [async () => ({ type: "api", key: "test" }), {}]);
+		request = sdk.fetch;
+	});
+	afterEach(async () => {
+		await plugin?.event?.({ event: { type: "server.instance.disposed", properties: { directory } } });
+		await captured.context?.cachedAccountManagerRef.current?.flushPendingSave();
+		captured.context?.cachedAccountManagerRef.current?.disposeShutdownHandler();
+		setStoragePathDirect(null);
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+		vi.useRealTimers();
+		await fs.rm(directory, { recursive: true, force: true });
+	});
+	it("reloads cached account state when an external writer changes the file", async () => {
+		const previous = captured.context?.cachedAccountManagerRef.current;
+		const reloaded = nextReload();
+		await fs.writeFile(path, JSON.stringify(storage(false)));
+		await tick();
+		await settle();
+		await reloaded;
+		expect(captured.context?.cachedAccountManagerRef.current).not.toBe(previous);
+		expect(captured.context?.cachedAccountManagerRef.current?.getAccountsSnapshot()[0]?.enabled).toBe(false);
+	});
+	it("ignores content written by this process", async () => {
+		const load = vi.spyOn(AccountManager, "loadFromDisk");
+		await saveAccounts(storage(false));
+		await tick();
+		await settle();
+		expect(load).not.toHaveBeenCalled();
+	});
+	it("resumes an already waiting request after an external quota clear", async () => {
+		const manager = captured.context?.cachedAccountManagerRef.current;
+		if (!manager) throw new Error("Missing manager");
+		const account = manager.getCurrentAccount();
+		if (!account) throw new Error("Missing account");
+		manager.markQuotaExhausted(account, Date.now() + 86_400_000, "gpt-5.1");
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("data: [DONE]\n\n", {
+			status: 200, headers: { "content-type": "text/event-stream" },
+		}));
+		let enteredWait: () => void = () => {};
+		const waiting = new Promise<void>((resolve) => { enteredWait = resolve; });
+		const minWait = manager.getMinWaitTimeForFamily.bind(manager);
+		vi.spyOn(manager, "getMinWaitTimeForFamily").mockImplementation((...args) => {
+			enteredWait();
+			return minWait(...args);
+		});
+		const response = request("https://api.openai.com/v1/responses", {
+			method: "POST", body: JSON.stringify({ model: "gpt-5.1", stream: true, input: [] }),
+		});
+		await waiting;
+		const reloaded = nextReload();
+		await fs.writeFile(path, JSON.stringify({ ...storage(true), activeIndexByFamily: {} }));
+		await tick();
+		await settle();
+		await reloaded;
+		await vi.advanceTimersByTimeAsync(5000);
+		expect((await response).status).toBe(200);
+	});
+	it("keeps externally cleared blocks cleared despite queued and late saves from the old manager", async () => {
+		const previous = captured.context?.cachedAccountManagerRef.current;
+		if (!previous) throw new Error("Missing manager");
+		const account = previous.getCurrentAccount();
+		if (!account) throw new Error("Missing account");
+		previous.markQuotaExhausted(account, Date.now() + 86_400_000, "codex");
+		previous.markRateLimited(account, 60_000, "codex");
+		previous.saveToDiskDebounced(10_000);
+		const reloaded = nextReload();
+		await fs.writeFile(path, JSON.stringify({ ...storage(true), activeIndexByFamily: {} }));
+		await tick();
+		await settle();
+		await reloaded;
+		await previous.saveToDisk();
+		const after = JSON.parse(await fs.readFile(path, "utf8"));
+		expect(after.accounts[0].quotaExhaustedUntil).toBeUndefined();
+		expect(after.accounts[0].rateLimitResetTimes ?? {}).toEqual({});
+		expect(captured.context?.cachedAccountManagerRef.current?.getSelectionExplainability("codex")[0]?.eligible).toBe(true);
+		// New server evidence from an in-flight request must still survive retirement.
+		previous.markRateLimited(account, 90_000, "codex");
+		await previous.saveToDisk();
+		const fresh = JSON.parse(await fs.readFile(path, "utf8"));
+		expect(fresh.accounts[0].rateLimitResetTimes.codex).toBe(Date.now() + 90_000);
+	});
+	it("debounces two external changes into one reload", async () => {
+		const load = vi.spyOn(AccountManager, "loadFromDisk");
+		const reloaded = nextReload();
+		await fs.writeFile(path, JSON.stringify(storage(false)));
+		await tick();
+		await vi.advanceTimersByTimeAsync(250);
+		await fs.writeFile(path, JSON.stringify({ ...storage(false), activeIndexByFamily: {} }));
+		await tick();
+		await settle();
+		await reloaded;
+		expect(load).toHaveBeenCalledTimes(1);
+	});
+	it("skips partial JSON without reloading or throwing", async () => {
+		const load = vi.spyOn(AccountManager, "loadFromDisk");
+		await fs.writeFile(path, '{"version":');
+		await tick();
+		await settle();
+		expect(load).not.toHaveBeenCalled();
+	});
+	it("repoints the watcher when the resolved storage path changes", async () => {
+		const nextPath = join(directory, "next-accounts.json");
+		await fs.writeFile(nextPath, JSON.stringify(storage(true)));
+		const registered = new Promise<void>((resolve) => {
+			captured.onWatch = resolve;
+		});
+		setStoragePathDirect(nextPath);
+		await registered;
+		expect(unwatchFile).toHaveBeenCalledWith(path, expect.any(Function));
+		expect(watchFile).toHaveBeenLastCalledWith(nextPath, { interval: 1500, persistent: false }, expect.any(Function));
+	});
+	it("installs no watcher for the keychain backend", async () => {
+		const keychainPath = join(directory, "keychain-accounts.json");
+		await fs.writeFile(keychainPath, JSON.stringify(storage(true)));
+		const watchCalls = vi.mocked(watchFile).mock.calls.length;
+		vi.stubEnv("CODEX_KEYCHAIN", "1");
+		setStoragePathDirect(keychainPath);
+		await drainReads();
+		expect(unwatchFile).toHaveBeenCalledWith(path, expect.any(Function));
+		expect(watchFile).toHaveBeenCalledTimes(watchCalls);
+	});
+	it("unwatches and cancels a pending reload when disposed", async () => {
+		await fs.writeFile(path, JSON.stringify(storage(false)));
+		await tick();
+		await plugin.event?.({ event: { type: "server.instance.disposed", properties: { directory } } });
+		expect(unwatchFile).toHaveBeenCalledWith(path, expect.any(Function));
+		expect(vi.getTimerCount()).toBe(0);
+		expect(watchFile).toHaveBeenCalledWith(path, { interval: 1500, persistent: false }, expect.any(Function));
+	});
+});

@@ -396,8 +396,8 @@ export class AccountManager {
 		await this.persistence.flushPendingSave();
 	}
 
-	disposeShutdownHandler(): void {
-		this.persistence.disposeShutdownHandler();
+	disposeShutdownHandler(externalReload = false): void {
+		this.persistence.disposeShutdownHandler(externalReload);
 	}
 
 	// ----- recovery delegations -----

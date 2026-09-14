@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, promises as fs } from "node:fs";
+import { readFileSync, statSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -103,6 +103,16 @@ const DEFAULT_CONFIG: PluginConfig = {
 	streamStallTimeoutMs: 45_000,
 };
 
+let pluginConfigCache: {
+	readonly mtimeMs: number | null;
+	readonly size: number;
+	readonly config: PluginConfig;
+} | undefined;
+
+export function resetPluginConfigCache(): void {
+	pluginConfigCache = undefined;
+}
+
 /**
  * Load plugin configuration from ~/.opencode/openai-codex-auth-config.json
  * Falls back to defaults if file doesn't exist or is invalid
@@ -111,10 +121,26 @@ const DEFAULT_CONFIG: PluginConfig = {
  */
 export function loadPluginConfig(): PluginConfig {
 	try {
-		if (!existsSync(CONFIG_PATH)) {
-			return DEFAULT_CONFIG;
+		const { mtimeMs, size } = statSync(CONFIG_PATH);
+		if (pluginConfigCache?.mtimeMs === mtimeMs && pluginConfigCache.size === size) {
+			return pluginConfigCache.config;
 		}
+		const config = readPluginConfig();
+		pluginConfigCache = { mtimeMs, size, config };
+		return config;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+			pluginConfigCache = { mtimeMs: null, size: 0, config: DEFAULT_CONFIG };
+		} else {
+			resetPluginConfigCache();
+			logWarn(`Failed to stat config from ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		return DEFAULT_CONFIG;
+	}
+}
 
+function readPluginConfig(): PluginConfig {
+	try {
 		const fileContent = readFileSync(CONFIG_PATH, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const userConfig = JSON.parse(normalizedFileContent) as unknown;

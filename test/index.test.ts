@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,6 +21,7 @@ vi.mock("@opencode-ai/plugin/tool", () => {
 		boolean: () => makeSchema(),
 		string: () => makeSchema(),
 		array: () => makeSchema(),
+		enum: () => makeSchema(),
 	};
 
 	return { tool };
@@ -150,7 +152,7 @@ vi.mock("../lib/config.js", () => ({
 	getRateLimitToastDebounceMs: () => 5000,
 	getRetryAllAccountsMaxRetries: () => 3,
 	getRetryAllAccountsMaxWaitMs: () => 30000,
-	getRetryAllAccountsRateLimited: () => true,
+	getRetryAllAccountsRateLimited: (config: import("../lib/types.js").PluginConfig) => config.retryAllAccountsRateLimited ?? true,
 	getUnsupportedCodexPolicy: vi.fn(() => "fallback"),
 	getFallbackOnUnsupportedCodexModel: vi.fn(() => true),
 	getFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
@@ -161,7 +163,7 @@ vi.mock("../lib/config.js", () => ({
 	getAutoUpdate: () => true,
 	getToastDurationMs: () => 5000,
 	getAccountToastsEnabled: vi.fn(() => true),
-	getPerProjectAccounts: () => false,
+	getPerProjectAccounts: (config: import("../lib/types.js").PluginConfig) => config.perProjectAccounts ?? false,
 	getEmptyResponseMaxRetries: () => 2,
 	getEmptyResponseRetryDelayMs: () => 1000,
 	getPidOffsetEnabled: () => false,
@@ -175,7 +177,7 @@ vi.mock("../lib/config.js", () => ({
 	getCodexTuiGlyphMode: () => "ascii",
 	getCodexTuiMaskEmail: vi.fn(() => false),
 	getBeginnerSafeMode: () => false,
-	loadPluginConfig: () => ({}),
+	loadPluginConfig: vi.fn((): import("../lib/types.js").PluginConfig => ({})),
 }));
 
 vi.mock("../lib/request/request-transformer.js", () => ({
@@ -4186,6 +4188,83 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
 		return { plugin, sdk, mockClient };
 	};
+
+	describe("request config hot reload", () => {
+		let directory: string;
+		let configPath: string;
+		beforeEach(async () => {
+			directory = await mkdtemp(join(tmpdir(), "request-config-reload-"));
+			configPath = join(directory, "config.json");
+			writeFileSync(configPath, '{"retryAllAccountsRateLimited":true,"perProjectAccounts":false}');
+			const config = await import("../lib/config.js");
+			const { PluginConfigSchema } = await import("../lib/schemas.js");
+			vi.mocked(config.loadPluginConfig).mockImplementation(() =>
+				PluginConfigSchema.parse(JSON.parse(readFileSync(configPath, "utf8"))),
+			);
+		});
+		afterEach(async () => {
+			vi.useRealTimers();
+			await rm(directory, { recursive: true, force: true });
+		});
+
+		it("returns 429 without waiting when retries are disabled between requests", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			vi.spyOn(AccountManager.prototype, "getAccountForStrategy").mockReturnValue(null);
+			vi.spyOn(AccountManager.prototype, "getMinWaitTimeForFamily").mockReturnValue(1000);
+			const { sdk } = await setupPlugin();
+			if (!sdk.fetch) throw new Error("Missing plugin fetch");
+			vi.useFakeTimers();
+			let firstStatus: number | undefined;
+			const first = sdk.fetch("https://api.openai.com/v1/chat", {
+				method: "POST", body: JSON.stringify({ model: "gpt-5.1" }),
+			}).then((response) => { firstStatus = response.status; });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(firstStatus).toBeUndefined();
+			await vi.advanceTimersByTimeAsync(4000);
+			await first;
+			expect(firstStatus).toBe(429);
+
+			writeFileSync(configPath, '{"retryAllAccountsRateLimited":false,"perProjectAccounts":false}');
+			let secondStatus: number | undefined;
+			const second = sdk.fetch("https://api.openai.com/v1/chat", {
+				method: "POST", body: JSON.stringify({ model: "gpt-5.1" }),
+			}).then((response) => { secondStatus = response.status; });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(secondStatus).toBe(429);
+			await second;
+		});
+
+		it("switches storage and reloads the manager when perProjectAccounts changes", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const { setStoragePath } = await import("../lib/storage.js");
+			const load = vi.spyOn(AccountManager, "loadFromDisk");
+			const dispose = vi.spyOn(AccountManager.prototype, "disposeShutdownHandler");
+			const flush = vi.spyOn(AccountManager.prototype, "flushPendingSave");
+			globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			const { sdk } = await setupPlugin();
+			if (!sdk.fetch) throw new Error("Missing plugin fetch");
+			load.mockClear();
+			vi.mocked(setStoragePath).mockClear();
+			writeFileSync(configPath, '{"perProjectAccounts":true}');
+			await sdk.fetch("https://api.openai.com/v1/chat", {
+				method: "POST", body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			expect(setStoragePath).toHaveBeenCalledExactlyOnceWith(process.cwd());
+			expect(load).toHaveBeenCalledTimes(1);
+			expect(dispose).toHaveBeenCalledTimes(1);
+			expect(flush.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(setStoragePath).mock.invocationCallOrder[0] ?? 0);
+			await sdk.fetch("https://api.openai.com/v1/chat", {
+				method: "POST", body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			expect(load).toHaveBeenCalledTimes(1);
+			writeFileSync(configPath, '{"perProjectAccounts":false}');
+			await sdk.fetch("https://api.openai.com/v1/chat", {
+				method: "POST", body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+			expect(setStoragePath).toHaveBeenLastCalledWith(null);
+			expect(load).toHaveBeenCalledTimes(2);
+		});
+	});
 
 	it("returns success response for successful fetch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(

@@ -38,6 +38,7 @@ export class AccountPersistence {
 	 * further write degrades to {@link mergeVolatileState}.
 	 */
 	private disposed = false;
+	private externalReloadSnapshot?: Map<string, AccountState["accounts"][number]>;
 
 	constructor(private readonly state: AccountState) {}
 
@@ -146,6 +147,7 @@ export class AccountPersistence {
 			accounts: disk.accounts.map((record) => {
 				const mine = mineByIdentity.get(getWorkspaceIdentityKey(record));
 				if (!mine) return record;
+				const superseded = this.externalReloadSnapshot?.get(getWorkspaceIdentityKey(record));
 				const merged: AccountMetadataV3 = { ...record };
 
 				// Longest-block-wins per quota key, matching adoptLongerDiskRateLimits.
@@ -153,6 +155,7 @@ export class AccountPersistence {
 				// manager never pruned cannot resurrect an expired block.
 				let resets: Record<string, number | undefined> | undefined;
 				for (const [key, mineReset] of Object.entries(mine.rateLimitResetTimes ?? {})) {
+					if (superseded && mineReset === superseded.rateLimitResetTimes[key]) continue;
 					if (typeof mineReset !== "number" || !Number.isFinite(mineReset) || mineReset <= now) {
 						continue;
 					}
@@ -163,6 +166,7 @@ export class AccountPersistence {
 				if (resets) merged.rateLimitResetTimes = resets;
 
 				if (
+					(!superseded || mine.coolingDownUntil !== superseded.coolingDownUntil) &&
 					typeof mine.coolingDownUntil === "number" &&
 					mine.coolingDownUntil > now &&
 					mine.coolingDownUntil > (record.coolingDownUntil ?? 0)
@@ -182,6 +186,8 @@ export class AccountPersistence {
 					(typeof mine.quotaExhaustedStampAt === "number" &&
 						mine.quotaExhaustedStampAt > diskClearedAt);
 				if (
+					(!superseded || mine.quotaExhaustedUntil !== superseded.quotaExhaustedUntil ||
+						mine.quotaExhaustedStampAt !== superseded.quotaExhaustedStampAt) &&
 					typeof mine.quotaExhaustedUntil === "number" &&
 					mine.quotaExhaustedUntil > now &&
 					mine.quotaExhaustedUntil > (record.quotaExhaustedUntil ?? 0) &&
@@ -500,7 +506,17 @@ export class AccountPersistence {
 	 * it clears its own slot when it runs, so a manager whose shutdown flush has
 	 * already fired must still be marked here.
 	 */
-	disposeShutdownHandler(): void {
+	disposeShutdownHandler(externalReload = false): void {
+		if (externalReload) {
+			// Only evidence acquired after an external reload may be saved by an
+			// in-flight request holding this superseded manager.
+			this.externalReloadSnapshot = new Map(this.state.accounts.map((account) => [
+				getWorkspaceIdentityKey(account),
+				{ ...account, rateLimitResetTimes: { ...account.rateLimitResetTimes } },
+			]));
+			if (this.saveDebounceTimer) clearTimeout(this.saveDebounceTimer);
+			this.saveDebounceTimer = null;
+		}
 		this.disposed = true;
 		if (!this.shutdownHandler) return;
 		unregisterCleanup(this.shutdownHandler);
