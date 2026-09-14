@@ -2,7 +2,7 @@
 
 ## What is this project?
 
-`oc-codex-multi-auth` is an OpenCode plugin that lets you sign in with ChatGPT Plus/Pro through OAuth and use GPT-5/Codex model presets from OpenCode, including multi-account rotation, health checks, and recovery tools.
+`oc-codex-multi-auth` is an OpenCode plugin that lets you sign in with ChatGPT Plus/Pro through OAuth and use the GPT-5, GPT-6, and Codex model presets from OpenCode, including multi-account rotation, health checks, and recovery tools.
 
 ## Who is it for?
 

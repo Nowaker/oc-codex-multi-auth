@@ -128,7 +128,7 @@ opencode debug config
 opencode auth login
 ```
 
-The default installer only normalizes the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the cached plugin copy. Catalog modes additionally merge their selected `provider.openai` definitions. Changed config files are backed up before writing.
+The default installer only normalizes the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the cached plugin copy. Catalog modes also merge their selected `provider.openai` definitions. Changed config files are backed up before writing.
 
 ### Standalone CLI (no agent / no token cost)
 
@@ -266,7 +266,7 @@ Most of these also run as a **direct CLI** with no agent or model involvement, s
 - TUI quota status follows the account/workspace used by the latest request
 - Business workspace memberships and Personal accounts keep separate usage and quota windows. Business members sharing one workspace are distinguished by their member/seat identity, so their usage is not collapsed into one row.
 - An account identifies itself by its own ChatGPT email and the last 6 characters of its account id, with the email masked when `maskEmail` is on. The OAuth id_token also lists the API-platform organizations the login belongs to; those are not ChatGPT workspaces and are never used to name an account, so logging in clears a label left behind by one. A label you set with `codex-label` is always kept.
-- The ChatGPT plan (`Free`, `Plus`, `Pro`, `Business`, `Business Premium`) is read from the access token, refreshed on every token refresh, and shown by `codex-list` and `codex-status`. `codex-limits` and the TUI read the plan live from the usage endpoint and name it the same way. An unrecognized plan is reported verbatim rather than renamed.
+- The ChatGPT plan (`Free`, `Plus`, `Pro`, `Business`, `Business Premium`, `Enterprise`) is read from the access token, refreshed on every token refresh, and shown by `codex-list` and `codex-status`. `codex-limits` and the TUI read the plan live from the usage endpoint and name it the same way. An unrecognized plan is reported verbatim rather than renamed.
 
 ---
 
