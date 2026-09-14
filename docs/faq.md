@@ -69,7 +69,7 @@ Tokens, account state, plugin config, quota cache, and logs are stored locally o
 
 ## Is there an API-key login?
 
-No. The plugin registers four OAuth methods (default browser, open URL manually, device code, manual URL/code paste). A dummy SDK key string is used internally for the OpenAI client; ChatGPT OAuth tokens do the real auth.
+No. The plugin registers four OAuth methods (default browser, open URL manually, device code, and manual URL paste). A dummy SDK key string is used internally for the OpenAI client, and ChatGPT OAuth tokens do the real auth.
 
 ## What should I do if authentication fails?
 

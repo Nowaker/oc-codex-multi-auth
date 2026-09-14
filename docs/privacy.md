@@ -2,7 +2,7 @@
 
 This page explains how `oc-codex-multi-auth` handles local data, upstream requests, and debugging artifacts.
 
-**Last updated:** 2026-07-18
+**Last updated:** 2026-09-14
 
 ## Overview
 
@@ -80,7 +80,7 @@ When `CODEX_KEYCHAIN=1` is set, account pools can be stored in the OS credential
 
 | Item | Default path |
 |------|----------------|
-| TUI quota cache | `$OPENCODE_STATE_DIR` when set, otherwise OpenCode's state directory (typically `~/.local/state/opencode/`), file `oc-codex-multi-auth-tui-quota.json`, with a `~/.opencode/` fallback in some builds |
+| TUI quota cache | `~/.local/state/opencode/oc-codex-multi-auth-tui-quota.json`; the caller's state directory or `OPENCODE_STATE_DIR` overrides the directory |
 
 Caches recent quota/usage snapshots for prompt status display.
 
@@ -202,7 +202,7 @@ Also remove any project-scoped account files and keychain entries if you migrate
 rm ~/.opencode/openai-codex-auth-config.json
 rm -rf ~/.opencode/cache/
 rm -rf ~/.opencode/logs/codex-plugin/
-rm -f ~/.opencode/oc-codex-multi-auth-tui-quota.json
+rm -f ~/.local/state/opencode/oc-codex-multi-auth-tui-quota.json
 ```
 
 ### Revoke OAuth Access

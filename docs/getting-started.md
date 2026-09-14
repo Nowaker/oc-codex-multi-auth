@@ -96,18 +96,18 @@ Then choose:
 
 1. `OpenAI`
 2. One of the **four** plugin OAuth methods:
-   - `Codex OAuth (ChatGPT Plus/Pro)` — opens the default browser; completes through a localhost callback
-   - `Codex OAuth (Open URL Manually)` - prints the authorization URL after port 1455 is listening; open it in any browser; the callback completes automatically through localhost
-   - `Codex OAuth (Device Code)` — headless / SSH
-   - `Codex OAuth (Manual URL Paste)` - paste the full callback URL, including its `state` parameter. The state is what ties the pasted value to this login attempt, so a bare code and a mismatched state are both rejected before token exchange
+   - `Codex OAuth (ChatGPT Plus/Pro)` opens the default browser and completes through a localhost callback
+   - `Codex OAuth (Open URL Manually)` prints the authorization URL after port 1455 is listening. Open it in any browser, and the callback completes automatically through localhost
+   - `Codex OAuth (Device Code)` for headless or SSH sessions
+   - `Codex OAuth (Manual URL Paste)` pastes the full callback URL, including its `state` parameter. The state is what ties the pasted value to this login attempt, so a bare code and a mismatched state are both rejected before token exchange
 
-There is **no** registered “Manual API Key” login path for this plugin. The provider still presents a dummy SDK key (`chatgpt-oauth`) internally; real auth is always OAuth.
+There is **no** registered "Manual API Key" login path for this plugin. The provider still presents a dummy SDK key (`chatgpt-oauth`) internally, and real auth is always OAuth.
 
 If the default browser cannot be launched (no `xdg-open` on PATH, for example), the login is not cancelled: the authorization URL is printed and the listener keeps waiting, so opening that URL in any browser still completes the login.
 
 Both browser-based OAuth methods use the same local callback port as Codex CLI. The authorize redirect is `http://localhost:1455/auth/callback`, while the local callback server binds `http://127.0.0.1:1455/auth/callback` and `[::1]:1455` for dual-stack localhost redirects. Authorization and token exchange go to `auth.openai.com`.
 
-Account records persist the granted OAuth scope. The required scopes are `openid`, `profile`, `email`, and `offline_access`; an account whose recorded scope is explicitly missing one of them is marked for re-auth instead of being silently reused. An account whose scope is simply unrecorded is left enabled — absent metadata is not treated as a failed grant — and an account previously marked for re-auth is restored automatically once a complete scope is known.
+Account records persist the granted OAuth scope. The required scopes are `openid`, `profile`, `email`, and `offline_access`. An account whose recorded scope is explicitly missing one of them is marked for re-auth instead of being silently reused. An account whose scope is simply unrecorded is left enabled, because absent metadata is not treated as a failed grant, and an account previously marked for re-auth is restored automatically once a complete scope is known. A blank scope in the token response falls back to the scope the login requested, so an empty string never overwrites known-good scope metadata.
 
 ### Remote or Headless Login
 
@@ -115,11 +115,11 @@ If you are on SSH, WSL, or another environment where the browser callback flow i
 
 - **If localhost port 1455 is reachable** (including via `ssh -L 1455:localhost:1455 user@remote`):
   1. rerun `opencode auth login`
-  2. choose `Codex OAuth (Open URL Manually)` - it prints the URL after the listener is ready; open it in any browser; login completes automatically through localhost
+  2. choose `Codex OAuth (Open URL Manually)`, which prints the URL after the listener is ready. Open it in any browser and login completes automatically through localhost
 - **If localhost is not reachable** (containers, restricted networks):
   1. rerun `opencode auth login`
-  2. choose `Codex OAuth (Device Code)` - follow the verification link and one-time code
-  3. if device code is unavailable, fall back to `Codex OAuth (Manual URL Paste)` - paste the full callback URL, including its `state` parameter
+  2. choose `Codex OAuth (Device Code)` and follow the verification link and one-time code
+  3. if device code is unavailable, fall back to `Codex OAuth (Manual URL Paste)` and paste the full callback URL, including its `state` parameter
 
 ## Add the Plugin to OpenCode
 

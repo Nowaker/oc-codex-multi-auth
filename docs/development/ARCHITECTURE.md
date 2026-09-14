@@ -13,7 +13,7 @@ Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, C
 3. Preserve Codex backend invariants: `stream: true`, `store: false`, and `reasoning.encrypted_content`.
 4. Make multi-account state visible through account switching, health checks, diagnostics, quota status, and recovery commands.
 5. Keep account storage local by default, with explicit export/import and optional OS keychain migration.
-6. Keep the broad OpenCode tool surface modular: every registered `codex-*` tool is its own file under `lib/tools/`.
+6. Keep the broad OpenCode tool surface modular, where every registered `codex-*` tool is its own file under `lib/tools/`.
 7. Keep public docs search-friendly without overstating support, affiliation, or production/commercial use.
 
 ---
@@ -46,7 +46,7 @@ index.ts
   |- auth loader: default-browser callback, open-URL-manually callback, device code, manual URL paste
   |- account manager + V3 storage + optional keychain
   |- custom provider fetch pipeline
-  |- runtime metrics, retry budgets, circuit breaker, recovery hooks
+   |- runtime metrics, retry budgets, circuit breaker, recoverable-error toasts
   |- ToolContext construction
   v
 lib/tools/index.ts
@@ -61,21 +61,22 @@ lib/request/fetch-helpers.ts + lib/request/request-transformer.ts
   |- rewrite URL to Codex/ChatGPT backend
   |- native mode: preserve host payload shape
   |- legacy mode: apply compatibility rewrites
-  |- force store:false and include reasoning.encrypted_content
+  |- legacy mode: force store:false, stream:true, and reasoning.encrypted_content
   |- GPT-6 Astra / Daybreak / GPT-5.6: responses-lite reshape + opencode client identity
   |- other models: codex_cli_rs client identity (default)
   |- resolve modelAccountPools preferred accounts
   |- select/refresh account (hybrid health scoring)
   |- attach OAuth headers
+  |- rate-limit and quota header extraction
   v
 ChatGPT-backed Codex endpoint
   |
   v
 lib/request/response-handler.ts
   |- SSE parsing
-  |- error mapping
-  |- quota/rate-limit/header extraction
-  |- empty-response retries
+  |- streaming pass-through
+  |- stream stall guards
+  |- empty-response detection (the retry loop lives in index.ts)
 
 OpenCode TUI runtime
   |
@@ -110,7 +111,7 @@ tui.ts
 
 ## Documentation Layout
 
-The current docs tree mirrors the codebase boundaries above: user docs cover setup and operations, and maintainer docs cover internal architecture and validation.
+The current docs tree mirrors the codebase boundaries above. User docs cover setup and operations, and maintainer docs cover internal architecture and validation.
 
 ```text
 docs/
@@ -144,22 +145,24 @@ High-level provider fetch flow:
 1. Parse OpenCode request URL and body.
 2. Resolve plugin config from defaults, `~/.opencode/openai-codex-auth-config.json`, and environment overrides (boolean env truthy only for `"1"`).
 3. Choose request transform mode:
-   - `native` keeps OpenCode payloads unchanged except required Codex invariants.
+   - `native` keeps the host payload shape. It normalizes the model name, sets the backend instruction identity line, and upserts one `## Backend Model Identity` developer message naming the outgoing model, refreshed again when fallback changes the model.
    - `legacy` fetches Codex/OpenCode prompts and applies compatibility rewrites.
 4. Enforce ChatGPT-backed Codex invariants:
    - `stream: true`
    - `store: false`
    - `include: ["reasoning.encrypted_content"]` or equivalent inclusion
+
+   Legacy transformation mode (`transformRequestBody`) sets all three unconditionally. Native mode leaves them to the shipped config templates (`store: false`, `reasoning.encrypted_content`) and the host payload (`stream`).
 5. Normalize model aliases and fallback candidates (including GPT-6 Astra, the Daybreak cyber tiers, and the GPT-5.6 Sol/Terra/Luna tiers).
 6. For responses-lite models (GPT-6 Astra, Daybreak, GPT-5.6), apply the responses-lite reshape (`lib/request/helpers/responses-lite.ts`): tools move into `input` as `additional_tools`, instructions become a developer message, top-level `tools`/`instructions` are cleared for lite shape, image `detail` is stripped, and `x-openai-internal-codex-responses-lite: true` is set.
-7. Resolve client identity (`lib/request/helpers/client-identity.ts`): responses-lite models default to `originator: opencode`; other models default to `codex_cli_rs`. Override with `CODEX_AUTH_CLIENT_IDENTITY`.
+7. Resolve client identity with `lib/request/helpers/client-identity.ts`. Responses-lite models default to `originator: opencode`, other models to `codex_cli_rs`. Override with `CODEX_AUTH_CLIENT_IDENTITY`.
 8. Resolve accounts and `preferred`/`strict` policy from `modelAccountPools` and `modelAccountPoolModes`; only preferred pools fall back to the general pool when unavailable.
 9. Resolve account/workspace selection with the configured `rotationStrategy` (default `hybrid` health scoring), cooldown, token bucket, and explicit `CODEX_AUTH_ACCOUNT_ID` constraints.
 10. Refresh tokens through the queued refresh path when needed.
 11. Attach OAuth/Codex headers and forward the request.
-12. Parse SSE responses, quota headers, retryable errors, empty responses, and unsupported-model details.
-13. Update runtime metrics, account health, circuit breaker state, TUI quota cache, and persisted storage.
-14. On recoverable failures, apply session recovery / auto-resume hooks when enabled.
+12. Parse the response. `lib/request/response-handler.ts` owns SSE parsing, stream stall guards, and empty-response detection. `lib/request/fetch-helpers.ts` owns rate-limit and quota header extraction, error mapping, and fallback.
+13. Update runtime metrics, account health, circuit breaker state, TUI quota cache, and persisted storage. Retries draw from the per-request budget tracker in `lib/request/retry-budget.ts`.
+14. On recoverable failures, classify the error and show a recovery toast in the current plugin runtime. The message/part rewriting and auto-resume engine in `lib/recovery/hook.ts` is not invoked by host event streams or request handlers.
 
 ---
 
@@ -175,7 +178,11 @@ Context is preserved through:
 
 Legacy mode exists for compatibility with older OpenCode/AI SDK payload behavior. It removes unsupported `item_reference` items and message IDs that cannot be looked up when `store: false` is active. Native mode is the default and preserves the host payload shape as much as possible.
 
-Responses-lite is a separate body shape layered on top of the same stateless contract: tool definitions live in the input prefix rather than the top-level `tools` field.
+The two modes source the invariants differently. Legacy transformation sets `store: false`, `stream: true`, and `reasoning.encrypted_content` inclusion unconditionally inside `transformRequestBody`. Native mode does not rewrite the body for them. It relies on the installer templates, which ship `store: false` and `reasoning.encrypted_content` on every model entry, and on the host payload, which already carries `stream`.
+
+Native mode still marks the backend model. It sets the instruction identity line and upserts one `## Backend Model Identity` developer message naming the outgoing model, so a selector label never hides the real model ID from the backend.
+
+Responses-lite is a separate body shape layered on top of the same stateless contract. Tool definitions live in the input prefix rather than the top-level `tools` field.
 
 ---
 
@@ -212,17 +219,19 @@ Canonical OpenCode plugin state lives under `~/.opencode`, while OpenCode config
 | --- | --- |
 | `~/.config/opencode/opencode.json` | OpenCode provider/plugin config managed by installer |
 | `~/.config/opencode/tui.json` | OpenCode TUI plugin config managed by installer |
-| `~/.opencode/auth/openai.json` | OpenCode auth token file |
+| `~/.opencode/auth/openai.json` | OpenCode auth token file (convention reference in docs; no plugin code reads this path) |
+| `~/.local/share/opencode/auth.json` | OpenCode host auth store, read and backfilled from the account pool by `backfillHostOpenAIAuthFromPool` |
 | `~/.opencode/openai-codex-auth-config.json` | plugin runtime config |
 | `~/.opencode/oc-codex-multi-auth-accounts.json` | global V3 account pool |
 | `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json` | project-scoped V3 account pool |
-| `~/.opencode/oc-codex-multi-auth-flagged-accounts.json` | flagged/deactivated account metadata |
+| `~/.opencode/projects/<project-key>/oc-codex-multi-auth-flagged-accounts.json` | flagged/deactivated account metadata, project-scoped when `perProjectAccounts` is on (default) |
+| `~/.opencode/oc-codex-multi-auth-flagged-accounts.json` | flagged/deactivated account metadata, global when `perProjectAccounts` is off |
 | `~/.opencode/backups/` | account backup/export target |
 | `~/.opencode/logs/codex-plugin/` | request/debug logs when enabled |
 
 Storage invariants:
 
-1. V1/V2 account files migrate into V3 on load/save paths (V2 surfaces a typed recovery error rather than silent discard).
+1. V1 account files migrate into V3 on load/save paths. V2 is rejected with the typed `UNKNOWN_V2_FORMAT` recovery error instead of a silent discard. Versions above 3 are rejected with `UNSUPPORTED_SCHEMA_VERSION`.
 2. Per-project storage is enabled by default and keyed by detected project identity.
 3. JSON files are written atomically where supported.
 4. Optional keychain storage is opt-in via `CODEX_KEYCHAIN=1`.
@@ -230,9 +239,17 @@ Storage invariants:
 
 ---
 
+## Shutdown and Keychain Details
+
+`lib/shutdown.ts` registers one cleanup pass per process on SIGINT, SIGTERM, and beforeExit. As a host plugin the process is not the package's to terminate, so the handlers drain cleanup and return, leaving exit ownership with OpenCode. The standalone CLI entrypoints call `setShutdownOwnsProcess(true)` and exit 130 on SIGINT and 143 on SIGTERM (`128 + signal number`).
+
+Keychain entries live under the OS keychain service name `oc-codex-multi-auth`. The global pool uses the account key `accounts:global`, and a project pool uses `accounts:<project-storage-key>`. Migrating a JSON pool into the keychain renames the original file to `<file>.migrated-to-keychain.<timestamp>` and keeps it at mode 0600 as the rollback artifact. That file is the user's recovery path if keychain lookups fail or `CODEX_KEYCHAIN` is later unset.
+
+---
+
 ## Session Recovery Storage
 
-When `sessionRecovery` is true (default), `lib/recovery/` may rewrite OpenCode host storage:
+When `sessionRecovery` is true (default), the request path classifies errors with `detectErrorType` and `isRecoverableError` and shows a recovery toast. The full repair engine in `lib/recovery/hook.ts` (`handleSessionRecovery`, message/part rewriting through `lib/recovery/storage.ts`, and optional auto-resume) is not wired into host event streams or request handlers, so it does not run in the current plugin runtime. The storage paths below describe what that engine reads and writes when wired.
 
 | Path | Purpose |
 |------|---------|
@@ -254,6 +271,8 @@ Recovered classes: `tool_result_missing`, `thinking_block_order`, `thinking_disa
 
 The request path also writes quota snapshots from response headers, so the TUI can reflect the account/workspace used by the latest request.
 
+The shared cache file resolves in this order. `tui.ts` passes the OpenCode state path (`api.state.path.state`) to `getTuiQuotaCachePath`. That function falls back to `$OPENCODE_STATE_DIR`, then to `~/.local/state/opencode/oc-codex-multi-auth-tui-quota.json`. There is no `~/.opencode/` fallback.
+
 ---
 
 ## Model Catalog and Fallback Notes
@@ -273,16 +292,19 @@ The default installer preserves `provider.openai`. `--modern` writes the modern 
 
 `--full` adds 59 explicit selector IDs for scripts. `--legacy` writes the explicit-only template (59 entries) for older OpenCode versions.
 
-Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for `gpt-6-astra` → the GPT-5.6 tiers → `gpt-5.5`, and for `gpt-5.5` / `gpt-5-codex` through `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.2`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31 and are no longer fallback targets. Full generic fallback can be enabled through config or environment variables.
+Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for `gpt-6-astra` → the GPT-5.6 tiers → `gpt-5.5` → `gpt-5.2`, and for `gpt-5.5` / `gpt-5-codex` through `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.2`. The same terminal `gpt-5.2` ends each GPT-5.6 tier's own chain, and `gpt-5.2` repeats on every tier row on purpose, because the resolver reads the chain of whichever model the request is currently on. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31 and are no longer fallback targets. Full generic fallback can be enabled through config or environment variables.
 
 ---
 
 ## Rotation and Reliability
 
-- `rotationStrategy` default `hybrid`: stick while healthy, otherwise score-select (health + tokens + freshness). Alternatives: `sticky`, `round-robin`.
+- `rotationStrategy` defaults to `hybrid`. `lib/accounts/rotation.ts` keeps the current account for the family while it is selectable, then `selectHybridAccount` in `lib/rotation.ts` scores candidates as `health*2 + tokens*5 + hoursSinceUsed*2.0` and takes the best score. When every candidate is blocked, selection falls back to the least-recently-used account, and the request loop discards that fallback if it is still ineligible. Alternatives: `sticky`, `round-robin`.
 - `lib/rotation.ts` owns hybrid health scoring; `lib/accounts/rotation.ts` wires it into account manager state.
-- Circuit breaker isolates repeated failures per account/path.
-- Empty-response retries use `emptyResponseMaxRetries` / `emptyResponseRetryDelayMs`.
+- Rotation health uses `HealthScoreTracker` in `lib/rotation.ts`: +1 per success, -10 on rate limit, -20 on other failure, +2 per hour of passive recovery, clamped to 0-100.
+- The standalone CLI defines health differently. `health` and `status` count an account healthy when `enabled && hasRefreshToken`. That check reads credentials, not rotation scores.
+- Circuit breaker isolates repeated failures. It opens after 3 failures inside a 60s window, resets after 30s, and allows 1 half-open probe attempt. The key is `${accountId}:${workspaceIdentityHash}:${modelFamily}`, where the workspace hash is a truncated SHA-256 of the account's workspace identity key, or `index-<n>` when no workspace identity exists. It is not keyed per URL path. One degraded endpoint cannot poison other families on the same account.
+- Retry budgets: `lib/request/retry-budget.ts` tracks six per-request classes (`authRefresh`, `network`, `server`, `rateLimitShort`, `rateLimitGlobal`, `emptyResponse`). Profiles set the limits: `conservative` 2/2/2/2/1/1, `balanced` 4/4/4/4/3/2, `aggressive` 8/8/8/8/10/4, in class order. Config selects the profile with per-class overrides, and `beginnerSafeMode` forces `conservative`. An exhausted budget fails the request instead of retrying without bound.
+- Empty-response retries use `emptyResponseMaxRetries` / `emptyResponseRetryDelayMs` and consume the `emptyResponse` budget class.
 - Optional `parallelProbing` can probe account health concurrently (default off).
 
 ---

@@ -28,7 +28,7 @@ lib/
 ├── logger.ts               # debug/request logging
 ├── oauth-constants.ts      # OAuth port/path constants
 ├── oauth-success.ts        # OAuth success HTML source copied during build
-├── parallel-probe.ts       # parallel health checks
+├── parallel-probe.ts       # parallel account probes, first success wins
 ├── proactive-refresh.ts    # token refresh before expiry
 ├── prompts/                # Codex/OpenCode prompts and ETag caches
 ├── quota-notification-state.ts # cross-process threshold/delivery state file
@@ -41,7 +41,7 @@ lib/
 ├── runtime.ts              # pure runtime helpers and metrics/explainability types
 ├── schemas.ts              # Zod schemas
 ├── shutdown.ts             # graceful shutdown
-├── storage.ts              # V3 JSON storage facade
+├── storage.ts              # barrel re-exporting lib/storage/ (V3 JSON account storage)
 ├── storage/                # atomic writes, paths, migrations, keychain, backup/import/export
 ├── table-formatter.ts      # CLI table formatting
 ├── tools/                  # 24 codex-* tool factories + registry
@@ -73,10 +73,10 @@ lib/
 | Account selection | `accounts/rotation.ts`, `rotation.ts` | hybrid health + token bucket |
 | Account rate limits | `accounts/rate-limits.ts` | per-account tracking |
 | Account persistence | `accounts/persistence.ts`, `accounts/state.ts` | account manager state and save/load coordination |
-| Storage format | `storage.ts`, `storage/load-save.ts` | V3 with migration from V1/V2 |
+| Storage format | `storage.ts`, `storage/load-save.ts` | V3, with V1 migrated to V3 on load |
 | Storage paths | `storage/paths.ts` | project root detection |
 | Storage keychain | `storage/keychain.ts` | optional native keychain backend |
-| Storage migrations | `storage/migrations.ts` | V1/V2 → V3 upgrade |
+| Storage migrations | `storage/migrations.ts` | V1 → V3 upgrade; V2 files throw a StorageError with code UNKNOWN_V2_FORMAT |
 | Backups/import/export | `storage/backup.ts`, `storage/export-import.ts` | timestamped backups and dry-run import preview |
 | Tool registry | `tools/index.ts` | `ToolContext`, `createToolRegistry` |
 | TUI quota status | `tui-status.ts`, `tui-quota-cache.ts`, `codex-usage.ts` | prompt quota display and usage cache |
@@ -84,7 +84,7 @@ lib/
 | Health monitoring | `health.ts` | account health status |
 | Account display / masking | `account-display.ts` | label-preferred rendering, `maskEmail` behavior |
 | Reset credits | `codex-reset.ts`, `codex-usage.ts` | banked rate-limit reset credit list/redeem; `codex-usage.ts` reads the same counts off the usage endpoint for `codex-limits`, sharing `normalizeResetCreditCount` so both agree |
-| Parallel probes | `parallel-probe.ts` | concurrent health checks |
+| Parallel probes | `parallel-probe.ts` | races probe requests across candidate accounts, first success wins, losing probes aborted |
 | Runtime helpers | `runtime.ts` | routing visibility, metrics, pure helper types |
 | Graceful shutdown | `shutdown.ts` | cleanup on exit |
 | Table formatting | `table-formatter.ts` | CLI output tables |

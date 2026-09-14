@@ -4,9 +4,9 @@ Per-tool modules for the 24 `codex-*` tools registered by the plugin.
 
 ## Status
 
-All current tools live here. `index.ts` builds a `ToolContext` and passes it
-to `createToolRegistry(ctx)` from `./index.ts`, which wires every `codex-*`
-tool into the OpenCode plugin surface.
+All current tools live here. The plugin entry `index.ts` builds a `ToolContext`
+and passes it to `createToolRegistry(ctx)` from `./index.ts`, which wires every
+`codex-*` tool into the OpenCode plugin surface.
 
 ## Layout
 
@@ -14,6 +14,8 @@ tool into the OpenCode plugin surface.
 lib/tools/
   AGENTS.md
   index.ts                # ToolContext type + createToolRegistry(ctx) barrel
+  doctor-repair.ts        # shared doctor repair pass (refresh + stale-state clear); used by codex-doctor and CLI --fix
+  refresh-account.ts      # shared single-use refresh-token persistence; used by account-management tools
   codex-list.ts           # one file per tool
   codex-switch.ts
   codex-warm.ts
