@@ -553,8 +553,7 @@ async function fetchUsageForAccount(
 			}
 		} else if (autoProtectCredits && isUsageQuotaRecovered([usage.primary, usage.secondary])) {
 			try {
-				await persistUsageQuotaRecovery(account);
-				onCredentialsPersisted();
+				if (await persistUsageQuotaRecovery(account)) onCredentialsPersisted();
 			} catch {
 				logWarn("Failed to persist recovered usage quota");
 			}

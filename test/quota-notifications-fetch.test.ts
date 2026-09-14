@@ -87,8 +87,8 @@ describe("default quota fetch path", () => {
 
 		await monitorWith({ onCredentialsPersisted, notify: vi.fn().mockResolvedValue(true) }).runNow();
 
-		expect(onCredentialsPersisted).toHaveBeenCalledTimes(2);
-		expect(order).toEqual(["refresh", "invalidate", "usage", "invalidate"]);
+		expect(onCredentialsPersisted).toHaveBeenCalledTimes(1);
+		expect(order).toEqual(["refresh", "invalidate", "usage"]);
 	});
 
 	it("still invalidates the cache when the usage call fails after a rotation", async () => {
@@ -110,6 +110,7 @@ describe("default quota fetch path", () => {
 	});
 
 	it("invalidates recovered quota even when the token was still valid", async () => {
+		persistUsageQuotaRecovery.mockResolvedValue(true);
 		ensureCodexUsageAccessToken.mockResolvedValue({
 			accessToken: "access-1",
 			refreshed: false,

@@ -238,9 +238,11 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 					}
 					if (isUsageQuotaRecovered([usage.primary, usage.secondary])) {
 						try {
-							storageChanged = (await persistUsageQuotaRecovery(account)) || storageChanged;
-							quotaExhaustionPersistedOrKnown = true;
-							invalidateAccountManagerCache();
+							if (await persistUsageQuotaRecovery(account)) {
+								storageChanged = true;
+								quotaExhaustionPersistedOrKnown = true;
+								invalidateAccountManagerCache();
+							}
 						} catch {
 							logWarn("Failed to persist recovered usage quota");
 						}
