@@ -53,16 +53,26 @@ describe("config hot reload", () => {
 		expect(loadPluginConfig().retryAllAccountsMaxRetries).toBe(2);
 	});
 
-	it("uses defaults on deletion and notices recreation", async () => {
+	it("keeps the last usable config during deletion and notices recreation", async () => {
 		const { loadPluginConfig } = await import("../lib/config.js");
 		const defaults = loadPluginConfig();
 		expect(loadPluginConfig()).toBe(defaults);
 		writeFileSync(configPath, '{"rotationStrategy":"sticky"}');
 		expect(loadPluginConfig().rotationStrategy).toBe("sticky");
 		unlinkSync(configPath);
-		expect(loadPluginConfig()).toBe(defaults);
+		expect(loadPluginConfig().rotationStrategy).toBe("sticky");
 		writeFileSync(configPath, '{"rotationStrategy":"round-robin"}');
 		expect(loadPluginConfig().rotationStrategy).toBe("round-robin");
+	});
+	it.each(['{', 'null', '[]'])("keeps the global pool selected while the config is invalid: %s", async (invalid) => {
+		writeFileSync(configPath, '{"perProjectAccounts":false,"retryAllAccountsRateLimited":false}');
+		const { loadPluginConfig } = await import("../lib/config.js");
+		const valid = loadPluginConfig();
+		writeFileSync(configPath, invalid);
+		expect(loadPluginConfig()).toBe(valid);
+		expect(loadPluginConfig().perProjectAccounts).toBe(false);
+		writeFileSync(configPath, '{"perProjectAccounts":true}');
+		expect(loadPluginConfig().perProjectAccounts).toBe(true);
 	});
 
 	it("warns only once per parse and keeps env getters live", async () => {

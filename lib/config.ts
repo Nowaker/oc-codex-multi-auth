@@ -115,7 +115,7 @@ export function resetPluginConfigCache(): void {
 
 /**
  * Load plugin configuration from ~/.opencode/openai-codex-auth-config.json
- * Falls back to defaults if file doesn't exist or is invalid
+ * Keeps the last usable configuration during incomplete writes; defaults on cold start.
  *
  * @returns Plugin configuration
  */
@@ -125,21 +125,20 @@ export function loadPluginConfig(): PluginConfig {
 		if (pluginConfigCache?.mtimeMs === mtimeMs && pluginConfigCache.size === size) {
 			return pluginConfigCache.config;
 		}
-		const config = readPluginConfig();
+		const config = readPluginConfig() ?? pluginConfigCache?.config ?? DEFAULT_CONFIG;
 		pluginConfigCache = { mtimeMs, size, config };
 		return config;
 	} catch (error) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-			pluginConfigCache = { mtimeMs: null, size: 0, config: DEFAULT_CONFIG };
+			pluginConfigCache = { mtimeMs: null, size: 0, config: pluginConfigCache?.config ?? DEFAULT_CONFIG };
 		} else {
-			resetPluginConfigCache();
 			logWarn(`Failed to stat config from ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		return DEFAULT_CONFIG;
+		return pluginConfigCache?.config ?? DEFAULT_CONFIG;
 	}
 }
 
-function readPluginConfig(): PluginConfig {
+function readPluginConfig(): PluginConfig | undefined {
 	try {
 		const fileContent = readFileSync(CONFIG_PATH, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
@@ -167,11 +166,11 @@ function readPluginConfig(): PluginConfig {
 		// config. Callers still see DEFAULT_CONFIG as the base, so an invalid
 		// file degrades gracefully instead of silently mis-configuring retry
 		// budgets, timeouts, or feature flags.
-		if (!isRecord(userConfig)) {
+		if (!isRecord(userConfig) || Array.isArray(userConfig)) {
 			logWarn(
-				`Plugin config at ${CONFIG_PATH} is not a JSON object; using defaults.`,
+				`Plugin config at ${CONFIG_PATH} is not a JSON object; keeping the last usable configuration.`,
 			);
-			return DEFAULT_CONFIG;
+			return undefined;
 		}
 
 		const parseResult = PluginConfigSchema.safeParse(userConfig);
@@ -191,12 +190,12 @@ function readPluginConfig(): PluginConfig {
 			`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
 		);
 		const salvaged = salvageValidKeys(userConfig);
-		return { ...DEFAULT_CONFIG, ...salvaged };
+		return { ...(pluginConfigCache?.config ?? DEFAULT_CONFIG), ...salvaged };
 	} catch (error) {
 		logWarn(
 			`Failed to load config from ${CONFIG_PATH}: ${(error as Error).message}`,
 		);
-		return DEFAULT_CONFIG;
+		return undefined;
 	}
 }
 
