@@ -1300,10 +1300,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		};
 
 		const supportsInteractiveMenus = (): boolean => {
+			if (process.env.FORCE_INTERACTIVE_MODE === "1") return true;
 			if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
 			if (process.env.OPENCODE_TUI === "1") return false;
 			if (process.env.OPENCODE_DESKTOP === "1") return false;
 			if (process.env.TERM_PROGRAM === "opencode") return false;
+			if (process.env.ELECTRON_RUN_AS_NODE === "1") return false;
 			return true;
 		};
 

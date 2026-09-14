@@ -565,16 +565,20 @@ function resolveNumberSetting(
 	envName: string,
 	configValue: number | undefined,
 	defaultValue: number,
-	options?: { min?: number },
+	options?: { min?: number; max?: number },
 ): number {
 	const envValue = parseNumberEnv(process.env[envName]);
 	const candidate = envValue ?? configValue ?? defaultValue;
 	const min = options?.min;
+	const max = options?.max;
+	let result = candidate;
 	if (min !== undefined) {
-		return Math.max(min, candidate);
+		result = Math.max(min, result);
 	}
-	// istanbul ignore next -- dead code: all callers pass { min: ... }
-	return candidate;
+	if (max !== undefined) {
+		result = Math.min(max, result);
+	}
+	return result;
 }
 
 function resolveStringSetting<T extends string>(
@@ -999,7 +1003,7 @@ export function getParallelProbingMaxConcurrency(pluginConfig: PluginConfig): nu
 		"CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY",
 		pluginConfig.parallelProbingMaxConcurrency,
 		2,
-		{ min: 1 },
+		{ min: 1, max: 5 },
 	);
 }
 
