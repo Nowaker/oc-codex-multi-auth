@@ -257,7 +257,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 
 | option | default | what it does |
 |--------|---------|--------------|
-| `requestTransformMode` | `native` | request shaping mode: `native` keeps OpenCode payloads unchanged; `legacy` enables Codex compatibility rewrites |
+| `requestTransformMode` | `native` | request shaping mode: `native` normalizes model names, sets instruction identity lines, and upserts `## Backend Model Identity`; `legacy` enables full Codex compatibility rewrites |
 | `codexMode` | `true` | legacy-only bridge prompt behavior (applies when `requestTransformMode=legacy`) |
 | `codexTuiV2` | `true` | enables codex-style terminal ui output (set `false` to keep legacy output) |
 | `codexTuiColorProfile` | `truecolor` | terminal color profile for codex ui (`truecolor`, `ansi256`, `ansi16`) |
@@ -284,8 +284,8 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `fallbackOnUnsupportedCodexModel` | `false` | legacy fallback toggle mapped to `unsupportedCodexPolicy` (prefer using `unsupportedCodexPolicy`) |
 | `fallbackToGpt52OnUnsupportedGpt53` | `true` | legacy compatibility toggle for the `gpt-5.3-codex -> gpt-5.2-codex` edge when generic fallback is enabled |
 | `unsupportedCodexFallbackChain` | `{}` | optional per-model fallback-chain override (map of `model -> [fallback1, fallback2, ...]`; default includes `gpt-6-astra` and the 5.6 tiers down to `gpt-5.5`, and `gpt-5.5`/`gpt-5-codex` down to `gpt-5.2`). These entry IDs auto-fallback by default, even when selected directly, both for common entitlement gates and when every enabled account has an active upstream rate/quota block for the requested model; set `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`, `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1`, or `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` to opt out. Directly selected non-entry IDs stay strict under this auto gate. GPT-5.5 Pro and GPT-6 Astra Pro are not mapped: neither is a Codex-routable id. The Daybreak cyber tiers are deliberately chainless, so an unentitled account fails loudly rather than being answered by a general model. |
-| `sessionRecovery` | `true` | auto-recover from common api errors |
-| `autoResume` | `true` | auto-resume after thinking block recovery |
+| `sessionRecovery` | `true` | classify recoverable API errors and show recovery toasts in the TUI |
+| `autoResume` | `true` | auto-resume flag (supported by underlying recovery engine in `lib/recovery/hook.ts`) |
 | `tokenRefreshSkewMs` | `60000` | refresh tokens this many ms before expiry |
 | `rateLimitToastDebounceMs` | `60000` | debounce rate limit toasts |
 | `parallelProbing` | `false` | enable concurrent account health probes. Probe infrastructure exists in `lib/parallel-probe.ts` with test coverage, but runtime probe scheduling in the main fetch loop uses direct sequential rotation checks, so this toggle has no runtime consumer today |
@@ -453,7 +453,7 @@ override any config with env vars (boolean values are truthy only for `"1"`):
 | `CODEX_AUTH_QUOTA_NOTIFICATIONS=1` | enable macOS aggregate quota notifications |
 | `CODEX_AUTH_AUTO_PROTECT_CREDITS=0` | disable periodic quota checks that protect paid Credits (enabled by default) |
 | `CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS=1800000` | override the quota check interval (minimum 30000 ms) |
-| `CODEX_AUTH_SESSION_RECOVERY=0` | disable automatic session recovery hooks |
+| `CODEX_AUTH_SESSION_RECOVERY=0` | disable recoverable error classification and warning toasts |
 | `CODEX_AUTH_AUTO_RESUME=0` | disable auto-resume after thinking-block recovery |
 | `CODEX_AUTH_FAST_SESSION=1` | enable fast-session defaults |
 | `CODEX_AUTH_FAST_SESSION_STRATEGY=always` | force fast mode on every prompt |

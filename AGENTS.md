@@ -44,7 +44,7 @@ Package version: see `package.json` (`version` field).
 | SSE to JSON | `lib/request/response-handler.ts` | stream parsing and empty-response detection |
 | Prompt templates | `lib/prompts/codex.ts`, `lib/prompts/opencode-codex.ts`, `lib/prompts/codex-opencode-bridge.ts` | model-family detection, Codex prompt cache, bridge prompts |
 | Config parsing | `lib/config.ts`, `lib/schemas.ts` | plugin config and environment overrides (bool env truthy only `"1"`) |
-| Session recovery | `lib/recovery/`, `lib/recovery.ts` | recoverable error handling, auto-resume, and TUI toast notifications |
+| Session recovery | `lib/recovery/`, `lib/recovery.ts` | recoverable error detection and TUI toast notifications; underlying auto-resume/repair engine exists in hook.ts |
 | Health monitoring | `lib/health.ts`, `lib/parallel-probe.ts` | account health status and concurrent probes |
 | Circuit breaker | `lib/circuit-breaker.ts` | failure isolation |
 | Public architecture | `docs/architecture.md` | user-facing architecture overview |

@@ -87,7 +87,7 @@ If your OpenCode runtime supports global compaction tuning, you can also set val
 
 - Served over the **responses-lite** path. Astra's catalog entry landed in openai/codex commit `ed391d4d` (2026-09-03) and reads `use_responses_lite: true`, `tool_mode: "code_mode_only"`, `multi_agent_version: "v2"`, so the shape is read rather than inferred. The `CODEX_AUTH_ASTRA_RESPONSES_LITE` switch that 6.17.0 carried while this was unverifiable has been removed.
 - Rollout gate: Astra reached a limited set of organizations first, so accounts outside it auto-fallback  
-  `gpt-6-astra → gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5`  
+  `gpt-6-astra → gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5 → gpt-5.2`  
   (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`).
 - Efforts are low through `ultra`, per OpenAI's Codex model list. `ultra` is sent as `max` on the wire, as with 5.6.
 - Bare `gpt-6` is a plugin-side alias. `gpt-6-astra-pro` is not a Codex-routable id and collapses onto `gpt-6-astra`.
@@ -102,7 +102,7 @@ If your OpenCode runtime supports global compaction tuning, you can also set val
 
 - Served over the **responses-lite** path (`use_responses_lite`).
 - Preview entitlement: accounts without access auto-fallback  
-  `gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5`  
+  `gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5 → gpt-5.2`  
   (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`).
 - Default client identity for every responses-lite model (5.6, GPT-6 Astra, Daybreak) is host/opencode (`originator: opencode`); other families default to Codex CLI identity.
 - `ultra` is accepted as a client-side alias and sent as `max` on the wire (no subagent orchestration in this plugin).

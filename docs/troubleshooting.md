@@ -6,7 +6,7 @@ For install modes, the full tool list (with args), and standalone CLI commands (
 
 ---
 
-> **Quick Reset**: Most issues can be resolved by deleting `~/.local/share/opencode/auth.json` (or `~/.opencode/auth/openai.json` on older host layouts) and running `opencode auth login` again. Deleting host auth files only clears the host OAuth fallback. To fully clear pooled accounts, also remove `~/.opencode/oc-codex-multi-auth-accounts.json` and any project-specific account files under `~/.opencode/projects/<project-key>/`.
+> **Quick Reset**: Most issues can be resolved by deleting `~/.local/share/opencode/auth.json` (or `~/.opencode/auth/openai.json` on older host layouts) and running `opencode auth login` again. Deleting host auth files only clears the host OAuth fallback. To fully clear pooled accounts, also remove `~/.opencode/oc-codex-multi-auth-accounts.json`, any project-specific account files under `~/.opencode/projects/<project-key>/`, and flagged account files (`*-flagged-accounts.json`). When `CODEX_KEYCHAIN=1` is active, stored accounts live in the OS keychain under service `oc-codex-multi-auth` rather than JSON, requiring `codex-keychain rollback` or OS keychain tools to clear. See [Privacy](privacy.md) for full cleanup procedures.
 
 If you prefer guided recovery before manual debugging, run:
 
@@ -512,7 +512,7 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    ```
    If the model still fails only through the plugin, run `codex-health` and compare the failing pooled account ids against the account the Codex CLI uses (`~/.codex/auth.json`).
 4. Default public selectors that are commonly entitlement-gated can auto-fallback: `gpt-6-astra` degrades into the GPT-5.6 tiers, the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain to `gpt-5.5`, and `gpt-5.5` degrades through `gpt-5.6-terra` and `gpt-5.6-luna` to `gpt-5.2`, while canonical `gpt-5-codex` degrades through `gpt-5.6-terra` and `gpt-5.5` to `gpt-5.2`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones. The Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`) have no chain by design: an unentitled account gets a hard failure rather than a silent substitution by a general model.
-5. Enable fallback policy if you also want automatic downgrades for manual/legacy selectors:
+5. Enable fallback policy if you also want automatic downgrades for manual/legacy selectors (live targets `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.2` succeed retired GPT-5.4 IDs):
    ```bash
    CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback opencode
    ```
