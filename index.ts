@@ -1656,21 +1656,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		};
 
 		const invalidateAccountManagerCache = (): void => {
-			// Dispose the outgoing manager so we don't leak its shutdown handler
-			// into the global cleanup queue or leave a pending debounce timer
-			// pointing at a stale instance. Flush first (best-effort, in the
-			// background) so any queued debounced save is not silently dropped.
+			// Retire before flushing: keep disk membership authoritative while
+			// publishing queued rate-limit evidence through the volatile merge.
 			const previous = cachedAccountManager;
 			cachedAccountManager = null;
 			accountManagerPromise = null;
 			if (previous) {
+				previous.disposeShutdownHandler();
 				void previous
 					.flushPendingSave()
 					.catch((error: unknown) => {
 						logWarn(
 							`Failed to flush pending save while invalidating account manager: ${error instanceof Error ? error.message : String(error)}`,
 						);
-					}).finally(() => previous.disposeShutdownHandler());
+					});
 			}
 		};
 

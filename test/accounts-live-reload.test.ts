@@ -128,7 +128,7 @@ describe("accounts live reload", () => {
 		await settle();
 		expect(load).not.toHaveBeenCalled();
 	});
-	it("flushes unpublished rate limits on ordinary credential-cache invalidation", async () => {
+	it("flushes unpublished rate limits without dropping newly imported accounts on invalidation", async () => {
 		const manager = captured.context?.cachedAccountManagerRef.current;
 		if (!manager) throw new Error("Missing manager");
 		const account = manager.getCurrentAccount();
@@ -142,10 +142,16 @@ describe("accounts live reload", () => {
 			flushed = pending;
 			return pending;
 		});
+		await fs.writeFile(path, JSON.stringify({ ...storage(true), accounts: [
+			...storage(true).accounts,
+			{ accountId: "new-import", refreshToken: "new-import-refresh", addedAt: 2, lastUsed: 2 },
+		] }));
 		captured.context?.invalidateAccountManagerCache();
 		await flushed;
 		const stored = JSON.parse(await fs.readFile(path, "utf8"));
 		expect(stored.accounts[0].rateLimitResetTimes.codex).toBe(Date.now() + 60_000);
+		expect(stored.accounts).toHaveLength(2);
+		expect(stored.accounts[1].accountId).toBe("new-import");
 	});
 	it("does not reset a bounded retry budget when a peer writes an unchanged quota block", async () => {
 		captured.maxRetries = 1;
