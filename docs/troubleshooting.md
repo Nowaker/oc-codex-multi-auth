@@ -6,7 +6,7 @@ For install modes, the full tool list (with args), and standalone CLI commands (
 
 ---
 
-> **Quick Reset**: Most issues can be resolved by deleting `~/.opencode/auth/openai.json` and running `opencode auth login` again. Deleting that file only clears the host OAuth fallback. To fully clear pooled accounts, also remove `~/.opencode/oc-codex-multi-auth-accounts.json` and any project-specific account files under `~/.opencode/projects/<project-key>/`.
+> **Quick Reset**: Most issues can be resolved by deleting `~/.local/share/opencode/auth.json` (or `~/.opencode/auth/openai.json` on older host layouts) and running `opencode auth login` again. Deleting host auth files only clears the host OAuth fallback. To fully clear pooled accounts, also remove `~/.opencode/oc-codex-multi-auth-accounts.json` and any project-specific account files under `~/.opencode/projects/<project-key>/`.
 
 If you prefer guided recovery before manual debugging, run:
 
@@ -815,7 +815,7 @@ The plugin keeps a circuit breaker per account and model family. Three failures 
 <details>
 <summary><b>Recovery toasts in the OpenCode TUI</b></summary>
 
-Recoverable request errors (a missing tool result, an out-of-order thinking block, or a thinking-mode violation) surface a warning toast in the OpenCode TUI before the plugin repairs the session and optionally resumes it. Warning and error toasts are always shown. The informational "Using &lt;account&gt; (N/N)" account-selection toast is the only one a setting controls, via `accountToasts` in plugin config or `CODEX_AUTH_ACCOUNT_TOASTS=0`. Toast duration follows `toastDurationMs` in plugin config or `CODEX_AUTH_TOAST_DURATION_MS` (default 5000 ms, minimum 1000 ms).
+Recoverable request errors (a missing tool result, an out-of-order thinking block, or a thinking-mode violation) surface a warning toast in the OpenCode TUI. Warning and error toasts are always shown. The informational "Using &lt;account&gt; (N/N)" account-selection toast is the only one a setting controls, via `accountToasts` in plugin config or `CODEX_AUTH_ACCOUNT_TOASTS=0`. Toast duration follows `toastDurationMs` in plugin config or `CODEX_AUTH_TOAST_DURATION_MS` (default 5000 ms, minimum 1000 ms). While `lib/recovery/hook.ts` contains an underlying session repair and auto-resume engine, runtime requests in `index.ts` currently surface the warning toast without executing host session mutation hooks.
 
 </details>
 
