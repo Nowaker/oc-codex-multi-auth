@@ -26,7 +26,7 @@ describe("warm recovery evidence", () => {
 		await rm(directory, { recursive: true, force: true });
 	});
 	const usage = (used: number) => new Response(JSON.stringify({ rate_limit: {
-		primary_window: { used_percent: used, limit_window_seconds: 604800 },
+		primary_window: { used_percent: used, limit_window_seconds: 604800 }, secondary_window: null,
 	} }));
 	it("keeps exhausted subscription quota and other model blocks after a successful fallback warm", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(usage(100));
