@@ -2545,12 +2545,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							while (true) {
 						if (cachedAccountManager && cachedAccountManager !== accountManager) {
-						accountManager = cachedAccountManager;
+							accountManager = cachedAccountManager;
 						} else if (!cachedAccountManager) {
-						const reloaded = await AccountManager.loadFromDisk();
-						cachedAccountManager = reloaded;
-						accountManagerPromise = Promise.resolve(reloaded);
-						accountManager = reloaded;
+							const reloaded = await AccountManager.loadFromDisk();
+							cachedAccountManager = reloaded;
+							accountManagerPromise = Promise.resolve(reloaded);
+							accountManager = reloaded;
 						}
 						let accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();
