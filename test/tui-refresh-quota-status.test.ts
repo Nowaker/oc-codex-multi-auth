@@ -28,10 +28,11 @@ import { loadAccounts } from "../lib/storage.js";
 import {
 	createTuiQuotaSnapshot,
 	getTuiQuotaCachePath,
+	TUI_QUOTA_SNAPSHOT_FRESH_MS,
 	writeTuiQuotaSnapshot,
 	type TuiQuotaSnapshot,
 } from "../lib/tui-quota-cache.js";
-import { refreshQuotaStatusInner } from "../tui.js";
+import { refreshQuotaStatusInner, resolveQuotaPollFingerprint } from "../tui.js";
 
 const storage: AccountStorageV3 = {
 	version: 3,
@@ -97,9 +98,12 @@ describe("refreshQuotaStatusInner", () => {
 		vi.unstubAllEnvs();
 	});
 
-	it("shows the account that actually served the last request, not the stored active account", async () => {
+	it.each(["expires", "account is removed"])("keeps the serving account across polls until its snapshot %s", async (invalidation) => {
 		const api = createFakeApi(stateDir);
 		const cachePath = getTuiQuotaCachePath(stateDir);
+		const activeAccount = storage.accounts[0];
+		if (!activeAccount) throw new Error("expected active account fixture");
+		const activeFingerprint = createUsageAccountFingerprint(activeAccount);
 
 		const servingSnapshot: TuiQuotaSnapshot = createTuiQuotaSnapshot({
 			fingerprint: createUsageAccountFingerprint(storage.accounts[1]!),
@@ -126,6 +130,64 @@ describe("refreshQuotaStatusInner", () => {
 		expect(resolveCodexUsageActiveAccount(storage)?.index).toBe(0);
 		expect(ensureCodexUsageAccessToken).not.toHaveBeenCalled();
 		expect(fetchCodexUsage).not.toHaveBeenCalled();
+
+		for (const elapsedMs of [1_000, 2_000]) {
+			vi.setSystemTime(servingSnapshot.fetchedAt + elapsedMs);
+			const pollFingerprint = await resolveQuotaPollFingerprint(api);
+			expect(pollFingerprint).toBe(result.fingerprint);
+			expect(pollFingerprint).not.toBe(activeFingerprint);
+			expect(ensureCodexUsageAccessToken).not.toHaveBeenCalled();
+			expect(fetchCodexUsage).not.toHaveBeenCalled();
+		}
+
+		const nextStorage = invalidation === "account is removed"
+			? { ...storage, accounts: [activeAccount] }
+			: storage;
+		vi.mocked(loadAccounts).mockResolvedValue(nextStorage);
+		vi.setSystemTime(servingSnapshot.fetchedAt + (
+			invalidation === "expires" ? TUI_QUOTA_SNAPSHOT_FRESH_MS : 3_000
+		));
+
+		const nextFingerprint = await resolveQuotaPollFingerprint(api);
+		expect(nextFingerprint).toBe(activeFingerprint);
+		expect(nextFingerprint).not.toBe(result.fingerprint);
+		expect(ensureCodexUsageAccessToken).not.toHaveBeenCalled();
+		expect(fetchCodexUsage).not.toHaveBeenCalled();
+
+		vi.mocked(ensureCodexUsageAccessToken).mockResolvedValueOnce({
+			accessToken: "test-access-token",
+			refreshed: false,
+			persisted: false,
+		});
+		vi.mocked(fetchCodexUsage).mockResolvedValueOnce({
+			rate_limit: {
+				primary_window: { used_percent: 40, limit_window_seconds: 18_000 },
+			},
+		});
+		const refreshed = await refreshQuotaStatusInner(api);
+		expect(refreshed).toMatchObject({
+			type: "ready",
+			fingerprint: activeFingerprint,
+			accountEmail: "active@example.com",
+			accountCount: nextStorage.accounts.length,
+			source: "usage",
+			stale: false,
+			limits: [{ label: "5h", leftPercent: 60 }],
+		});
+		expect(ensureCodexUsageAccessToken).toHaveBeenCalledExactlyOnceWith({
+			storage: nextStorage,
+			account: activeAccount,
+		});
+		expect(fetchCodexUsage).toHaveBeenCalledExactlyOnceWith({
+			accountId: "account-active",
+			accessToken: "test-access-token",
+			organizationId: undefined,
+		});
+
+		vi.setSystemTime(Date.now() + 1_000);
+		expect(await resolveQuotaPollFingerprint(api)).toBe(nextFingerprint);
+		expect(ensureCodexUsageAccessToken).toHaveBeenCalledTimes(1);
+		expect(fetchCodexUsage).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not display a stale snapshot for a different account as the active account's numbers", async () => {

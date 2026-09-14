@@ -171,9 +171,22 @@ async function writeSharedQuotaStatus(
 	}
 }
 
-async function resolveActiveQuotaFingerprint(): Promise<string | undefined> {
+export async function resolveQuotaPollFingerprint(
+	api: TuiPluginApi,
+): Promise<string | undefined> {
 	const storage = await loadAccounts();
-	const selection = storage ? resolveCodexUsageActiveAccount(storage) : null;
+	if (!storage || storage.accounts.length === 0) return undefined;
+	const shared = await readSharedQuotaStatus(api);
+	if (
+		shared?.source === "headers" &&
+		isFreshTuiQuotaSnapshot(shared) &&
+		storage.accounts.some(
+			(account) => createUsageAccountFingerprint(account) === shared.fingerprint,
+		)
+	) {
+		return shared.fingerprint;
+	}
+	const selection = resolveCodexUsageActiveAccount(storage);
 	return selection
 		? createUsageAccountFingerprint(selection.account)
 		: undefined;
@@ -332,7 +345,7 @@ function createPromptStatus(
 		if (cachePollInFlight) return;
 		cachePollInFlight = true;
 		void (async () => {
-			const fingerprint = await resolveActiveQuotaFingerprint();
+			const fingerprint = await resolveQuotaPollFingerprint(api);
 			if (!fingerprint) {
 				if (currentFingerprint) applyQuota({ type: "missing" });
 				return;
