@@ -808,7 +808,7 @@ ssh -L 1455:localhost:1455 user@remote
 <details open>
 <summary><b>Circuit-open account rotations</b></summary>
 
-The plugin keeps a circuit breaker per account and model family. Three failures inside a 60-second window open the circuit for a 30-second cooldown. While it is open, requests short-circuit to the next account instead of retrying the degraded one, and the log line reads `[circuit-breaker] Circuit open ... Rotating account.` After the cooldown the circuit admits a single probe request. A successful probe closes the circuit, and a failed probe reopens it. No action is required. If one account rotates constantly, run `codex-health` to verify its refresh token and `codex-diag` for the breaker aggregates.
+The plugin keeps a circuit breaker per account and model family in the runtime request pipeline (`lib/circuit-breaker.ts` keyed via `index.ts:2713-2724`). Three failures inside a 60-second window open the circuit for a 30-second cooldown. While it is open, requests short-circuit to the next account instead of retrying the degraded one, and the log line reads `[circuit-breaker] Circuit open ... Rotating account.` After the cooldown the circuit admits a single probe request. A successful probe closes the circuit, and a failed probe reopens it. No action is required. If one account rotates constantly, run `codex-health` to verify its refresh token and `codex-diag` for the breaker aggregates. (Note that standalone `lib/health.ts` defines an isolated breaker instance for diagnostic summaries, whereas active request routing wires its breaker directly in `index.ts`).
 
 </details>
 
