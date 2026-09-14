@@ -305,7 +305,20 @@ Unsupported-model behavior is strict by default. Default auto-fallbacks still co
 - Circuit breaker isolates repeated failures. It opens after 3 failures inside a 60s window, resets after 30s, and allows 1 half-open probe attempt. The key is `${accountId}:${workspaceIdentityHash}:${modelFamily}`, where the workspace hash is a truncated SHA-256 of the account's workspace identity key, or `index-<n>` when no workspace identity exists. It is not keyed per URL path. One degraded endpoint cannot poison other families on the same account.
 - Retry budgets: `lib/request/retry-budget.ts` tracks six per-request classes (`authRefresh`, `network`, `server`, `rateLimitShort`, `rateLimitGlobal`, `emptyResponse`). Profiles set the limits: `conservative` 2/2/2/2/1/1, `balanced` 4/4/4/4/3/2, `aggressive` 8/8/8/8/10/4, in class order. Config selects the profile with per-class overrides, and `beginnerSafeMode` forces `conservative`. An exhausted budget fails the request instead of retrying without bound.
 - Empty-response retries use `emptyResponseMaxRetries` / `emptyResponseRetryDelayMs` and consume the `emptyResponse` budget class.
-- Optional `parallelProbing` can probe account health concurrently (default off).
+- Optional `parallelProbing` can probe account health concurrently (default off; note that `lib/parallel-probe.ts` races requests first-success-wins rather than running read-only health checks, and is currently uncalled by runtime entrypoints).
+
+### Error Classification and Rotation Matrix
+
+| Status / Condition | Consumed Budget | Action Taken | Health Impact | Storage Side-Effect |
+| :--- | :--- | :--- | :--- | :--- |
+| **429 (delay <= 5000ms)** | `rateLimitShort` | Jittered sleep `addJitter(max(100, delayMs), 0.2)` and retry on same account | None | None (no cooldown window written) |
+| **429 (delay > 5000ms)** | `rateLimitGlobal` | Rotate to next candidate account | -10 | Records `rateLimitResetTimes` per model family |
+| **401 Invalidated** | `authRefresh` | Increment `authFailures`; if >= 3, remove account; else 30s group cooldown | None | Persists updated failure count or account removal |
+| **5xx / Server Error** | `server` | Trip circuit breaker, rotate to next account | -20 | None (unless server payload carries rate-limit reset) |
+| **Network Error** | `network` | Trip circuit breaker, rotate to next account | -20 | None |
+| **Workspace Deactivated** | None | Flag account and remove from active pool | -20 | Writes active pool and flagged storage files |
+| **Stream Interrupted** | `server` | Rotate to next account if within budget | -20 | None |
+| **Token Bucket Depleted** | None | Rotate immediately (`rate-limit-local`) | None | None (local throttle only, no upstream penalty) |
 
 ---
 
