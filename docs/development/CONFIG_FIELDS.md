@@ -268,10 +268,10 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 
 `lib/schemas.ts` validates the config file with Zod. An out-of-bounds file value fails validation for that key, the loader logs a validation warning, and the key is dropped, so the default applies. It is never clamped to the nearest bound. Environment numeric overrides take a different path through `resolveNumberSetting` in `lib/config.ts`, which applies only a lower floor and no upper bound.
 
-| field | config-file bounds (Zod) | env floor (resolver) |
-|-------|--------------------------|----------------------|
+| field | config-file bounds (Zod) | env bounds (resolver) |
+|-------|--------------------------|-----------------------|
 | `fastSessionMaxInputItems` | 8 to 200 | 8, no ceiling |
-| `parallelProbingMaxConcurrency` | 1 to 5 | 1, no ceiling |
+| `parallelProbingMaxConcurrency` | 1 to 5 | 1 to 5 (clamped) |
 | `toastDurationMs` | at least 1000 | 1000 |
 | `fetchTimeoutMs` | at least 1000 | 1000 |
 | `streamStallTimeoutMs` | at least 1000 | 1000 |
