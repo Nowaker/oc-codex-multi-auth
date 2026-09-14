@@ -485,15 +485,14 @@ async function loadDistModules(relativePaths, label) {
 }
 
 async function loadWarmRuntime(env) {
-	const [storageMod, usageMod, warmReqMod, warmMod, shutdownMod, staleStateMod, refreshMod] = await loadDistModules(
+	const [storageMod, usageMod, warmReqMod, warmMod, shutdownMod, recoveryMod] = await loadDistModules(
 		[
 			"storage.js",
 			"codex-usage.js",
 			"accounts/warm-request.js",
 			"accounts/warm.js",
 			"shutdown.js",
-			"accounts/stale-state.js",
-			"tools/refresh-account.js",
+			"accounts/warm-recovery.js",
 		],
 		"warm",
 	);
@@ -502,7 +501,7 @@ async function loadWarmRuntime(env) {
 	// Refreshing a token here persists credentials, which registers the
 	// shutdown handler via the storage lock.
 	shutdownMod.setShutdownOwnsProcess(true);
-	return { storageMod, usageMod, warmReqMod, warmMod, shutdownMod, staleStateMod, refreshMod };
+	return { storageMod, usageMod, warmReqMod, warmMod, shutdownMod, recoveryMod };
 }
 
 async function loadLimitsRuntime(env) {
@@ -529,7 +528,7 @@ export async function runWarmCommand(parsed, options = {}) {
 		return { exitCode: 1, action: "warm", storagePath };
 	}
 
-	const { storageMod, usageMod, warmReqMod, warmMod, staleStateMod, refreshMod } = runtime;
+	const { storageMod, usageMod, warmReqMod, warmMod, recoveryMod } = runtime;
 	// Point dist storage at the resolved accounts file so a refreshed token is
 	// persisted to the SAME file the rest of the toolchain reads.
 	storageMod.setStoragePathDirect(storagePath);
@@ -576,8 +575,9 @@ export async function runWarmCommand(parsed, options = {}) {
 	// Same adapter as lib/tools/codex-warm.ts createWarmOne: refresh → resolve
 	// account id → open the usage window; map an exhausted (quota-429) account
 	// to a failure so it is not reported as warmed.
-	const succeeded = new Set();
+	const succeeded = [];
 	const warmOne = async (account) => {
+		const snapshot = { ...account, rateLimitResetTimes: { ...account.rateLimitResetTimes } };
 		const { accessToken } = await usageMod.ensureCodexUsageAccessToken({ storage, account });
 		const accountId = usageMod.resolveCodexUsageAccountId({ account, accessToken });
 		if (!accountId) {
@@ -591,7 +591,9 @@ export async function runWarmCommand(parsed, options = {}) {
 		if (result.status === "exhausted") {
 			return { status: "failed", detail: result.detail ?? "quota/usage limit reached" };
 		}
-		if (!result.rateLimited) succeeded.add(account);
+		if (!result.rateLimited && result.model) succeeded.push({
+			account: { ...snapshot, refreshToken: account.refreshToken }, model: result.model, accessToken,
+		});
 		return { status: "warmed" };
 	};
 
@@ -599,26 +601,9 @@ export async function runWarmCommand(parsed, options = {}) {
 	let blocksCleared = 0;
 	let blockClearError;
 	try {
-		blocksCleared = await storageMod.withAccountStorageTransaction(async (current, persist) => {
-			if (!current) return 0;
-			let cleared = 0;
-			for (const result of summary.results) {
-				if (result.status !== "warmed") continue;
-				const account = accounts[result.index];
-				if (!succeeded.has(account)) continue;
-				const record = current.accounts[refreshMod.findAccountIndexByIdentity(current.accounts, {
-					organizationId: account.organizationId, accountId: account.accountId,
-					accountUserId: account.accountUserId, refreshToken: account.refreshToken,
-				})];
-				if (!record || record.enabled === false) continue;
-				const hasBlocks = record.coolingDownUntil !== undefined || record.cooldownReason !== undefined ||
-					record.quotaExhaustedUntil !== undefined || Object.keys(record.rateLimitResetTimes ?? {}).length > 0;
-				staleStateMod.clearRefreshedAccountStaleState(record);
-				if (hasBlocks) cleared += 1;
-			}
-			if (cleared > 0) await persist(current);
-			return cleared;
-		});
+		for (const observation of succeeded) {
+			if (await recoveryMod.recoverWarmedAccount(observation)) blocksCleared++;
+		}
 	} catch {
 		blockClearError = "Failed to clear local blocks; warm results are unchanged.";
 	}

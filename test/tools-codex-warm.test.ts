@@ -13,7 +13,9 @@ vi.mock("../lib/storage.js", () => ({
 	withAccountStorageTransaction: vi.fn(),
 }));
 
-vi.mock("../lib/codex-usage.js", () => ({
+vi.mock("../lib/codex-usage.js", async (original) => ({
+	...await original<typeof import("../lib/codex-usage.js")>(),
+	fetchCodexUsage: vi.fn(async () => ({ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 18000 } } })),
 	ensureCodexUsageAccessToken: vi.fn(async () => ({
 		accessToken: "access-token",
 		refreshed: false,
@@ -23,7 +25,7 @@ vi.mock("../lib/codex-usage.js", () => ({
 }));
 
 vi.mock("../lib/accounts/warm-request.js", () => ({
-	warmAccountWindow: vi.fn(async () => ({ status: "opened" })),
+	warmAccountWindow: vi.fn(async () => ({ status: "opened", model: "gpt-5.5" })),
 }));
 
 import { loadAccounts, withAccountStorageTransaction } from "../lib/storage.js";
@@ -77,7 +79,7 @@ beforeEach(() => {
 		persisted: false,
 	} as never);
 	vi.mocked(resolveCodexUsageAccountId).mockReturnValue("acct-123");
-	vi.mocked(warmAccountWindow).mockResolvedValue({ status: "opened" } as never);
+	vi.mocked(warmAccountWindow).mockResolvedValue({ status: "opened", model: "gpt-5.5" } as never);
 });
 
 describe("codex-warm tool (#182)", () => {
@@ -98,13 +100,13 @@ describe("codex-warm tool (#182)", () => {
 		vi.mocked(loadAccounts).mockResolvedValue(storage);
 		const persist = vi.fn();
 		vi.mocked(withAccountStorageTransaction).mockImplementation(async (callback) => callback(storage, persist));
-		vi.mocked(warmAccountWindow).mockResolvedValueOnce({ status: "opened" }).mockRejectedValueOnce(new Error("upstream failure"));
+		vi.mocked(warmAccountWindow).mockResolvedValueOnce({ status: "opened", model: "gpt-5.5" }).mockRejectedValueOnce(new Error("upstream failure"));
 		const output = await createCodexWarmTool(buildCtx()).execute({}, {} as never);
-		expect(storage.accounts[0]).toMatchObject({ rateLimitResetTimes: {} });
+		expect(storage.accounts[0]).toMatchObject({ rateLimitResetTimes: blocked.rateLimitResetTimes });
 		expect(storage.accounts[0]?.quotaExhaustedUntil).toBeUndefined();
 		expect(storage.accounts[0]?.coolingDownUntil).toBeUndefined();
 		for (const account of storage.accounts.slice(1)) expect(account).toMatchObject(blocked);
-		expect(persist).toHaveBeenCalledOnce();
+		expect(persist).toHaveBeenCalledTimes(2);
 		expect(output).toContain("1 blocks cleared");
 	});
 

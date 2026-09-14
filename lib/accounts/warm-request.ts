@@ -159,6 +159,7 @@ export interface WarmRequestResult {
 	status: WarmRequestStatus;
 	detail?: string;
 	rateLimited?: boolean;
+	model?: string;
 }
 
 /**
@@ -287,8 +288,8 @@ export async function warmAccountWindow(
 	for (let i = 0; i < maxAttempts; i += 1) {
 		const attempt = await attemptWarm(params, model);
 		if (attempt.kind === "opened") return attempt.rateLimited
-			? { status: "opened", rateLimited: true }
-			: { status: "opened" };
+			? { status: "opened", rateLimited: true, model }
+			: { status: "opened", model };
 		if (attempt.kind === "exhausted") {
 			return { status: "exhausted", detail: attempt.detail };
 		}

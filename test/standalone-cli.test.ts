@@ -10,11 +10,11 @@ vi.mock("../scripts/install-oc-codex-multi-auth-core.js", async (importOriginal)
 		const [argv, options] = args;
 		return actual.runInstaller(argv, {
 			loadWarmRuntime: async () => {
-				const [storageMod, usageMod, warmReqMod, warmMod, staleStateMod, refreshMod] = await Promise.all([
+				const [storageMod, usageMod, warmReqMod, warmMod, recoveryMod] = await Promise.all([
 					import("../lib/storage.js"), import("../lib/codex-usage.js"), import("../lib/accounts/warm-request.js"),
-					import("../lib/accounts/warm.js"), import("../lib/accounts/stale-state.js"), import("../lib/tools/refresh-account.js"),
+					import("../lib/accounts/warm.js"), import("../lib/accounts/warm-recovery.js"),
 				]);
-				return { storageMod, usageMod, warmReqMod, warmMod, staleStateMod, refreshMod };
+				return { storageMod, usageMod, warmReqMod, warmMod, recoveryMod };
 			},
 			loadLimitsRuntime: async () => {
 				const [storageMod, usageMod, loggerMod] = await Promise.all([
@@ -737,19 +737,18 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const usageMod = await import("../lib/codex-usage.js");
 		const warmReqMod = await import("../lib/accounts/warm-request.js");
 		const warmMod = await import("../lib/accounts/warm.js");
-		const staleStateMod = await import("../lib/accounts/stale-state.js");
-		const refreshMod = await import("../lib/tools/refresh-account.js");
+		const recoveryMod = await import("../lib/accounts/warm-recovery.js");
 		const loggerMod = await import("../lib/logger.js");
 		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
 		const result = await runInstaller([command, "--json"], {
 			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
-			loadWarmRuntime: async () => ({ storageMod, usageMod, warmReqMod, warmMod, staleStateMod, refreshMod }),
+			loadWarmRuntime: async () => ({ storageMod, usageMod, warmReqMod, warmMod, recoveryMod }),
 			loadLimitsRuntime: async () => ({ storageMod, usageMod, loggerMod }),
 		});
 		const stored = JSON.parse(await readFile(join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json"), "utf-8"));
 		expect(result.exitCode).toBe(0);
 		expect(stored.accounts[0].quotaExhaustedUntil).toBeUndefined();
-		expect(stored.accounts[0].rateLimitResetTimes).toEqual(command === "warm" ? {} : { codex: 5678 });
+		expect(stored.accounts[0].rateLimitResetTimes).toEqual({ codex: 5678 });
 		if (command === "warm") expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])).blocksCleared).toBe(1);
 		storageMod.setStoragePathDirect(null);
 	});

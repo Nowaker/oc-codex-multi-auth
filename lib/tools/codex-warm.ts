@@ -22,9 +22,8 @@
  */
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
-import { loadAccounts, withAccountStorageTransaction, type AccountMetadataV3, type AccountStorageV3 } from "../storage.js";
-import { clearRefreshedAccountStaleState } from "../accounts/stale-state.js";
-import { findAccountIndexByIdentity } from "./refresh-account.js";
+import { loadAccounts, type AccountMetadataV3, type AccountStorageV3 } from "../storage.js";
+import { recoverWarmedAccount, type WarmRecoveryObservation } from "../accounts/warm-recovery.js";
 import {
 	ensureCodexUsageAccessToken,
 	resolveCodexUsageAccountId,
@@ -45,9 +44,10 @@ import type { ToolContext } from "./index.js";
  */
 export function createWarmOne(
 	storage: AccountStorageV3,
-	succeeded?: Set<AccountMetadataV3>,
+	succeeded?: WarmRecoveryObservation[],
 ): (account: AccountMetadataV3) => Promise<WarmOutcome> {
 	return async (account: AccountMetadataV3): Promise<WarmOutcome> => {
+		const snapshot = { ...account, rateLimitResetTimes: { ...account.rateLimitResetTimes } };
 		const { accessToken } = await ensureCodexUsageAccessToken({ storage, account });
 		const accountId = resolveCodexUsageAccountId({ account, accessToken });
 		if (!accountId) {
@@ -67,7 +67,9 @@ export function createWarmOne(
 				detail: result.detail ?? "quota/usage limit reached",
 			};
 		}
-		if (!result.rateLimited) succeeded?.add(account);
+		if (!result.rateLimited && result.model) succeeded?.push({
+			account: { ...snapshot, refreshToken: account.refreshToken }, model: result.model, accessToken,
+		});
 		return { status: "warmed" };
 	};
 }
@@ -102,32 +104,15 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 				return "No Codex accounts configured. Run: opencode auth login";
 			}
 
-			const succeeded = new Set<AccountMetadataV3>();
+			const succeeded: WarmRecoveryObservation[] = [];
 			const warmOne = createWarmOne(storage, succeeded);
 			const summary = await warmAccounts(storage.accounts, warmOne);
 			let blocksCleared = 0;
 			let blockClearError: string | undefined;
 			try {
-				blocksCleared = await withAccountStorageTransaction(async (current, persist) => {
-					if (!current) return 0;
-					let cleared = 0;
-					for (const result of summary.results) {
-						if (result.status !== "warmed") continue;
-						const account = storage.accounts[result.index];
-						if (!account || !succeeded.has(account)) continue;
-						const record = current.accounts[findAccountIndexByIdentity(current.accounts, {
-							organizationId: account.organizationId, accountId: account.accountId,
-							accountUserId: account.accountUserId, refreshToken: account.refreshToken,
-						})];
-						if (!record || record.enabled === false) continue;
-						const hasBlocks = record.coolingDownUntil !== undefined || record.cooldownReason !== undefined ||
-							record.quotaExhaustedUntil !== undefined || Object.keys(record.rateLimitResetTimes ?? {}).length > 0;
-						clearRefreshedAccountStaleState(record);
-						if (hasBlocks) cleared += 1;
-					}
-					if (cleared > 0) await persist(current);
-					return cleared;
-				});
+				for (const observation of succeeded) {
+					if (await recoverWarmedAccount(observation)) blocksCleared++;
+				}
 				if (blocksCleared > 0) {
 					ctx.invalidateAccountManagerCache();
 					await ctx.reloadCachedAccountManager();

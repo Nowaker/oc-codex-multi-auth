@@ -434,6 +434,7 @@ export async function persistUsageQuotaRecovery(account: AccountMetadataV3): Pro
 		if (!current) return false;
 		let changed = false;
 		for (const storedAccount of current.accounts) {
+			if (storedAccount.enabled === false) continue;
 			if (getUsageAccountDedupeKey(storedAccount) !== usageKey) continue;
 			if (storedAccount.quotaExhaustedUntil === undefined) continue;
 			if (storedAccount.quotaExhaustedUntil !== account.quotaExhaustedUntil ||
