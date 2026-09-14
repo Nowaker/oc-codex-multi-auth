@@ -600,12 +600,15 @@ export async function runWarmCommand(parsed, options = {}) {
 	const summary = await warmMod.warmAccounts(accounts, warmOne);
 	let blocksCleared = 0;
 	let blockClearError;
-	try {
-		for (const observation of succeeded) {
-			if (await recoveryMod.recoverWarmedAccount(observation)) blocksCleared++;
+	for (const observation of succeeded) {
+		let changed = false;
+		try {
+			const completed = await recoveryMod.recoverWarmedAccount(observation, () => { changed = true; });
+			changed = completed || changed;
+		} catch {
+			blockClearError = "Failed to clear local blocks; warm results are unchanged.";
 		}
-	} catch {
-		blockClearError = "Failed to clear local blocks; warm results are unchanged.";
+		if (changed) blocksCleared++;
 	}
 	const payload = {
 		command: "warm",

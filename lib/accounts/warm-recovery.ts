@@ -2,6 +2,7 @@ import { withAccountStorageTransaction, type AccountMetadataV3 } from "../storag
 import { findAccountIndexByIdentity } from "../tools/refresh-account.js";
 import { getModelFamily } from "../prompts/codex.js";
 import { getQuotaKey } from "./rate-limits.js";
+import { clearUnchangedRecoveryState } from "./stale-state.js";
 import {
 	fetchCodexUsage, parseCodexUsagePayload, isUsageQuotaRecovered,
 	persistUsageQuotaRecovery, resolveCodexUsageAccountId,
@@ -13,9 +14,15 @@ export interface WarmRecoveryObservation {
 	accessToken: string;
 }
 
-export async function recoverWarmedAccount(observation: WarmRecoveryObservation): Promise<boolean> {
+export async function recoverWarmedAccount(
+	observation: WarmRecoveryObservation,
+	onCleared?: (snapshot: AccountMetadataV3) => void,
+): Promise<boolean> {
 	const { account, model, accessToken } = observation;
 	let quotaCleared = false;
+	const clearedSnapshot: AccountMetadataV3 = { ...account, rateLimitResetTimes: {},
+		coolingDownUntil: undefined, cooldownReason: undefined,
+		quotaExhaustedUntil: undefined, quotaExhaustedStampAt: undefined };
 	// A warm 200 may spend credits. Confirm suspected subscription recovery
 	// through usage rather than treating a successful model call as free quota.
 	if (account.quotaExhaustedUntil !== undefined) {
@@ -26,6 +33,11 @@ export async function recoverWarmedAccount(observation: WarmRecoveryObservation)
 		}));
 		if (isUsageQuotaRecovered([usage.primary, usage.secondary])) {
 			quotaCleared = await persistUsageQuotaRecovery(account);
+			if (quotaCleared) {
+				clearedSnapshot.quotaExhaustedUntil = account.quotaExhaustedUntil;
+				clearedSnapshot.quotaExhaustedStampAt = account.quotaExhaustedStampAt;
+				onCleared?.({ ...clearedSnapshot });
+			}
 		}
 	}
 	const modelKey = getQuotaKey(getModelFamily(model), model);
@@ -33,20 +45,17 @@ export async function recoverWarmedAccount(observation: WarmRecoveryObservation)
 		if (!current) return false;
 		const record = current.accounts[findAccountIndexByIdentity(current.accounts, account)];
 		if (!record || record.enabled === false) return false;
-		let changed = false;
-		const before = account.rateLimitResetTimes?.[modelKey];
-		if (before !== undefined && record.rateLimitResetTimes?.[modelKey] === before) {
-			delete record.rateLimitResetTimes[modelKey];
-			changed = true;
-		}
-		if (account.coolingDownUntil !== undefined && record.coolingDownUntil === account.coolingDownUntil &&
-			record.cooldownReason === account.cooldownReason) {
-			delete record.coolingDownUntil;
-			delete record.cooldownReason;
-			changed = true;
-		}
-		if (changed) await persist(current);
-		return changed;
+		const cleared = clearUnchangedRecoveryState(record, {
+			rateLimitResetTimes: { [modelKey]: account.rateLimitResetTimes?.[modelKey] },
+			coolingDownUntil: account.coolingDownUntil, cooldownReason: account.cooldownReason,
+		});
+		if (!cleared) return false;
+		await persist(current);
+		clearedSnapshot.rateLimitResetTimes = cleared.rateLimitResetTimes ?? {};
+		clearedSnapshot.coolingDownUntil = cleared.coolingDownUntil;
+		clearedSnapshot.cooldownReason = cleared.cooldownReason ? account.cooldownReason : undefined;
+		onCleared?.(clearedSnapshot);
+		return true;
 	});
 	return quotaCleared || modelCleared;
 }

@@ -15,7 +15,7 @@ vi.mock("../lib/storage.js", () => ({
 
 vi.mock("../lib/codex-usage.js", async (original) => ({
 	...await original<typeof import("../lib/codex-usage.js")>(),
-	fetchCodexUsage: vi.fn(async () => ({ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 18000 } } })),
+	fetchCodexUsage: vi.fn(async () => ({ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 18000 }, secondary_window: null } })),
 	ensureCodexUsageAccessToken: vi.fn(async () => ({
 		accessToken: "access-token",
 		refreshed: false,
@@ -117,16 +117,40 @@ describe("codex-warm tool (#182)", () => {
 		expect(JSON.parse(typeof output === "string" ? output : output.output)).toMatchObject({ warmedCount: 1, failedCount: 0, blocksCleared: 0, blockClearError: expect.any(String) });
 		expect(output).not.toContain("private-refresh");
 	});
+	it.each([
+		["first cleanup fails", true],
+		["second cleanup fails", false],
+	])("continues independent recovery when %s", async (_label, firstFails) => {
+		const blocked = { coolingDownUntil: 5678, cooldownReason: "rate-limit", rateLimitResetTimes: { codex: 9 } };
+		const storage = storageWith([0, 1].map((index) => ({ ...blocked, refreshToken: `recovery-${index}` })));
+		vi.mocked(loadAccounts).mockResolvedValue(storage);
+		const persist = vi.fn();
+		const transaction = vi.mocked(withAccountStorageTransaction);
+		if (firstFails) {
+			transaction.mockRejectedValueOnce(new Error("private cleanup failure"));
+			transaction.mockImplementationOnce(async (callback) => callback(storage, persist));
+		} else {
+			transaction.mockImplementationOnce(async (callback) => callback(storage, persist));
+			transaction.mockRejectedValueOnce(new Error("private cleanup failure"));
+		}
+		vi.mocked(warmAccountWindow).mockResolvedValue({ status: "opened", model: "gpt-5.5" });
+		const output = await createCodexWarmTool(buildCtx()).execute({ format: "json" }, {} as never);
+		const payload = JSON.parse(typeof output === "string" ? output : output.output);
+		expect(payload).toMatchObject({ warmedCount: 2, failedCount: 0, blocksCleared: 1 });
+		expect(persist).toHaveBeenCalledTimes(1);
+	});
 
-	it("does not clear an account disabled while the warm request was in flight", async () => {
+	it("keeps a concurrently disabled account disabled while reconciling confirmed shared quota", async () => {
 		const storage = storageWith([{ refreshToken: "disabled-later", quotaExhaustedUntil: 1234 }]);
-		const current = storageWith([{ refreshToken: "disabled-later", enabled: false, quotaExhaustedUntil: 1234 }]);
+		const current = storageWith([{ refreshToken: "disabled-later", enabled: false, quotaExhaustedUntil: 1234,
+			rateLimitResetTimes: { codex: 5678 }, coolingDownUntil: 9999 }]);
 		vi.mocked(loadAccounts).mockResolvedValue(storage);
 		const persist = vi.fn();
 		vi.mocked(withAccountStorageTransaction).mockImplementation(async (callback) => callback(current, persist));
 		await createCodexWarmTool(buildCtx()).execute({}, {} as never);
-		expect(current.accounts[0]?.quotaExhaustedUntil).toBe(1234);
-		expect(persist).not.toHaveBeenCalled();
+		expect(current.accounts[0]?.quotaExhaustedUntil).toBeUndefined();
+		expect(current.accounts[0]).toMatchObject({ enabled: false, rateLimitResetTimes: { codex: 5678 }, coolingDownUntil: 9999 });
+		expect(persist).toHaveBeenCalledOnce();
 	});
 	it("reports no accounts when storage is empty", async () => {
 		vi.mocked(loadAccounts).mockResolvedValue(null as never);

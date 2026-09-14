@@ -35,7 +35,7 @@ import {
 	type CodexUsageSummary,
 } from "../codex-usage.js";
 import { loadAccounts, withAccountStorageTransaction } from "../storage.js";
-import { clearRefreshedAccountStaleState } from "../accounts/stale-state.js";
+import { clearUnchangedRecoveryState } from "../accounts/stale-state.js";
 import { findAccountIndexByIdentity } from "./refresh-account.js";
 import {
 	formatUiHeader,
@@ -328,6 +328,7 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 					].join("\n");
 				}
 
+				const recoverySnapshot = { ...target, rateLimitResetTimes: { ...target.rateLimitResetTimes } };
 				let result: CodexResetConsumePayload;
 				try {
 					result = await consumeCodexResetCredit({
@@ -369,6 +370,7 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 				// reach the outer catch: reporting `redeemed: false` for a credit the
 				// server already consumed would send the user to redeem another one.
 				let blocksCleared = false;
+				let clearedSnapshot: typeof recoverySnapshot | undefined;
 				let blocksClearError: string | undefined;
 				try {
 					blocksCleared = await withAccountStorageTransaction(async (current, persist) => {
@@ -381,14 +383,16 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 						});
 						const record = current.accounts[recordIndex];
 						if (!record || record.enabled === false) return false;
-						const hasStaleState = record.coolingDownUntil !== undefined ||
-							record.cooldownReason !== undefined || record.quotaExhaustedUntil !== undefined ||
-							Object.keys(record.rateLimitResetTimes ?? {}).length > 0;
-						clearRefreshedAccountStaleState(record);
-						if (hasStaleState) await persist(current);
-						return hasStaleState;
+						const cleared = clearUnchangedRecoveryState(record, recoverySnapshot);
+						if (!cleared) return false;
+						await persist(current);
+						clearedSnapshot = { ...recoverySnapshot, coolingDownUntil: undefined,
+							quotaExhaustedUntil: undefined, quotaExhaustedStampAt: undefined,
+							...cleared, cooldownReason: cleared.cooldownReason ? recoverySnapshot.cooldownReason : undefined,
+							rateLimitResetTimes: cleared.rateLimitResetTimes ?? {} };
+						return true;
 					});
-					invalidateAccountManagerCache();
+					invalidateAccountManagerCache(clearedSnapshot ? [clearedSnapshot] : undefined);
 				} catch {
 					blocksCleared = false;
 					blocksClearError = "could not clear local rate-limit/quota markers";

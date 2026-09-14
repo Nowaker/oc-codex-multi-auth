@@ -38,7 +38,8 @@ export class AccountPersistence {
 	 * further write degrades to {@link mergeVolatileState}.
 	 */
 	private disposed = false;
-	private externalReloadSnapshot?: Map<string, AccountState["accounts"][number]>;
+	private externalReloadSnapshot?: Map<string, Pick<AccountMetadataV3,
+		"rateLimitResetTimes" | "coolingDownUntil" | "quotaExhaustedUntil" | "quotaExhaustedStampAt">>;
 
 	constructor(private readonly state: AccountState) {}
 
@@ -155,7 +156,7 @@ export class AccountPersistence {
 				// manager never pruned cannot resurrect an expired block.
 				let resets: Record<string, number | undefined> | undefined;
 				for (const [key, mineReset] of Object.entries(mine.rateLimitResetTimes ?? {})) {
-					if (superseded && mineReset === superseded.rateLimitResetTimes[key]) continue;
+					if (superseded && mineReset === superseded.rateLimitResetTimes?.[key]) continue;
 					if (typeof mineReset !== "number" || !Number.isFinite(mineReset) || mineReset <= now) {
 						continue;
 					}
@@ -506,7 +507,13 @@ export class AccountPersistence {
 	 * it clears its own slot when it runs, so a manager whose shutdown flush has
 	 * already fired must still be marked here.
 	 */
-	disposeShutdownHandler(externalReload = false): void {
+	disposeShutdownHandler(externalReload = false, clearedSnapshots?: readonly AccountMetadataV3[]): void {
+		if (clearedSnapshots) {
+			this.externalReloadSnapshot = new Map(clearedSnapshots.map((account) => [
+				getWorkspaceIdentityKey(account),
+				{ ...account, rateLimitResetTimes: { ...account.rateLimitResetTimes } },
+			]));
+		}
 		if (externalReload) {
 			// Only evidence acquired after an external reload may be saved by an
 			// in-flight request holding this superseded manager.

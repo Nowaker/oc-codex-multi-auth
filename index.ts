@@ -25,7 +25,7 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { watchFile, unwatchFile } from "node:fs";
-import { getLastWrittenAccountsDigest } from "./lib/storage/load-save.js";
+import { consumeLastWrittenAccountsDigest } from "./lib/storage/load-save.js";
 import { subscribeToStoragePathChanges } from "./lib/storage/state.js";
 import { isKeychainOptInEnabled } from "./lib/storage/keychain.js";
 import { AnyAccountStorageSchema } from "./lib/schemas.js";
@@ -1655,14 +1655,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
-		const invalidateAccountManagerCache = (): void => {
+		const invalidateAccountManagerCache = (clearedSnapshots?: Readonly<AccountStorageV3["accounts"]>): void => {
 			// Retire before flushing: keep disk membership authoritative while
 			// publishing queued rate-limit evidence through the volatile merge.
 			const previous = cachedAccountManager;
 			cachedAccountManager = null;
 			accountManagerPromise = null;
 			if (previous) {
-				previous.disposeShutdownHandler();
+				previous.disposeShutdownHandler(false, clearedSnapshots);
 				void previous
 					.flushPendingSave()
 					.catch((error: unknown) => {
@@ -1734,14 +1734,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				return;
 			}
 		};
-		const reloadForExternalAccountsChange = async (path: string, generation: number): Promise<void> => {
+		const reloadForExternalAccountsChange = async (path: string, generation: number, attempt = 0): Promise<void> => {
 			const digest = await readAccountsDigest(path);
 			if (generation !== accountsWatchGeneration || !digest || path !== getStoragePath()) return;
-			if (digest === getLastWrittenAccountsDigest(path)) return;
+			if (digest === consumeLastWrittenAccountsDigest(path)) return;
 			const previous = cachedAccountManager;
 			if (!previous) return;
 			try {
-				previous.disposeShutdownHandler(true);
+				if (attempt === 0) previous.disposeShutdownHandler(true);
 				await previous.flushPendingSave();
 				const reloaded = await AccountManager.loadFromDisk();
 				if (generation !== accountsWatchGeneration || accountsWatcherDisposed || path !== getStoragePath()) {
@@ -1753,6 +1753,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				observedAccountsDigest = digest;
 			} catch {
 				logWarn("Could not reload externally updated account storage");
+				if (attempt < 2 && generation === accountsWatchGeneration && !accountsWatcherDisposed) {
+					accountsReloadTimer = setTimeout(() => {
+						accountsReloadTimer = undefined;
+						void reloadForExternalAccountsChange(path, generation, attempt + 1);
+					}, 1500);
+					accountsReloadTimer.unref();
+				}
 				return;
 			}
 			logDebug("Reloaded cached account manager after external accounts file change");
@@ -1771,7 +1778,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			observedAccountsDigest = digest;
 			clearTimeout(accountsReloadTimer);
 			accountsReloadTimer = undefined;
-			if (digest === getLastWrittenAccountsDigest(path)) return;
+			if (digest === consumeLastWrittenAccountsDigest(path)) return;
 			accountsReloadTimer = setTimeout(() => {
 				accountsReloadTimer = undefined;
 				void reloadForExternalAccountsChange(path, generation);

@@ -103,6 +103,39 @@ export function clearRefreshedAccountStaleState(
 	};
 }
 
+export function clearUnchangedRecoveryState(
+	account: StaleStateAccount,
+	observed: StaleStateAccount,
+): StaleStateAccount | undefined {
+	const cleared: StaleStateAccount = {};
+	for (const [key, value] of Object.entries(observed.rateLimitResetTimes ?? {})) {
+		if (value === undefined || account.rateLimitResetTimes?.[key] !== value) continue;
+		cleared.rateLimitResetTimes ??= {};
+		cleared.rateLimitResetTimes[key] = value;
+		delete account.rateLimitResetTimes[key];
+	}
+	if ((observed.coolingDownUntil !== undefined || observed.cooldownReason !== undefined) &&
+		account.coolingDownUntil === observed.coolingDownUntil && account.cooldownReason === observed.cooldownReason) {
+		cleared.coolingDownUntil = observed.coolingDownUntil;
+		cleared.cooldownReason = observed.cooldownReason;
+		delete account.coolingDownUntil;
+		delete account.cooldownReason;
+	}
+	if (observed.quotaExhaustedUntil !== undefined &&
+		account.quotaExhaustedUntil === observed.quotaExhaustedUntil &&
+		account.quotaExhaustedStampAt === observed.quotaExhaustedStampAt) {
+		cleared.quotaExhaustedUntil = observed.quotaExhaustedUntil;
+		cleared.quotaExhaustedStampAt = observed.quotaExhaustedStampAt;
+		const quota = { quotaExhaustedUntil: account.quotaExhaustedUntil,
+			quotaExhaustedStampAt: account.quotaExhaustedStampAt, quotaExhaustedClearedAt: account.quotaExhaustedClearedAt };
+		clearRefreshedAccountStaleState(quota);
+		delete account.quotaExhaustedUntil;
+		delete account.quotaExhaustedStampAt;
+		account.quotaExhaustedClearedAt = quota.quotaExhaustedClearedAt;
+	}
+	return Object.keys(cleared).length > 0 ? cleared : undefined;
+}
+
 export interface StaleStateRepairSummary {
 	/** Accounts that had an active cooldown cleared. */
 	cooldownsCleared: number;

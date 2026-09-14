@@ -108,13 +108,23 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 			const warmOne = createWarmOne(storage, succeeded);
 			const summary = await warmAccounts(storage.accounts, warmOne);
 			let blocksCleared = 0;
+			const clearedSnapshots: AccountMetadataV3[] = [];
+			const changedObservations = new Set<WarmRecoveryObservation>();
 			let blockClearError: string | undefined;
-			try {
-				for (const observation of succeeded) {
-					if (await recoverWarmedAccount(observation)) blocksCleared++;
+			for (const observation of succeeded) {
+				try {
+					if (await recoverWarmedAccount(observation, (snapshot) => {
+						clearedSnapshots.push(snapshot);
+						changedObservations.add(observation);
+					})) changedObservations.add(observation);
+				} catch {
+					blockClearError = "Failed to clear local blocks; warm results are unchanged.";
 				}
+			}
+			blocksCleared = changedObservations.size;
+			try {
 				if (blocksCleared > 0) {
-					ctx.invalidateAccountManagerCache();
+					ctx.invalidateAccountManagerCache(clearedSnapshots);
 					await ctx.reloadCachedAccountManager();
 				}
 			} catch {

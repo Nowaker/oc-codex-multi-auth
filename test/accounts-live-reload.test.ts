@@ -128,6 +128,71 @@ describe("accounts live reload", () => {
 		await settle();
 		expect(load).not.toHaveBeenCalled();
 	});
+	it("reloads an external restore of content that this process wrote earlier", async () => {
+		await saveAccounts(storage(true));
+		const original = await fs.readFile(path, "utf8");
+		await tick();
+		await settle();
+		const changed = nextReload();
+		await fs.writeFile(path, JSON.stringify(storage(false)));
+		await tick();
+		await settle();
+		await changed;
+		expect(captured.context?.cachedAccountManagerRef.current?.getAccountsSnapshot()[0]?.enabled).toBe(false);
+		vi.mocked(logger.logDebug).mockRestore();
+		const restored = nextReload();
+		await fs.writeFile(path, original);
+		await tick();
+		await settle();
+		await restored;
+		expect(captured.context?.cachedAccountManagerRef.current?.getAccountsSnapshot()[0]?.enabled).toBe(true);
+	});
+	it("retries a transient reload failure even when no further file change occurs", async () => {
+		const load = vi.spyOn(AccountManager, "loadFromDisk").mockRejectedValueOnce(new Error("transient read failure"));
+		const reloaded = nextReload();
+		await fs.writeFile(path, JSON.stringify(storage(false)));
+		await tick();
+		await settle();
+		expect(load).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(1500);
+		await drainReads();
+		await reloaded;
+		expect(load).toHaveBeenCalledTimes(2);
+		expect(captured.context?.cachedAccountManagerRef.current?.getAccountsSnapshot()[0]?.enabled).toBe(false);
+	});
+	it("keeps retrying bounded and cancels a pending retry on disposal", async () => {
+		const load = vi.spyOn(AccountManager, "loadFromDisk").mockRejectedValue(new Error("read failure"));
+		await fs.writeFile(path, JSON.stringify(storage(false)));
+		await tick();
+		await settle();
+		await plugin.event?.({ event: { type: "server.instance.disposed", properties: { directory } } });
+		await vi.advanceTimersByTimeAsync(10000);
+		expect(load).toHaveBeenCalledTimes(1);
+	});
+	it("retires only cleared account markers while retaining unrelated pending 429s", async () => {
+		const seeded = { ...storage(true), accounts: [storage(true).accounts[0],
+			{ ...storage(true).accounts[0], accountId: "other-account", refreshToken: "other-refresh" }] };
+		await saveAccounts(seeded);
+		const manager = new AccountManager(undefined, seeded);
+		const first = manager.setActiveIndex(0);
+		const other = manager.setActiveIndex(1);
+		if (!first || !other || !captured.context) throw new Error("Missing fixture accounts");
+		captured.context.cachedAccountManagerRef.current = manager;
+		manager.markRateLimited(first, 60_000, "codex");
+		manager.markRateLimited(other, 120_000, "codex");
+		const cleared = manager.getAccountsSnapshot()[0];
+		manager.saveToDiskDebounced(10_000);
+		let flushed: Promise<void> | undefined;
+		const flush = manager.flushPendingSave.bind(manager);
+		vi.spyOn(manager, "flushPendingSave").mockImplementation(() => {
+			const pending = flush(); flushed = pending; return pending;
+		});
+		captured.context.invalidateAccountManagerCache([cleared]);
+		await flushed;
+		const stored = JSON.parse(await fs.readFile(path, "utf8"));
+		expect(stored.accounts[0].rateLimitResetTimes ?? {}).toEqual({});
+		expect(stored.accounts[1].rateLimitResetTimes.codex).toBe(Date.now() + 120_000);
+	});
 	it("flushes unpublished rate limits without dropping newly imported accounts on invalidation", async () => {
 		const manager = captured.context?.cachedAccountManagerRef.current;
 		if (!manager) throw new Error("Missing manager");

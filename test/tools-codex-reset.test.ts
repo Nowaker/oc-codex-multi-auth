@@ -170,6 +170,40 @@ describe("codex-reset tool", () => {
 		expect(output).toContain("redeemed RateLimitResetCredit_1");
 		expect(output).toContain("new usage:");
 	});
+	it("preserves new limits recorded during redemption and retires only the markers actually cleared", async () => {
+		const future = Date.now() + 3_600_000;
+		const account = { accountId: "acct-1", refreshToken: "refresh-token", accessToken: "access-token",
+			expiresAt: future, addedAt: 1, lastUsed: 1, quotaExhaustedUntil: future,
+			quotaExhaustedStampAt: 100, rateLimitResetTimes: { codex: future, "gpt-5.1": future },
+			coolingDownUntil: future, cooldownReason: "auth-failure" as const };
+		const before = { version: 3 as const, activeIndex: 0, accounts: [account] };
+		const current = structuredClone(before);
+		vi.mocked(loadAccounts).mockResolvedValue(before);
+		const persist = vi.fn();
+		vi.mocked(withAccountStorageTransaction).mockImplementation(async (callback) => callback(current, persist));
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			if (String(input) === CREDITS_URL) return jsonResponse(creditsPayload);
+			if (String(input) === USAGE_URL) return jsonResponse(usagePayload);
+			if (String(input) === CONSUME_URL) {
+				current.accounts[0].quotaExhaustedStampAt = 200;
+				current.accounts[0].rateLimitResetTimes.codex = future + 60_000;
+				return jsonResponse({ code: "ok", windows_reset: ["primary"] });
+			}
+			throw new Error("Unexpected test URL");
+		});
+		const ctx = buildCtx();
+		const invalidate = vi.spyOn(ctx, "invalidateAccountManagerCache");
+		const execute = createCodexResetTool(ctx).execute as ToolExecute;
+		const output = JSON.parse(await execute({ action: "consume", confirm: true, format: "json" }));
+		expect(output).toMatchObject({ redeemed: true, blocksCleared: true });
+		expect(current.accounts[0].quotaExhaustedStampAt).toBe(200);
+		expect(current.accounts[0].quotaExhaustedUntil).toBe(future);
+		expect(current.accounts[0].rateLimitResetTimes).toEqual({ codex: future + 60_000 });
+		expect(current.accounts[0].coolingDownUntil).toBeUndefined();
+		expect(invalidate.mock.calls[0]?.[0]?.[0]).toMatchObject({
+			rateLimitResetTimes: { "gpt-5.1": future }, quotaExhaustedUntil: undefined,
+		});
+	});
 
 	it.each(["json", "text"])("clears persisted local blocks after successful consume (%s)", async (format) => {
 		const actualStorage = await vi.importActual<typeof import("../lib/storage.js")>("../lib/storage.js");

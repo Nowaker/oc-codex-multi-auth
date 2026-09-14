@@ -52,8 +52,11 @@ import os from "node:os";
 const log = createLogger("storage");
 let lastWrittenAccounts: { path: string; digest: string } | undefined;
 
-export function getLastWrittenAccountsDigest(path = getStoragePath()): string | undefined {
-  return lastWrittenAccounts?.path === path ? lastWrittenAccounts.digest : undefined;
+export function consumeLastWrittenAccountsDigest(path = getStoragePath()): string | undefined {
+  if (lastWrittenAccounts?.path !== path) return undefined;
+  const digest = lastWrittenAccounts.digest;
+  lastWrittenAccounts = undefined;
+  return digest;
 }
 const COLLISION_WARNING_THROTTLE_MS = 60_000;
 const COLLISION_WARNING_THROTTLE_MAX_ENTRIES = 128;
