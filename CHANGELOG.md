@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.21.0] - 2026-09-15
+
+### Added
+- **The plugin reloads live account state when another process changes the accounts file.** An account imported, removed, or edited by another OpenCode window or by `codex-import` is adopted without a restart: the file watcher reloads the manager, retires the outgoing instance so its queued saves cannot clobber the new state, and preserves single-use refresh tokens rotated in flight. A mid-load invalidation no longer strands the change - the reload proceeds even while a fresh manager is still loading, and any load that raced the change is retired before it can write a pre-change account list back to disk. Contributed by @WarGloom. (#257)
+- **A successful warm request clears the account's stale blocks with live-usage verification.** `codex-warm` clears unchanged cooldown state, the responding model's rate-limit marker, and the family's blanket marker, so a warm 200 makes the account selectable again. A subscription-quota block is only cleared after the usage endpoint confirms the quota actually recovered; a warm response can be paid for with Credits and does not prove quota came back. The recovery survives races: a concurrent clear by another process is not resurrected by a superseded manager's save, newer block writes recorded while the recovery runs always win, and a failed usage check still clears the unchanged model and cooldown state while reporting the failure separately. Contributed by @WarGloom. (#257)
+- **Reference docs match the runtime code.** The architecture guides, troubleshooting runbook, and tool reference were aligned with the current runtime - retry budget stages, fallback chains, recovery paths, quota accounting, and the Windows host auth store path - with each claim pinned by a docs-parity test. (#256)
+
+### Fixed
+- **A lost half-open probe no longer bricks a circuit breaker permanently.** Every 4xx and every caller abort bypass the breaker's feedback methods, so a half-open probe that never reported left the `(account, family)` key denied with `probe-in-flight` for the process lifetime. A half-open slot that has gone a full reset window without a verdict is now abandoned and a fresh probe is admitted.
+- **A non-429 response can no longer inherit an uncapped multi-year rate-limit delay.** A 400 whose body merely mentions `rate_limit_exceeded` used to inherit the `x-ratelimit-reset` header or the body's `resets_at` verbatim, freezing the account for as long as the stale echo claimed. Reset signals are honored only on a genuine 429, matching the authority rule the `x-codex-*` quota headers already follow.
+- **An SSE event split across multiple `data:` lines is recovered per the WHATWG spec.** The parser used to JSON-parse each `data:` line independently, so an upstream or gateway that splits one event's payload across two lines was reported as a truncated stream (502) even though the stream terminated cleanly. Consecutive data lines now concatenate with a newline before parsing, and streams that omit the blank-line separator between events still parse.
+- **The 10MB SSE cap is counted in bytes, not UTF-16 code units.** A multibyte stream could overshoot the documented cap up to 4x before the guard tripped. The cap is enforced on the raw chunk byte length.
+- **A hostile reset-credits response no longer crashes the `codex-reset` tool.** A 200 body of `null` or a non-array `credits` field threw a TypeError out of the credit parser. The payload is validated at the boundary and degrades to an empty summary, the same treatment the usage parser received in 6.15.0.
+- **A finite-but-huge persisted stamp no longer strands an account for centuries.** A corrupt or unit-mangled `rateLimitResetTimes` entry, `coolingDownUntil`, or `quotaExhaustedUntil` of `1e308` blocked the account forever because nothing could expire it. Storage sanitization drops future stamps beyond the same 30-day horizon the header and stamp writers enforce; a genuine block re-stamps on the next 429.
+- **The V1-to-V3 migration no longer drops a legacy rate-limit stamp.** The migration maps the V1 global `rateLimitResetTime` onto family-keyed stamps, but the storage rebuild discarded that mapped state, so a migrated rate-limited account became immediately selectable. The mapped stamps now flow through to the rebuilt accounts.
+- **A negative `x-codex-active-limit` header no longer renders a negative count in the quota dialog, and email masking no longer splits an astral character into a lone surrogate.** A local part like `a😀` now masks to `a😀***@example.com` instead of emitting a replacement character.
+
+### Internal
+- `getTopCandidates` (parallel probing) no longer proposes disabled accounts; the rate-limit, cooldown, and quota filters are unchanged.
+- A deep audit of this release's changes added 81 invariant tests across the recovery, request-pipeline, storage, and TUI suites: hostile header and body inputs, chunk-boundary SSE splits, retry budgets, breaker lifecycle, and persisted-storage corruption.
+
 ## [6.20.0] - 2026-09-14
 
 ### Added
