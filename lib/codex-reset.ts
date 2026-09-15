@@ -107,6 +107,12 @@ export function normalizeResetCreditCount(value: unknown): number | null {
 /**
  * Normalize the list response.
  *
+ * The payload crosses an external HTTP boundary
+ * (`OPENAI_BASE_URL`-style gateways can rewrite the body), so a null body or
+ * a wrong-shaped `credits` field degrades to an empty summary instead of
+ * throwing — the same boundary treatment `parseCodexUsagePayload` got in
+ * 6.15.0.
+ *
  * Credits without an `id` are dropped: an id is required to redeem, so an
  * entry lacking one is not actionable and would only pad the display. The
  * server's `available_count` is trusted when it is a sane number and otherwise
@@ -114,10 +120,11 @@ export function normalizeResetCreditCount(value: unknown): number | null {
  * what the user actually has.
  */
 export function parseCodexResetCredits(
-	payload: CodexResetCreditsPayload,
+	payload: CodexResetCreditsPayload | null | undefined,
 ): CodexResetCreditsSummary {
+	const source = payload && typeof payload === "object" ? payload : undefined;
 	const credits: CodexResetCredit[] = [];
-	for (const entry of payload.credits ?? []) {
+	for (const entry of Array.isArray(source?.credits) ? source.credits : []) {
 		const id = toTrimmedString(entry?.id);
 		if (!id) continue;
 		const status = toTrimmedString(entry?.status) ?? "unknown";
@@ -133,7 +140,7 @@ export function parseCodexResetCredits(
 	}
 
 	const availableCount =
-		normalizeResetCreditCount(payload.available_count) ??
+		normalizeResetCreditCount(source?.available_count) ??
 		credits.filter((credit) => credit.isAvailable).length;
 
 	return { availableCount, credits };

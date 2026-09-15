@@ -9,6 +9,7 @@ import {
 	formatResetCredits,
 	formatUsageLimitSummary,
 	formatUsageReset,
+	formatUsageWindowLabel,
 	getUsageQuotaExhaustedResetAtMs,
 	getUsageLeftPercent,
 	hasUsageWindow,
@@ -21,6 +22,7 @@ import {
 } from "../lib/codex-usage.js";
 import { loadAccounts, saveAccounts, type AccountStorageV3 } from "../lib/storage.js";
 import { setStoragePathDirect } from "../lib/storage/state.js";
+import { formatQuotaDetailsText, type CompactQuotaStatus } from "../lib/tui-status.js";
 
 describe("codex usage helpers", () => {
 	it.each([
@@ -696,5 +698,92 @@ describe("Codex usage endpoint", () => {
 		};
 		await expect(fetchCodexUsage(request)).rejects.toThrow("deactivated_workspace");
 		await expect(fetchCodexUsage(request)).rejects.toThrow("authentication token has been invalidated");
+	});
+});
+
+function makeAccount(overrides: Record<string, unknown> = {}): AccountStorageV3["accounts"][number] {
+	return {
+		refreshToken: `token-${Math.random().toString(36).slice(2)}`,
+		email: `user${Math.floor(Math.random() * 1000)}@example.com`,
+		addedAt: Date.now(),
+		lastUsed: 0,
+		...overrides,
+	};
+}
+
+describe("usage formatter hostile inputs", () => {
+	it("getUsageLeftPercent clamps out-of-range percents and rejects non-finite", () => {
+		expect(getUsageLeftPercent(-50)).toBe(100);
+		expect(getUsageLeftPercent(150)).toBe(0);
+		expect(getUsageLeftPercent(Number.NaN)).toBeUndefined();
+		expect(getUsageLeftPercent(Number.POSITIVE_INFINITY)).toBeUndefined();
+		expect(getUsageLeftPercent(-1e309)).toBeUndefined();
+	});
+
+	it("formatUsageWindowLabel rejects non-finite and non-positive windows", () => {
+		expect(formatUsageWindowLabel(0)).toBe("quota");
+		expect(formatUsageWindowLabel(-10)).toBe("quota");
+		expect(formatUsageWindowLabel(Number.NaN)).toBe("quota");
+		expect(formatUsageWindowLabel(Number.POSITIVE_INFINITY)).toBe("quota");
+	});
+
+	it("formatUsageReset rejects pre-epoch and non-finite resets without NaN", () => {
+		expect(formatUsageReset(Number.NaN)).toBeUndefined();
+		expect(formatUsageReset(Number.POSITIVE_INFINITY)).toBeUndefined();
+		expect(formatUsageReset(0)).toBeUndefined();
+		expect(formatUsageReset(-1000)).toBeUndefined();
+		expect(formatUsageReset(1)).toMatch(/^\d{2}:\d{2}/);
+	});
+
+	it("far-future finite reset stamps render as unavailable, not Invalid Date", () => {
+		const status: CompactQuotaStatus = {
+			type: "ready",
+			stale: false,
+			limits: [{ label: "5h limit", leftPercent: 40, resetAtMs: 1e300 }],
+		};
+		const text = formatQuotaDetailsText(status);
+		expect(text).not.toMatch(/Invalid Date|NaN|Infinity/);
+	});
+
+	it("parseCodexUsagePayload survives a null payload and null windows", () => {
+		const summary = parseCodexUsagePayload(null);
+		expect(summary.limits).toEqual([]);
+		expect(summary.credits).toBeNull();
+		const weird = parseCodexUsagePayload({
+			rate_limit: { primary_window: null, secondary_window: null },
+			additional_rate_limits: null,
+			rate_limit_reset_credits: null,
+		});
+		expect(weird.limits).toEqual([]);
+	});
+});
+
+describe("usage account resolution hostile storage", () => {
+	it("resolveCodexUsageActiveAccount tolerates empty and all-disabled pools", async () => {
+		const { resolveCodexUsageActiveAccount } = await import("../lib/codex-usage.js");
+		expect(
+			resolveCodexUsageActiveAccount({ version: 3, accounts: [], activeIndex: 0 }),
+		).toBeNull();
+		expect(
+			resolveCodexUsageActiveAccount({
+				version: 3,
+				accounts: [makeAccount({ enabled: false })],
+				activeIndex: 0,
+			}),
+		).toBeNull();
+	});
+
+	it("deduplicateUsageAccountIndices skips disabled and identity-less entries", async () => {
+		const { deduplicateUsageAccountIndices } = await import("../lib/codex-usage.js");
+		const indices = deduplicateUsageAccountIndices({
+			version: 3,
+			accounts: [
+				makeAccount({ refreshToken: "r1" }),
+				makeAccount({ refreshToken: "r2", enabled: false }),
+				makeAccount({ refreshToken: "r3" }),
+			],
+			activeIndex: 0,
+		});
+		expect(indices).toEqual([0, 2]);
 	});
 });

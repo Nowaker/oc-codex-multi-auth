@@ -55,3 +55,28 @@ describe("account-display", () => {
 		});
 	});
 });
+
+describe("email masking edge cases", () => {
+	it("handles empty, whitespace, no-@, and leading-@ inputs", () => {
+		expect(maskEmailForDisplay(undefined)).toBeUndefined();
+		expect(maskEmailForDisplay("")).toBeUndefined();
+		expect(maskEmailForDisplay("   ")).toBeUndefined();
+		expect(maskEmailForDisplay("not-an-email")).toBe("*****");
+		expect(maskEmailForDisplay("@example.com")).toBe("*****");
+		expect(maskEmailForDisplay("a@example.org")).toBe("a***@example.org");
+	});
+
+	it("never emits a lone surrogate for unicode local parts", () => {
+		for (const email of [
+			"üser@example.com",
+			"münchen@example.de",
+			"a😀@example.com",
+			"😀@example.com",
+			"👋🏽hi@example.com",
+		]) {
+			const masked = maskEmailForDisplay(email)!;
+			expect(masked, `masking ${email}`).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+			expect(masked, `masking ${email}`).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+		}
+	});
+});

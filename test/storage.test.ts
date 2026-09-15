@@ -24,7 +24,12 @@ import {
   getWorkspaceIdentityKey,
   withAccountStorageTransaction,
   withFlaggedAccountStorageTransaction,
+  type AccountStorageV3,
 } from "../lib/storage.js";
+import { AccountManager, formatWaitTime } from "../lib/accounts.js";
+import { resetTrackers } from "../lib/rotation.js";
+import { MAX_QUOTA_RESET_HORIZON_MS } from "../lib/quota-windows.js";
+import type { ModelFamily } from "../lib/prompts/codex.js";
 
 describe("storage", () => {
   describe("getWorkspaceIdentityKey", () => {
@@ -1490,6 +1495,18 @@ describe("storage", () => {
       expect(result?.accounts).toHaveLength(1);
     });
 
+    it("V1 rateLimitResetTime is dropped by normalization (fail-open on load)", () => {
+      const migrated = normalizeAccountStorage({
+        version: 1,
+        accounts: [
+          makeAccount({ rateLimitResetTime: Date.now() + 10 * 365 * 24 * 3600 * 1000 }),
+        ],
+        activeIndex: 0,
+      });
+      expect(migrated).not.toBeNull();
+      expect(migrated?.accounts[0]?.rateLimitResetTimes).toBeUndefined();
+    });
+
     it("preserves activeIndexByFamily when valid", () => {
       const data = {
         version: 3,
@@ -2905,4 +2922,196 @@ describe("Business seat identity keys", () => {
 
     expect(deduped).toHaveLength(3);
   });
+});
+
+function makeAccount(overrides: Record<string, unknown> = {}): AccountStorageV3["accounts"][number] {
+	return {
+		refreshToken: `token-${Math.random().toString(36).slice(2)}`,
+		email: `user${Math.floor(Math.random() * 1000)}@example.com`,
+		addedAt: Date.now(),
+		lastUsed: 0,
+		...overrides,
+	};
+}
+
+const FAMILY: ModelFamily = "codex";
+
+describe("hostile persisted storage", () => {
+	let testDir: string;
+
+	beforeEach(async () => {
+		testDir = join(
+			tmpdir(),
+			`stress-domain-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		await fs.mkdir(testDir, { recursive: true });
+		setStoragePathDirect(join(testDir, "accounts.json"));
+		delete process.env.CODEX_KEYCHAIN;
+	});
+
+	afterEach(async () => {
+		await clearAccounts();
+		setStoragePathDirect(null);
+		try {
+			await fs.rm(testDir, { recursive: true, force: true });
+		} catch {}
+		resetTrackers();
+	});
+
+	it("finite-huge persisted rate-limit reset times are bounded by the reset horizon", async () => {
+		await fs.writeFile(
+			join(testDir, "accounts.json"),
+			JSON.stringify({
+				version: 3,
+				accounts: [makeAccount({ rateLimitResetTimes: { codex: 1e308 } })],
+				activeIndex: 0,
+			}),
+			"utf-8",
+		);
+		const stored = await loadAccounts();
+		expect(stored).not.toBeNull();
+		const manager = new AccountManager(undefined, stored);
+		const wait = manager.getMinWaitTimeForFamily(FAMILY);
+		// Beyond-horizon stamps drop (matching the header and stamp-writer
+		// guards), so the account recovers immediately; a genuine block
+		// re-stamps on the next 429.
+		expect(wait).toBe(0);
+		expect(formatWaitTime(wait)).not.toMatch(/e\+/);
+		expect(manager.getAccountForStrategy("round-robin", FAMILY)).not.toBeNull();
+		expect(manager.getAccountForStrategy("sticky", FAMILY)).not.toBeNull();
+	});
+
+	it("non-finite persisted rate-limit stamps are dropped", async () => {
+		await fs.writeFile(
+			join(testDir, "accounts.json"),
+			JSON.stringify({
+				version: 3,
+				accounts: [makeAccount({ rateLimitResetTimes: { codex: 1e400 } })],
+				activeIndex: 0,
+			}),
+			"utf-8",
+		);
+		const stored = await loadAccounts();
+		const manager = new AccountManager(undefined, stored);
+		expect(manager.getMinWaitTimeForFamily(FAMILY)).toBe(0);
+		expect(manager.getCurrentOrNextForFamily(FAMILY)).not.toBeNull();
+	});
+
+	it("negative persisted rate-limit stamps are treated as expired", async () => {
+		await fs.writeFile(
+			join(testDir, "accounts.json"),
+			JSON.stringify({
+				version: 3,
+				accounts: [makeAccount({ rateLimitResetTimes: { codex: -5 } })],
+				activeIndex: 0,
+			}),
+			"utf-8",
+		);
+		const stored = await loadAccounts();
+		const manager = new AccountManager(undefined, stored);
+		expect(manager.getMinWaitTimeForFamily(FAMILY)).toBe(0);
+		expect(manager.getCurrentOrNextForFamily(FAMILY)).not.toBeNull();
+	});
+
+	it("huge and negative activeIndex in storage cannot break selection", async () => {
+		await fs.writeFile(
+			join(testDir, "accounts.json"),
+			JSON.stringify({
+				version: 3,
+				accounts: [makeAccount(), makeAccount()],
+				activeIndex: 999999,
+				activeIndexByFamily: { codex: -7 },
+			}),
+			"utf-8",
+		);
+		const stored = await loadAccounts();
+		const manager = new AccountManager(undefined, stored);
+		const picked = manager.getCurrentOrNextForFamily(FAMILY);
+		expect(picked).not.toBeNull();
+		expect(picked!.index).toBeGreaterThanOrEqual(0);
+		expect(picked!.index).toBeLessThan(2);
+	});
+});
+
+describe("finite-huge persisted cooldown and quota stamps", () => {
+	let testDir: string;
+
+	beforeEach(async () => {
+		testDir = join(
+			tmpdir(),
+			`stress-domain2-state-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		await fs.mkdir(testDir, { recursive: true });
+		setStoragePathDirect(join(testDir, "accounts.json"));
+		delete process.env.CODEX_KEYCHAIN;
+	});
+
+	afterEach(async () => {
+		await clearAccounts();
+		setStoragePathDirect(null);
+		try {
+			await fs.rm(testDir, { recursive: true, force: true });
+		} catch {}
+		resetTrackers();
+	});
+
+	it("finite-huge coolingDownUntil is bounded by the horizon invariant", async () => {
+		await fs.writeFile(
+			join(testDir, "accounts.json"),
+			JSON.stringify({
+				version: 3,
+				accounts: [makeAccount({ coolingDownUntil: 1e308, cooldownReason: "network-error" })],
+				activeIndex: 0,
+			}),
+			"utf-8",
+		);
+		const stored = await loadAccounts();
+		const manager = new AccountManager(undefined, stored);
+		const wait = manager.getMinWaitTimeForFamily(FAMILY);
+		expect(wait).toBeLessThanOrEqual(MAX_QUOTA_RESET_HORIZON_MS);
+		expect(manager.getAccountForStrategy("round-robin", FAMILY)).not.toBeNull();
+	});
+
+	it("finite-huge quotaExhaustedUntil is bounded by the horizon invariant", async () => {
+		await fs.writeFile(
+			join(testDir, "accounts.json"),
+			JSON.stringify({
+				version: 3,
+				accounts: [makeAccount({ quotaExhaustedUntil: 1e308, quotaExhaustedStampAt: Date.now() })],
+				activeIndex: 0,
+			}),
+			"utf-8",
+		);
+		const stored = await loadAccounts();
+		const manager = new AccountManager(undefined, stored);
+		const wait = manager.getMinWaitTimeForFamily(FAMILY);
+		expect(wait).toBeLessThanOrEqual(MAX_QUOTA_RESET_HORIZON_MS);
+		expect(manager.getAccountForStrategy("round-robin", FAMILY)).not.toBeNull();
+	});
+
+	it("past-dated cooldown and quota stamps are cleared on load and selection recovers", async () => {
+		await fs.writeFile(
+			join(testDir, "accounts.json"),
+			JSON.stringify({
+				version: 3,
+				accounts: [
+					makeAccount({ coolingDownUntil: 1, cooldownReason: "network-error" }),
+					makeAccount({ quotaExhaustedUntil: 1 }),
+				],
+				activeIndex: 0,
+			}),
+			"utf-8",
+		);
+		const stored = await loadAccounts();
+		const manager = new AccountManager(undefined, stored);
+		expect(manager.getMinWaitTimeForFamily(FAMILY)).toBe(0);
+		expect(manager.getAccountForStrategy("round-robin", FAMILY)).not.toBeNull();
+	});
+
+	it("formatWaitTime never emits NaN or Infinity for hostile waits", () => {
+		expect(formatWaitTime(Number.NaN)).toBe("0s");
+		expect(formatWaitTime(Number.POSITIVE_INFINITY)).toBe("0s");
+		expect(formatWaitTime(-1000)).toBe("0s");
+		expect(formatWaitTime(-1e309)).toBe("0s");
+	});
 });

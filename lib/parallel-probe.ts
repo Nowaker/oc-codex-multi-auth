@@ -49,10 +49,11 @@ export function getTopCandidates(
 	for (const account of accounts) {
 		clearExpiredRateLimits(account);
 		clearExpiredQuotaExhaustion(account);
+		const isDisabled = account.enabled === false;
 		const isRateLimited = isRateLimitedForFamily(account, modelFamily, model);
 		const isCoolingDown = account.coolingDownUntil !== undefined && account.coolingDownUntil > Date.now();
 		const isQuotaBlocked = isQuotaExhausted(account);
-		const isAvailable = !isRateLimited && !isCoolingDown && !isQuotaBlocked;
+		const isAvailable = !isDisabled && !isRateLimited && !isCoolingDown && !isQuotaBlocked;
 
 		accountsWithMetrics.push({
 			index: account.index,

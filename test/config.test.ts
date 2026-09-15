@@ -6,6 +6,7 @@ import {
 	getReasoningConfig,
 } from '../lib/request/request-transformer.js';
 import type { UserConfig } from '../lib/types.js';
+import { getParallelProbingMaxConcurrency } from '../lib/config.js';
 
 describe('Configuration Parsing', () => {
 	const providerConfig = {
@@ -273,5 +274,26 @@ describe('clampReasoningForModel (unsupported-model fallback)', () => {
 		);
 		expect(clamped?.effort).toBe('xhigh');
 		expect(clamped?.summary).toBe('detailed');
+	});
+});
+
+describe("config bounds probes", () => {
+	afterEach(() => {
+		delete process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY;
+	});
+
+	it("parallelProbingMaxConcurrency env values clamp into [1, 5]", () => {
+		for (const [raw, expected] of [
+			["0", 1],
+			["-1", 1],
+			["1e309", 2],
+			["NaN", 2],
+			["Infinity", 2],
+			["3", 3],
+			["99", 5],
+		] as const) {
+			process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY = raw;
+			expect(getParallelProbingMaxConcurrency({} as never)).toBe(expected);
+		}
 	});
 });
