@@ -23,6 +23,7 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { loadAccounts, type AccountMetadataV3, type AccountStorageV3 } from "../storage.js";
+import { recoverWarmedAccount, type WarmRecoveryObservation } from "../accounts/warm-recovery.js";
 import {
 	ensureCodexUsageAccessToken,
 	resolveCodexUsageAccountId,
@@ -43,8 +44,10 @@ import type { ToolContext } from "./index.js";
  */
 export function createWarmOne(
 	storage: AccountStorageV3,
+	succeeded?: WarmRecoveryObservation[],
 ): (account: AccountMetadataV3) => Promise<WarmOutcome> {
 	return async (account: AccountMetadataV3): Promise<WarmOutcome> => {
+		const snapshot = { ...account, rateLimitResetTimes: { ...account.rateLimitResetTimes } };
 		const { accessToken } = await ensureCodexUsageAccessToken({ storage, account });
 		const accountId = resolveCodexUsageAccountId({ account, accessToken });
 		if (!accountId) {
@@ -64,6 +67,9 @@ export function createWarmOne(
 				detail: result.detail ?? "quota/usage limit reached",
 			};
 		}
+		if (!result.rateLimited && result.model) succeeded?.push({
+			account: { ...snapshot, refreshToken: account.refreshToken }, model: result.model, accessToken,
+		});
 		return { status: "warmed" };
 	};
 }
@@ -78,12 +84,15 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 	return tool({
 		description:
 			"Warm up all accounts by sending one lightweight request to each, starting their usage windows so weekly/5h quotas stagger instead of expiring together.",
-		args: {},
-		async execute() {
+		args: { format: tool.schema.enum(["text", "json"]).optional() },
+		async execute(args) {
 			const ui = resolveUiRuntime();
 			const maskEmail = resolveMaskEmail();
 			const storage = await loadAccounts();
 			if (!storage || storage.accounts.length === 0) {
+				if (args.format === "json") {
+					return JSON.stringify({ total: 0, warmedCount: 0, failedCount: 0, skippedCount: 0, blocksCleared: 0, results: [] });
+				}
 				if (ui.v2Enabled) {
 					return [
 						...formatUiHeader(ui, "Warm accounts"),
@@ -95,8 +104,37 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 				return "No Codex accounts configured. Run: opencode auth login";
 			}
 
-			const warmOne = createWarmOne(storage);
+			const succeeded: WarmRecoveryObservation[] = [];
+			const warmOne = createWarmOne(storage, succeeded);
 			const summary = await warmAccounts(storage.accounts, warmOne);
+			let blocksCleared = 0;
+			const clearedSnapshots: AccountMetadataV3[] = [];
+			const changedObservations = new Set<WarmRecoveryObservation>();
+			let blockClearError: string | undefined;
+			for (const observation of succeeded) {
+				try {
+					if (await recoverWarmedAccount(observation, (snapshot) => {
+						clearedSnapshots.push(snapshot);
+						changedObservations.add(observation);
+					})) changedObservations.add(observation);
+				} catch {
+					blockClearError = "Failed to clear local blocks; warm results are unchanged.";
+				}
+			}
+			blocksCleared = changedObservations.size;
+			try {
+				if (blocksCleared > 0) {
+					ctx.invalidateAccountManagerCache(clearedSnapshots);
+					await ctx.reloadCachedAccountManager();
+				}
+			} catch {
+				blockClearError = "Failed to clear local blocks; warm results are unchanged.";
+			}
+			if (args.format === "json") {
+				return JSON.stringify({ total: summary.total, warmedCount: summary.warmedCount,
+					failedCount: summary.failedCount, skippedCount: summary.skippedCount, blocksCleared, blockClearError,
+					results: summary.results.map(({ index, status }) => ({ index, status })) });
+			}
 
 			const lines: string[] = ui.v2Enabled
 				? []
@@ -129,8 +167,9 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 
 			lines.push("");
 			lines.push(
-				`Summary: ${summary.warmedCount} warmed, ${summary.failedCount} failed, ${summary.skippedCount} skipped`,
+				`Summary: ${summary.warmedCount} warmed, ${summary.failedCount} failed, ${summary.skippedCount} skipped, ${blocksCleared} blocks cleared`,
 			);
+			if (blockClearError) lines.push(blockClearError);
 
 			if (ui.v2Enabled) {
 				return [

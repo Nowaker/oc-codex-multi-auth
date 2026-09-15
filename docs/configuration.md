@@ -189,6 +189,13 @@ array of extra response fields.
 
 advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
 
+Request settings are re-read on subsequent requests when this file changes.
+During an incomplete write, invalid config, or temporary file removal, the
+process retains its last usable settings instead of switching account pools to
+defaults. Write a valid empty object (`{}`) to reset settings to defaults.
+Startup components, including the quota monitor and recovery hooks, still require
+a restart to change their configuration.
+
 ```json
 {
   "requestTransformMode": "native",

@@ -485,13 +485,14 @@ async function loadDistModules(relativePaths, label) {
 }
 
 async function loadWarmRuntime(env) {
-	const [storageMod, usageMod, warmReqMod, warmMod, shutdownMod] = await loadDistModules(
+	const [storageMod, usageMod, warmReqMod, warmMod, shutdownMod, recoveryMod] = await loadDistModules(
 		[
 			"storage.js",
 			"codex-usage.js",
 			"accounts/warm-request.js",
 			"accounts/warm.js",
 			"shutdown.js",
+			"accounts/warm-recovery.js",
 		],
 		"warm",
 	);
@@ -500,7 +501,7 @@ async function loadWarmRuntime(env) {
 	// Refreshing a token here persists credentials, which registers the
 	// shutdown handler via the storage lock.
 	shutdownMod.setShutdownOwnsProcess(true);
-	return { storageMod, usageMod, warmReqMod, warmMod, shutdownMod };
+	return { storageMod, usageMod, warmReqMod, warmMod, shutdownMod, recoveryMod };
 }
 
 async function loadLimitsRuntime(env) {
@@ -520,14 +521,14 @@ export async function runWarmCommand(parsed, options = {}) {
 
 	let runtime;
 	try {
-		runtime = await loadWarmRuntime(env);
+		runtime = await (options.loadWarmRuntime ?? loadWarmRuntime)(env);
 	} catch (error) {
 		const payload = { command: "warm", storagePath, error: formatErrorForLog(error) };
 		printWarmResult(payload, parsed.json);
 		return { exitCode: 1, action: "warm", storagePath };
 	}
 
-	const { storageMod, usageMod, warmReqMod, warmMod } = runtime;
+	const { storageMod, usageMod, warmReqMod, warmMod, recoveryMod } = runtime;
 	// Point dist storage at the resolved accounts file so a refreshed token is
 	// persisted to the SAME file the rest of the toolchain reads.
 	storageMod.setStoragePathDirect(storagePath);
@@ -560,6 +561,7 @@ export async function runWarmCommand(parsed, options = {}) {
 			storagePath,
 			totalAccounts: 0,
 			warmed: 0,
+			blocksCleared: 0,
 			failed: 0,
 			skipped: 0,
 			results: [],
@@ -573,7 +575,9 @@ export async function runWarmCommand(parsed, options = {}) {
 	// Same adapter as lib/tools/codex-warm.ts createWarmOne: refresh → resolve
 	// account id → open the usage window; map an exhausted (quota-429) account
 	// to a failure so it is not reported as warmed.
+	const succeeded = [];
 	const warmOne = async (account) => {
+		const snapshot = { ...account, rateLimitResetTimes: { ...account.rateLimitResetTimes } };
 		const { accessToken } = await usageMod.ensureCodexUsageAccessToken({ storage, account });
 		const accountId = usageMod.resolveCodexUsageAccountId({ account, accessToken });
 		if (!accountId) {
@@ -587,12 +591,29 @@ export async function runWarmCommand(parsed, options = {}) {
 		if (result.status === "exhausted") {
 			return { status: "failed", detail: result.detail ?? "quota/usage limit reached" };
 		}
+		if (!result.rateLimited && result.model) succeeded.push({
+			account: { ...snapshot, refreshToken: account.refreshToken }, model: result.model, accessToken,
+		});
 		return { status: "warmed" };
 	};
 
 	const summary = await warmMod.warmAccounts(accounts, warmOne);
+	let blocksCleared = 0;
+	let blockClearError;
+	for (const observation of succeeded) {
+		let changed = false;
+		try {
+			const completed = await recoveryMod.recoverWarmedAccount(observation, () => { changed = true; });
+			changed = completed || changed;
+		} catch {
+			blockClearError = "Failed to clear local blocks; warm results are unchanged.";
+		}
+		if (changed) blocksCleared++;
+	}
 	const payload = {
 		command: "warm",
+		blocksCleared,
+		blockClearError,
 		storagePath,
 		totalAccounts: summary.total,
 		warmed: summary.warmedCount,
@@ -628,6 +649,8 @@ function printWarmResult(payload, json) {
 		console.log(`- ${label}: ${r.status}${detail}`);
 	}
 	console.log(`Summary: ${payload.warmed} warmed, ${payload.failed} failed, ${payload.skipped} skipped`);
+	console.log(`Blocks cleared: ${payload.blocksCleared ?? 0}`);
+	if (payload.blockClearError) console.log(payload.blockClearError);
 	if (payload.nextAction) console.log(`Next: ${payload.nextAction}`);
 }
 
@@ -646,7 +669,7 @@ export async function runLimitsCommand(parsed, options = {}) {
 
 	let runtime;
 	try {
-		runtime = await loadLimitsRuntime(env);
+		runtime = await (options.loadLimitsRuntime ?? loadLimitsRuntime)(env);
 	} catch (error) {
 		const payload = { command: "limits", storagePath, error: formatErrorForLog(error) };
 		printLimitsResult(payload, parsed.json);
@@ -745,6 +768,13 @@ export async function runLimitsCommand(parsed, options = {}) {
 					loggerMod.logWarn(
 						`[${PACKAGE_NAME}] Failed to persist exhausted usage quota: ${formatErrorForLog(error)}`,
 					);
+				}
+			}
+			if (usageMod.isUsageQuotaRecovered([usage.primary, usage.secondary])) {
+				try {
+					await usageMod.persistUsageQuotaRecovery(account);
+				} catch {
+					loggerMod.logWarn("Failed to persist recovered usage quota");
 				}
 			}
 			entry.planType = usage.planType;

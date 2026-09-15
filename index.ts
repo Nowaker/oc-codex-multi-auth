@@ -24,6 +24,12 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { watchFile, unwatchFile } from "node:fs";
+import { consumeLastWrittenAccountsDigest } from "./lib/storage/load-save.js";
+import { subscribeToStoragePathChanges } from "./lib/storage/state.js";
+import { isKeychainOptInEnabled } from "./lib/storage/keychain.js";
+import { AnyAccountStorageSchema } from "./lib/schemas.js";
+import { registerCleanup, unregisterCleanup } from "./lib/shutdown.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -1649,24 +1655,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
-		const invalidateAccountManagerCache = (): void => {
-			// Dispose the outgoing manager so we don't leak its shutdown handler
-			// into the global cleanup queue or leave a pending debounce timer
-			// pointing at a stale instance. Flush first (best-effort, in the
-			// background) so any queued debounced save is not silently dropped.
+		const invalidateAccountManagerCache = (clearedSnapshots?: Readonly<AccountStorageV3["accounts"]>): void => {
+			// Retire before flushing: keep disk membership authoritative while
+			// publishing queued rate-limit evidence through the volatile merge.
 			const previous = cachedAccountManager;
 			cachedAccountManager = null;
 			accountManagerPromise = null;
 			if (previous) {
+				previous.disposeShutdownHandler(false, clearedSnapshots);
 				void previous
 					.flushPendingSave()
 					.catch((error: unknown) => {
 						logWarn(
 							`Failed to flush pending save while invalidating account manager: ${error instanceof Error ? error.message : String(error)}`,
 						);
-					})
-					.finally(() => {
-						previous.disposeShutdownHandler();
 					});
 			}
 		};
@@ -1700,6 +1702,123 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					`Failed to reload account manager: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
+		};
+
+		let watchedAccountsPath: string | undefined;
+		let observedAccountsDigest: string | undefined;
+		let accountsReloadTimer: ReturnType<typeof setTimeout> | undefined;
+		let accountsWatcherDisposed = false;
+		let accountsWatchGeneration = 0;
+		let unsubscribeAccountsPath: (() => void) | undefined;
+
+		const stopAccountsWatcher = (): void => {
+			accountsWatchGeneration += 1;
+			if (watchedAccountsPath) unwatchFile(watchedAccountsPath, onAccountsStatChanged);
+			watchedAccountsPath = undefined;
+			observedAccountsDigest = undefined;
+			clearTimeout(accountsReloadTimer);
+			accountsReloadTimer = undefined;
+		};
+		const disposeAccountsWatcher = (): void => {
+			accountsWatcherDisposed = true;
+			unsubscribeAccountsPath?.();
+			stopAccountsWatcher();
+			unregisterCleanup(disposeAccountsWatcher);
+		};
+		const readAccountsDigest = async (path: string): Promise<string | undefined> => {
+			try {
+				const content = await readFile(path, "utf8");
+				if (!AnyAccountStorageSchema.safeParse(JSON.parse(content)).success) return;
+				return createHash("sha256").update(content).digest("hex");
+			} catch {
+				return;
+			}
+		};
+		const reloadForExternalAccountsChange = async (path: string, generation: number, attempt = 0, retired?: AccountManager): Promise<void> => {
+			const digest = await readAccountsDigest(path);
+			if (generation !== accountsWatchGeneration || !digest || path !== getStoragePath()) return;
+			if (digest === consumeLastWrittenAccountsDigest(path)) return;
+			const previous = cachedAccountManager;
+			if (!previous) return;
+			try {
+				if (previous !== retired) {
+					previous.disposeShutdownHandler(true);
+					retired = previous;
+				}
+				await previous.flushPendingSave();
+				const reloaded = await AccountManager.loadFromDisk();
+				if (generation !== accountsWatchGeneration || accountsWatcherDisposed || path !== getStoragePath()) {
+					reloaded.disposeShutdownHandler();
+					return;
+				}
+				const outgoing = cachedAccountManager;
+				if (outgoing && outgoing !== retired) {
+					// Another actor replaced the cached manager while this reload
+					// was in flight (concurrent fetch reload or tool mutation).
+					// Retire the incumbent with the same external-reload
+					// semantics, or its queued membership save can clobber the
+					// external change this reload is about to adopt.
+					outgoing.disposeShutdownHandler(true);
+					retired = outgoing;
+				}
+				cachedAccountManager = reloaded;
+				accountManagerPromise = Promise.resolve(reloaded);
+				observedAccountsDigest = digest;
+			} catch {
+				logWarn("Could not reload externally updated account storage");
+				if (attempt < 2 && generation === accountsWatchGeneration && !accountsWatcherDisposed) {
+					accountsReloadTimer = setTimeout(() => {
+						accountsReloadTimer = undefined;
+						void reloadForExternalAccountsChange(path, generation, attempt + 1, retired);
+					}, 1500);
+					accountsReloadTimer.unref();
+				}
+				return;
+			}
+			logDebug("Reloaded cached account manager after external accounts file change");
+		};
+		const onAccountsFileChanged = async (): Promise<void> => {
+			if (accountsWatcherDisposed) return;
+			if (watchedAccountsPath !== getStoragePath()) {
+				await ensureAccountsWatcher();
+				return;
+			}
+			const path = watchedAccountsPath;
+			if (!path) return;
+			const generation = accountsWatchGeneration;
+			const digest = await readAccountsDigest(path);
+			if (generation !== accountsWatchGeneration || !digest || digest === observedAccountsDigest) return;
+			observedAccountsDigest = digest;
+			clearTimeout(accountsReloadTimer);
+			accountsReloadTimer = undefined;
+			if (digest === consumeLastWrittenAccountsDigest(path)) return;
+			accountsReloadTimer = setTimeout(() => {
+				accountsReloadTimer = undefined;
+				void reloadForExternalAccountsChange(path, generation);
+			}, 500);
+			accountsReloadTimer.unref();
+		};
+		const onAccountsStatChanged = (): void => {
+			void onAccountsFileChanged();
+		};
+		const ensureAccountsWatcher = async (): Promise<void> => {
+			if (accountsWatcherDisposed) return;
+			const path = getStoragePath();
+			if (path === watchedAccountsPath) return;
+			stopAccountsWatcher();
+			if (isKeychainOptInEnabled()) return;
+			unsubscribeAccountsPath ??= subscribeToStoragePathChanges(() => {
+				void ensureAccountsWatcher();
+			});
+			watchedAccountsPath = path;
+			const generation = accountsWatchGeneration;
+			const initialDigest = await readAccountsDigest(path);
+			if (generation !== accountsWatchGeneration) return;
+			observedAccountsDigest = initialDigest;
+			// Stat polling follows the path across the storage writer's temp-file rename.
+			watchFile(path, { interval: 1500, persistent: false }, onAccountsStatChanged);
+			unregisterCleanup(disposeAccountsWatcher);
+			registerCleanup(disposeAccountsWatcher);
 		};
 
 		const persistAuthenticatedSelections = async (
@@ -1741,6 +1860,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 const { event } = input;
                 if (event.type === "server.instance.disposed") {
                         quotaMonitor.dispose();
+						disposeAccountsWatcher();
                         return;
                 }
                 // Handle TUI account selection events
@@ -1902,7 +2022,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					});
 				}
 				applyUiRuntimeFromConfig(pluginConfig);
-				const perProjectAccounts = getPerProjectAccounts(pluginConfig);
+				let perProjectAccounts = getPerProjectAccounts(pluginConfig);
+				let storageTransition: Promise<void> | undefined;
+				const activeFetches = new Set<Promise<void>>();
 				setStoragePath(perProjectAccounts ? process.cwd() : null);
 				const authFallback = auth.type === "oauth" ? (auth as OAuthAuthDetails) : undefined;
 
@@ -1949,8 +2071,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							}
 						});
 					}
-					let accountManager = await accountManagerPromise;
+					const accountManager = await accountManagerPromise;
 					cachedAccountManager = accountManager;
+					await ensureAccountsWatcher();
 					const refreshToken = authFallback?.refresh ?? "";
 					const needsPersist =
 						refreshToken &&
@@ -1985,73 +2108,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					models: providerConfig?.models || {},
 				};
 
-				// Load plugin configuration and determine CODEX_MODE
-				// Priority: CODEX_MODE env var > config file > default (true)
-				const codexMode = getCodexMode(pluginConfig);
-				const requestTransformMode = getRequestTransformMode(pluginConfig);
-				const useLegacyRequestTransform = requestTransformMode === "legacy";
-				const fastSessionEnabled = getFastSession(pluginConfig);
-				const fastSessionStrategy = getFastSessionStrategy(pluginConfig);
-				const fastSessionMaxInputItems = getFastSessionMaxInputItems(pluginConfig);
-				const beginnerSafeMode = getBeginnerSafeMode(pluginConfig);
-				beginnerSafeModeEnabled = beginnerSafeMode;
-				const maskEmailEnabled = getCodexTuiMaskEmail(pluginConfig);
-				const retryProfile = beginnerSafeMode
-					? "conservative"
-					: getRetryProfile(pluginConfig);
-				const retryBudgetOverrides = beginnerSafeMode
-					? {}
-					: getRetryBudgetOverrides(pluginConfig);
-				const retryBudgetLimits = resolveRetryBudgetLimits(
-					retryProfile,
-					retryBudgetOverrides,
-				);
-				runtimeMetrics.retryProfile = retryProfile;
-				runtimeMetrics.retryBudgetLimits = { ...retryBudgetLimits };
-				const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
-				const rateLimitToastDebounceMs = getRateLimitToastDebounceMs(pluginConfig);
-				const retryAllAccountsRateLimited = beginnerSafeMode
-					? false
-					: getRetryAllAccountsRateLimited(pluginConfig);
-				const retryAllAccountsMaxWaitMs = getRetryAllAccountsMaxWaitMs(pluginConfig);
-				const retryAllAccountsMaxRetries = beginnerSafeMode
-					? Math.min(1, getRetryAllAccountsMaxRetries(pluginConfig))
-					: getRetryAllAccountsMaxRetries(pluginConfig);
-				const unsupportedCodexPolicy = getUnsupportedCodexPolicy(pluginConfig);
-				const fallbackOnUnsupportedCodexModel = unsupportedCodexPolicy === "fallback";
-				const fallbackToGpt52OnUnsupportedGpt53 =
-					getFallbackToGpt52OnUnsupportedGpt53(pluginConfig);
-				const unsupportedCodexFallbackChain =
-					getUnsupportedCodexFallbackChain(pluginConfig);
-				const toastDurationMs = getToastDurationMs(pluginConfig);
-				const accountToastsEnabled = getAccountToastsEnabled(pluginConfig);
-				const fetchTimeoutMs = getFetchTimeoutMs(pluginConfig);
-				const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
-
 				const sessionRecoveryEnabled = getSessionRecovery(pluginConfig);
+				beginnerSafeModeEnabled = getBeginnerSafeMode(pluginConfig);
+				const initialRetryProfile = beginnerSafeModeEnabled ? "conservative" : getRetryProfile(pluginConfig);
+				runtimeMetrics.retryProfile = initialRetryProfile;
+				runtimeMetrics.retryBudgetLimits = resolveRetryBudgetLimits(
+					initialRetryProfile,
+					beginnerSafeModeEnabled ? {} : getRetryBudgetOverrides(pluginConfig),
+				);
 				const autoResumeEnabled = getAutoResume(pluginConfig);
 				const autoUpdateEnabled = getAutoUpdate(pluginConfig);
-				const emptyResponseMaxRetries = getEmptyResponseMaxRetries(pluginConfig);
-				const emptyResponseRetryDelayMs = getEmptyResponseRetryDelayMs(pluginConfig);
-				const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
-				const rotationStrategy = getRotationStrategy(pluginConfig);
-				const effectiveUserConfig = fastSessionEnabled
-					? applyFastSessionDefaults(userConfig)
-					: userConfig;
-				if (fastSessionEnabled) {
+				if (getFastSession(pluginConfig)) {
 					logDebug("Fast session mode enabled", {
 						reasoningEffort: "none/low",
 						reasoningSummary: "auto",
 						textVerbosity: "low",
-						fastSessionStrategy,
-						fastSessionMaxInputItems,
+						fastSessionStrategy: getFastSessionStrategy(pluginConfig),
+						fastSessionMaxInputItems: getFastSessionMaxInputItems(pluginConfig),
 					});
 				}
-				if (beginnerSafeMode) {
+				if (getBeginnerSafeMode(pluginConfig)) {
 					logInfo("Beginner safe mode enabled", {
-						retryProfile,
-						retryAllAccountsRateLimited,
-						retryAllAccountsMaxRetries,
+						retryProfile: "conservative",
+						retryAllAccountsRateLimited: false,
+						retryAllAccountsMaxRetries: Math.min(1, getRetryAllAccountsMaxRetries(pluginConfig)),
 					});
 				}
 
@@ -2060,11 +2140,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					process.env.VITEST !== "true" &&
 					process.env.NODE_ENV !== "test";
 
-				if (!startupPrewarmTriggered && prewarmEnabled && useLegacyRequestTransform) {
+				if (!startupPrewarmTriggered && prewarmEnabled && getRequestTransformMode(pluginConfig) === "legacy") {
 					startupPrewarmTriggered = true;
 					const configuredModels = Object.keys(userConfig.models ?? {});
 					prewarmCodexInstructions(configuredModels);
-					if (codexMode) {
+					if (getCodexMode(pluginConfig)) {
 						prewarmOpenCodeCodexPrompt();
 					}
 				}
@@ -2107,10 +2187,69 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						input: Request | string | URL,
 						init?: RequestInit,
 					): Promise<Response> {
+						let finishFetch: (() => void) | undefined;
+						let pendingFetch: Promise<void> | undefined;
 						try {
-							if (cachedAccountManager && cachedAccountManager !== accountManager) {
-								accountManager = cachedAccountManager;
+							const pluginConfig = loadPluginConfig();
+							const currentPerProjectAccounts = getPerProjectAccounts(pluginConfig);
+							while (storageTransition) await storageTransition;
+							if (currentPerProjectAccounts !== perProjectAccounts) {
+								storageTransition = (async () => {
+									await Promise.all(activeFetches);
+									// Drain the old pool's pending write before changing the global path.
+									await cachedAccountManager?.flushPendingSave();
+									setStoragePath(currentPerProjectAccounts ? process.cwd() : null);
+									invalidateAccountManagerCache();
+									perProjectAccounts = currentPerProjectAccounts;
+								})().finally(() => { storageTransition = undefined; });
+								await storageTransition;
 							}
+							pendingFetch = new Promise<void>((resolve) => { finishFetch = resolve; });
+							activeFetches.add(pendingFetch);
+							if (!accountManagerPromise) {
+								const pending = AccountManager.loadFromDisk();
+								accountManagerPromise = pending;
+								void pending.catch(() => {
+									if (accountManagerPromise === pending) accountManagerPromise = null;
+								});
+							}
+							if (!cachedAccountManager) {
+								cachedAccountManager = await accountManagerPromise;
+							}
+							const codexMode = getCodexMode(pluginConfig);
+							const requestTransformMode = getRequestTransformMode(pluginConfig);
+							const fastSessionEnabled = getFastSession(pluginConfig);
+							const fastSessionStrategy = getFastSessionStrategy(pluginConfig);
+							const fastSessionMaxInputItems = getFastSessionMaxInputItems(pluginConfig);
+							const beginnerSafeMode = getBeginnerSafeMode(pluginConfig);
+							beginnerSafeModeEnabled = beginnerSafeMode;
+							const maskEmailEnabled = getCodexTuiMaskEmail(pluginConfig);
+							const retryProfile = beginnerSafeMode ? "conservative" : getRetryProfile(pluginConfig);
+							const retryBudgetOverrides = beginnerSafeMode ? {} : getRetryBudgetOverrides(pluginConfig);
+							const retryBudgetLimits = resolveRetryBudgetLimits(retryProfile, retryBudgetOverrides);
+							runtimeMetrics.retryProfile = retryProfile;
+							runtimeMetrics.retryBudgetLimits = { ...retryBudgetLimits };
+							const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
+							const rateLimitToastDebounceMs = getRateLimitToastDebounceMs(pluginConfig);
+							const retryAllAccountsRateLimited = beginnerSafeMode ? false : getRetryAllAccountsRateLimited(pluginConfig);
+							const retryAllAccountsMaxWaitMs = getRetryAllAccountsMaxWaitMs(pluginConfig);
+							const retryAllAccountsMaxRetries = beginnerSafeMode
+								? Math.min(1, getRetryAllAccountsMaxRetries(pluginConfig))
+								: getRetryAllAccountsMaxRetries(pluginConfig);
+							const unsupportedCodexPolicy = getUnsupportedCodexPolicy(pluginConfig);
+							const fallbackOnUnsupportedCodexModel = unsupportedCodexPolicy === "fallback";
+							const fallbackToGpt52OnUnsupportedGpt53 = getFallbackToGpt52OnUnsupportedGpt53(pluginConfig);
+							const unsupportedCodexFallbackChain = getUnsupportedCodexFallbackChain(pluginConfig);
+							const toastDurationMs = getToastDurationMs(pluginConfig);
+							const accountToastsEnabled = getAccountToastsEnabled(pluginConfig);
+							const fetchTimeoutMs = getFetchTimeoutMs(pluginConfig);
+							const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
+							const emptyResponseMaxRetries = getEmptyResponseMaxRetries(pluginConfig);
+							const emptyResponseRetryDelayMs = getEmptyResponseRetryDelayMs(pluginConfig);
+							const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
+							const rotationStrategy = getRotationStrategy(pluginConfig);
+							const effectiveUserConfig = fastSessionEnabled ? applyFastSessionDefaults(userConfig) : userConfig;
+							let accountManager = cachedAccountManager;
 
                                                 // Step 1: Extract and rewrite URL for Codex backend
                                                 const originalUrl = extractRequestUrl(input);
@@ -2291,6 +2430,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						const endTime = startTime + totalMs;
 						
 						while (Date.now() < endTime) {
+							if (cachedAccountManager !== accountManager) return;
 							if (abortSignal?.aborted) {
 								throw abortError();
 							}
@@ -2417,6 +2557,32 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							let quotaFallbackSwitches = 0;
 
 							while (true) {
+						if (cachedAccountManager && cachedAccountManager !== accountManager) {
+							accountManager = cachedAccountManager;
+						} else if (!cachedAccountManager) {
+							// Reload through the shared accountManagerPromise so
+							// concurrent requests (and the startup path above)
+							// share one load. Racing independent loadFromDisk()
+							// calls here can orphan the slower manager while an
+							// in-flight request still holds it, and an orphaned
+							// manager is never retired, so its next save would
+							// write full membership and drop externally imported
+							// accounts.
+							if (accountManagerPromise === null) {
+								const pending = AccountManager.loadFromDisk();
+								accountManagerPromise = pending;
+								void pending.catch(() => {
+									if (accountManagerPromise === pending) accountManagerPromise = null;
+								});
+							}
+							const reloaded = await accountManagerPromise;
+							if (cachedAccountManager) {
+								accountManager = cachedAccountManager;
+							} else {
+								cachedAccountManager = reloaded;
+								accountManager = reloaded;
+							}
+						}
 						let accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();
 						// Diagnostics for the terminal error message below. The composite key keeps
@@ -3647,6 +3813,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										});
 									}
 						} finally {
+							if (pendingFetch) activeFetches.delete(pendingFetch);
+							finishFetch?.();
 							clearCorrelationId();
 						}
 										},

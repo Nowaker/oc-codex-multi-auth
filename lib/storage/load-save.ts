@@ -17,6 +17,7 @@
  */
 
 import { promises as fs, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { ACCOUNTS_FILE_NAME, LEGACY_ACCOUNTS_FILE_NAME } from "../constants.js";
 import { createLogger } from "../logger.js";
@@ -49,6 +50,14 @@ import {
 import os from "node:os";
 
 const log = createLogger("storage");
+let lastWrittenAccounts: { path: string; digest: string } | undefined;
+
+export function consumeLastWrittenAccountsDigest(path = getStoragePath()): string | undefined {
+  if (lastWrittenAccounts?.path !== path) return undefined;
+  const digest = lastWrittenAccounts.digest;
+  lastWrittenAccounts = undefined;
+  return digest;
+}
 const COLLISION_WARNING_THROTTLE_MS = 60_000;
 const COLLISION_WARNING_THROTTLE_MAX_ENTRIES = 128;
 const collisionWarningTimes = new Map<string, number>();
@@ -548,6 +557,8 @@ async function writeAccountsToPathUnlocked(path: string, storage: AccountStorage
     }
 
     await renameWithWindowsRetry(tempPath, path);
+    // Only a published write may suppress this process's live-reload watcher.
+    lastWrittenAccounts = { path, digest: createHash("sha256").update(content).digest("hex") };
   } catch (error) {
     try {
       await fs.unlink(tempPath);
