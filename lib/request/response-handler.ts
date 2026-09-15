@@ -182,6 +182,7 @@ export async function convertSseToJson(
 				});
 			}
 		}
+		fullText += decoder.decode();
 
 		if (LOGGING_ENABLED) {
 			logRequest("stream-full", { fullContent: fullText });

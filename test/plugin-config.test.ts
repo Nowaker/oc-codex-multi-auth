@@ -26,6 +26,7 @@ import {
 	getAutoUpdate,
 	getAccountToastsEnabled,
 	getQuotaNotifications,
+	getParallelProbingMaxConcurrency,
 } from '../lib/config.js';
 import type { PluginConfig } from '../lib/types.js';
 import * as fs from 'node:fs';
@@ -929,6 +930,27 @@ describe('Plugin Configuration', () => {
 			expect(getQuotaNotifications({}).enabled).toBe(true);
 			expect(getQuotaNotifications({}).autoProtectCredits).toBe(false);
 			expect(getQuotaNotifications({}).intervalMs).toBe(600_000);
+		});
+	});
+
+	describe('getParallelProbingMaxConcurrency', () => {
+		it('returns default 2 when unconfigured', () => {
+			expect(getParallelProbingMaxConcurrency({})).toBe(2);
+		});
+
+		it('honors file config within bounds', () => {
+			expect(getParallelProbingMaxConcurrency({ parallelProbingMaxConcurrency: 4 })).toBe(4);
+		});
+
+		it('clamps environment overrides to min 1 and max 5', () => {
+			process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY = '9';
+			expect(getParallelProbingMaxConcurrency({})).toBe(5);
+
+			process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY = '0';
+			expect(getParallelProbingMaxConcurrency({})).toBe(1);
+
+			process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY = '3';
+			expect(getParallelProbingMaxConcurrency({})).toBe(3);
 		});
 	});
 });

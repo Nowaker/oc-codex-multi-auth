@@ -143,14 +143,14 @@ The image should immediately communicate:
 When the product summary or positioning changes, update all of these together so
 the repo does not present three different descriptions of itself:
 
-- `README.md` — H1, intro paragraph, feature bullets
-- `package.json` — `description` and `keywords`
-- `.codex-plugin/plugin.json` — `description`
+- `README.md`: H1, intro paragraph, feature bullets
+- `package.json`: `description` and `keywords`
+- `.codex-plugin/plugin.json`: `description`
 - GitHub repository **About** text and topics (set in the GitHub UI)
-- `AGENTS.md` and `lib/AGENTS.md` — overview paragraphs
+- `AGENTS.md` and `lib/AGENTS.md`: overview paragraphs
 - `docs/README.md`, `docs/index.md`, `docs/DOCUMENTATION.md`
 - `docs/architecture.md` and `docs/development/ARCHITECTURE.md`
-- `docs/_config.yml` — docs site title/description
+- `docs/_config.yml`: docs site title/description
 
 `test/doc-parity.test.ts` pins the package description and keyword set against
 `package.json`, so a drift there fails the suite.

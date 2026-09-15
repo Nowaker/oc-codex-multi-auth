@@ -26,9 +26,9 @@ Registered from **24 per-file factories** under `lib/tools/` via `createToolRegi
 | `codex-switch` | Switch the active account (interactive picker when index omitted) |
 | `codex-warm` | Open every enabled account's usage window (one minimal request each) |
 | `codex-status` | Active account, model family, routing / pool mode |
-| `codex-limits` | Visible rate-limit / quota state |
+| `codex-limits` | Live 5-hour and weekly Codex usage per account (fetched via `fetchCodexUsage`) |
 | `codex-reset` | Inspect or redeem banked rate-limit reset credit |
-| `codex-dashboard` | Interactive multi-account management surface |
+| `codex-dashboard` | Read-only snapshot report of account eligibility, retry budgets, and refresh queue health |
 
 ### Account metadata and routing
 
@@ -39,13 +39,13 @@ Registered from **24 per-file factories** under `lib/tools/` via `createToolRegi
 | `codex-note` | Attach a private note to an account |
 | `codex-pool` | Manage model account pools and `preferred`/`strict` routing modes |
 | `codex-remove` | Remove a saved account (confirm required) |
-| `codex-refresh` | Refresh tokens / re-auth guidance for an account |
+| `codex-refresh` | Manually refresh OAuth tokens for all accounts |
 
 ### Diagnostics and resilience
 
 | Tool | Purpose |
 |------|---------|
-| `codex-health` | Health summary across accounts |
+| `codex-health` | Live health verification across accounts by refreshing each refresh token (makes network calls) |
 | `codex-metrics` | Runtime counters and request metrics |
 | `codex-doctor` | Beginner-friendly diagnostics with fix hints |
 | `codex-diag` | Redacted diagnostic snapshot export |
@@ -80,7 +80,7 @@ codex-note index=2 note="weekend only"
 codex-doctor
 codex-health
 codex-export
-codex-import dryRun=true
+codex-import path="~/backup.json" dryRun=true
 codex-keychain
 ```
 
@@ -92,12 +92,12 @@ Account indices are **1-based**. Destructive tools require an explicit confirm f
 
 | Tool | Args |
 |------|------|
-| `codex-setup` | `wizard?` (bool) — menu-driven setup when terminal supports it |
-| `codex-help` | `topic?` — `setup`, `switch`, `pools`, `health`, `backup`, `dashboard` |
-| `codex-next` | `format?` — `text` \| `json` |
+| `codex-setup` | `wizard?` (bool), menu-driven setup when terminal supports it |
+| `codex-help` | `topic?` (`setup`, `switch`, `pools`, `health`, `backup`, `dashboard`) |
+| `codex-next` | `format?` (`text` \| `json`) |
 | `codex-list` | `tag?`, `format?`, `includeSensitive?` |
-| `codex-switch` | `index?` — omit for interactive picker when supported |
-| `codex-warm` | optional `format="text"` (default) or `format="json"` |
+| `codex-switch` | `index?`, omit for interactive picker when supported |
+| `codex-warm` | `format?` (`text` \| `json`) |
 | `codex-status` | `format?`, `includeSensitive?` |
 | `codex-limits` | `format?`, `includeSensitive?` |
 | `codex-reset` | `action?` (`status` \| `consume`), `creditId?`, `confirm?` (required true to redeem), `dryRun?`, `account?` (1-based), `format?`, `includeSensitive?` |
@@ -106,12 +106,12 @@ Account indices are **1-based**. Destructive tools require an explicit confirm f
 | `codex-tag` | `index?`, `tags` (CSV; empty clears) |
 | `codex-note` | `index?`, `note` (empty clears) |
 | `codex-pool` | `action?` (`status` \| `set` \| `add` \| `remove` \| `clear` \| `set-mode`), `model?`, `accounts?` (1-based number array), `poolMode?` (`preferred` \| `strict`), `dryRun?`, `format?`, `includeSensitive?` |
-| `codex-remove` | `index?`, `confirm` (must be `true` to delete) |
+| `codex-remove` | `index?`, `confirm?` (must be `true` to delete, omitted or false is a no-op that prints guidance) |
 | `codex-refresh` | _(none)_ |
 | `codex-health` | `format?`, `includeSensitive?` |
 | `codex-metrics` | `format?` |
 | `codex-doctor` | `deep?`, `fix?` (safe automated fixes), `format?` |
-| `codex-diag` | _(none)_ — redacted snapshot only |
+| `codex-diag` | _(none)_, redacted snapshot only |
 | `codex-diff` | `left`, `right` (paths), `section?` (`accounts` \| `config` \| `both`) |
 | `codex-export` | `path?`, `force?`, `timestamped?` (default true when path omitted) |
 | `codex-import` | `path`, `dryRun?` |
@@ -119,10 +119,12 @@ Account indices are **1-based**. Destructive tools require an explicit confirm f
 
 ### Operational notes
 
-- **`codex-warm` / CLI `warm`:** one lightweight request per enabled account to open usage windows. CLI exits non-zero if any account fails; disabled accounts are skipped.
-- **`codex-reset`:** banked WHAM/rate-limit reset credits. `action="consume"` is irreversible and requires `confirm=true` (use `dryRun=true` to preview).
-- **`codex-pool`:** accepts 1-based numbers but persists **stable account IDs** in `~/.opencode/openai-codex-auth-config.json`. Restart OpenCode after mutations.
-- **Standalone default storage:** CLI commands read the **global** accounts file unless `--config-path` points at a project pool. In-session tools use the active per-project path when `perProjectAccounts` is true.
+- **`codex-warm` / CLI `warm`.** One lightweight request per enabled account to open usage windows. CLI exits non-zero if any account fails; disabled accounts are skipped.
+- **`codex-reset`.** Banked WHAM/rate-limit reset credits. `action="consume"` is irreversible and requires `confirm=true` (use `dryRun=true` to preview).
+- **`codex-pool`.** Accepts 1-based numbers but persists **stable account IDs** in `~/.opencode/openai-codex-auth-config.json`. Restart OpenCode after mutations.
+- **Tool `codex-health` vs CLI `health`.** The tool refreshes every account's token against the auth server, so it makes real network calls and reports the live result. The CLI `health` command scans the local JSON storage and counts accounts where `enabled && hasRefreshToken`, with no network calls.
+- **Standalone default storage.** CLI commands read the **global** accounts file unless `--config-path` points at a project pool. In-session tools use the active per-project path when `perProjectAccounts` is true.
+- **Keychain routing.** `status`, `list`, `health`, and `dashboard` parse the JSON accounts file directly. `warm` and `limits` load the plugin storage runtime, so they honor `CODEX_KEYCHAIN=1`. `doctor` reads the JSON file directly unless `--fix` is passed, and `--fix` repairs through the storage runtime (an explicit `--config-path` forces keychain off for the repair).
 
 ---
 
@@ -138,7 +140,7 @@ Bin: `oc-codex-multi-auth` (also via `npx -y oc-codex-multi-auth@latest …`).
 | `doctor` | Local account/config diagnostics |
 | `status` | Account/config status |
 | `list` | List configured accounts |
-| `limits` | Stored rate-limit state |
+| `limits` | Live 5-hour and weekly quota usage from the usage endpoint |
 | `dashboard` | Prints guidance (does not start a full dashboard server) |
 | `health` | Local token/account health summary |
 | `diag` | Alias for `doctor --deep` |
@@ -158,7 +160,7 @@ oc-codex-multi-auth diag
 oc-codex-multi-auth warm
 ```
 
-`warm` exits non-zero if any account failed. Disabled accounts are skipped.
+`warm` exits non-zero if any account failed. Disabled accounts are skipped. `limits` exits 1 when it cannot load storage or any account's usage fetch fails.
 
 A successful warm request can clear unchanged cooldown state and the responding
 model's own rate-limit marker, not other model or family markers. If the account
@@ -178,7 +180,7 @@ the warm result, and newer concurrent block writes are preserved.
 | `--dry-run` | Show changed config paths without values or writes |
 | `--no-cache-clear` | Skip clearing OpenCode plugin cache |
 
-Choose only one of `--plugin-only`, `--modern`, `--full`, or `--legacy`. Use `update [--dry-run]` when refreshing the package; it clears the managed OpenCode cache without reading or writing `opencode.json` or `tui.json`.
+Choose only one of `--plugin-only`, `--modern`, `--full`, or `--legacy`. Use `update [--dry-run]` when refreshing the package. It clears the managed OpenCode cache without reading or writing `opencode.json` or `tui.json`.
 
 ### Standalone options
 
@@ -209,11 +211,11 @@ For `doctor --fix`, an explicit `--config-path` repairs only the selected JSON p
 
 ## Related runtime concepts
 
-- **Rotation:** `rotationStrategy` = `hybrid` (default) | `sticky` | `round-robin` in `~/.opencode/openai-codex-auth-config.json` or `CODEX_AUTH_ROTATION_STRATEGY`.
-- **Model pools:** `modelAccountPools` + `codex-pool` route effective model IDs through specific accounts. `preferred` mode falls back to the general pool; `strict` mode never leaves its configured pool.
-- **Per-project accounts:** default `true` under `~/.opencode/projects/<project-key>/`.
+- **Rotation.** `rotationStrategy` is `hybrid` (default), `sticky`, or `round-robin`, set in `~/.opencode/openai-codex-auth-config.json` or `CODEX_AUTH_ROTATION_STRATEGY`.
+- **Model pools.** `modelAccountPools` + `codex-pool` route effective model IDs through specific accounts. `preferred` mode falls back to the general pool. `strict` mode never leaves its configured pool.
+- **Per-project accounts.** Default `true` under `~/.opencode/projects/<project-key>/`.
 - **Stateless Codex contract:** `store: false` and `reasoning.encrypted_content`.
-- **GPT-5.6:** responses-lite path; client identity defaults to host/opencode for 5.6.
+- **GPT-5.6.** Responses-lite path; client identity defaults to the host identity (`opencode`) for 5.6.
 
 See also:
 
