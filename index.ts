@@ -1734,19 +1734,32 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				return;
 			}
 		};
-		const reloadForExternalAccountsChange = async (path: string, generation: number, attempt = 0): Promise<void> => {
+		const reloadForExternalAccountsChange = async (path: string, generation: number, attempt = 0, retired?: AccountManager): Promise<void> => {
 			const digest = await readAccountsDigest(path);
 			if (generation !== accountsWatchGeneration || !digest || path !== getStoragePath()) return;
 			if (digest === consumeLastWrittenAccountsDigest(path)) return;
 			const previous = cachedAccountManager;
 			if (!previous) return;
 			try {
-				if (attempt === 0) previous.disposeShutdownHandler(true);
+				if (previous !== retired) {
+					previous.disposeShutdownHandler(true);
+					retired = previous;
+				}
 				await previous.flushPendingSave();
 				const reloaded = await AccountManager.loadFromDisk();
 				if (generation !== accountsWatchGeneration || accountsWatcherDisposed || path !== getStoragePath()) {
 					reloaded.disposeShutdownHandler();
 					return;
+				}
+				const outgoing = cachedAccountManager;
+				if (outgoing && outgoing !== retired) {
+					// Another actor replaced the cached manager while this reload
+					// was in flight (concurrent fetch reload or tool mutation).
+					// Retire the incumbent with the same external-reload
+					// semantics, or its queued membership save can clobber the
+					// external change this reload is about to adopt.
+					outgoing.disposeShutdownHandler(true);
+					retired = outgoing;
 				}
 				cachedAccountManager = reloaded;
 				accountManagerPromise = Promise.resolve(reloaded);
@@ -1756,7 +1769,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				if (attempt < 2 && generation === accountsWatchGeneration && !accountsWatcherDisposed) {
 					accountsReloadTimer = setTimeout(() => {
 						accountsReloadTimer = undefined;
-						void reloadForExternalAccountsChange(path, generation, attempt + 1);
+						void reloadForExternalAccountsChange(path, generation, attempt + 1, retired);
 					}, 1500);
 					accountsReloadTimer.unref();
 				}
@@ -2547,10 +2560,28 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						if (cachedAccountManager && cachedAccountManager !== accountManager) {
 							accountManager = cachedAccountManager;
 						} else if (!cachedAccountManager) {
-							const reloaded = await AccountManager.loadFromDisk();
-							cachedAccountManager = reloaded;
-							accountManagerPromise = Promise.resolve(reloaded);
-							accountManager = reloaded;
+							// Reload through the shared accountManagerPromise so
+							// concurrent requests (and the startup path above)
+							// share one load. Racing independent loadFromDisk()
+							// calls here can orphan the slower manager while an
+							// in-flight request still holds it, and an orphaned
+							// manager is never retired, so its next save would
+							// write full membership and drop externally imported
+							// accounts.
+							if (accountManagerPromise === null) {
+								const pending = AccountManager.loadFromDisk();
+								accountManagerPromise = pending;
+								void pending.catch(() => {
+									if (accountManagerPromise === pending) accountManagerPromise = null;
+								});
+							}
+							const reloaded = await accountManagerPromise;
+							if (cachedAccountManager) {
+								accountManager = cachedAccountManager;
+							} else {
+								cachedAccountManager = reloaded;
+								accountManager = reloaded;
+							}
 						}
 						let accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();

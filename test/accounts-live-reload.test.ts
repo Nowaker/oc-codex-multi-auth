@@ -357,4 +357,68 @@ describe("accounts live reload", () => {
 		expect(vi.getTimerCount()).toBe(0);
 		expect(watchFile).toHaveBeenCalledWith(path, { interval: 1500, persistent: false }, expect.any(Function));
 	});
+	it("dedupes concurrent manager reloads after cache invalidation", async () => {
+		const manager = captured.context?.cachedAccountManagerRef.current;
+		if (!manager) throw new Error("Missing manager");
+		const account = manager.getCurrentAccount();
+		if (!account) throw new Error("Missing account");
+		manager.markQuotaExhausted(account, Date.now() + 86_400_000, "gpt-5.1");
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("data: [DONE]\n\n", {
+			status: 200, headers: { "content-type": "text/event-stream" },
+		}));
+		let enteredWait: () => void = () => {};
+		const waiting = new Promise<void>((resolve) => { enteredWait = resolve; });
+		const minWait = manager.getMinWaitTimeForFamily.bind(manager);
+		vi.spyOn(manager, "getMinWaitTimeForFamily").mockImplementation((...args) => {
+			enteredWait();
+			return minWait(...args);
+		});
+		const first = request("https://api.openai.com/v1/responses", {
+			method: "POST", body: JSON.stringify({ model: "gpt-5.1", stream: true, input: [] }),
+		});
+		await waiting;
+		// Park every load behind one gate so both reload paths are observed
+		// before either completes.
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const realLoad = AccountManager.loadFromDisk.bind(AccountManager);
+		const load = vi.spyOn(AccountManager, "loadFromDisk").mockImplementation(async () => {
+			await gate;
+			return realLoad();
+		});
+		captured.context?.invalidateAccountManagerCache();
+		const second = request("https://api.openai.com/v1/responses", {
+			method: "POST", body: JSON.stringify({ model: "gpt-5.1", stream: true, input: [] }),
+		});
+		await vi.advanceTimersByTimeAsync(5000);
+		// The waiting request resumed into the rotation loop and must reuse the
+		// in-flight load instead of starting a second one whose loser would be
+		// an unretired manager that can still write full membership saves.
+		expect(load).toHaveBeenCalledTimes(1);
+		release();
+		await vi.advanceTimersByTimeAsync(5000);
+		expect((await first).status).toBe(200);
+		expect((await second).status).toBe(200);
+	});
+	it("retires an incumbent installed while an external reload retries", async () => {
+		const replacement = new AccountManager(undefined, storage(true));
+		const dispose = vi.spyOn(replacement, "disposeShutdownHandler");
+		const load = vi.spyOn(AccountManager, "loadFromDisk");
+		load.mockRejectedValueOnce(new Error("transient read failure"));
+		const reloaded = nextReload();
+		await fs.writeFile(path, JSON.stringify(storage(false)));
+		await tick();
+		await settle();
+		// A concurrent actor installs a fresh manager while the watcher's
+		// bounded retry is still pending.
+		captured.context!.cachedAccountManagerRef.current = replacement;
+		await vi.advanceTimersByTimeAsync(1500);
+		await reloaded;
+		const installed = captured.context?.cachedAccountManagerRef.current;
+		expect(installed).not.toBe(replacement);
+		// The replaced incumbent must be retired, or its queued membership
+		// save can clobber the external change the reload just adopted.
+		expect(dispose).toHaveBeenCalled();
+		expect(installed?.getAccountsSnapshot()[0]?.enabled).toBe(false);
+	});
 });
