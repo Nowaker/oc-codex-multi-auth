@@ -89,59 +89,84 @@ function parseDataPayload(line: string): string | null {
 }
 
 /**
-
  * Parse SSE stream to extract final response
  * @param sseText - Complete SSE stream text
  * @returns Final response object or null if not found
  */
-function parseSseStream(sseText: string): ParsedSseResult | null {
-	const lines = sseText.split(/\r?\n/);
+function processSsePayload(payload: string): ParsedSseResult | null {
+	if (!payload || payload === "[DONE]") return null;
+	try {
+		const data = JSON.parse(payload) as SSEEventData;
+		const responseRecord = toRecord((data as { response?: unknown }).response);
 
-	for (const line of lines) {
-		const trimmedLine = line.trim();
-		const payload = parseDataPayload(trimmedLine);
-		if (payload) {
-			try {
-				const data = JSON.parse(payload) as SSEEventData;
-				const responseRecord = toRecord((data as { response?: unknown }).response);
+		if (data.type === "error" || data.type === "response.error") {
+			const parsedError = extractStreamError(data);
+			log.error("SSE error event received", { error: parsedError });
+			return { kind: "error", error: parsedError };
+		}
 
-				if (data.type === "error" || data.type === "response.error") {
-					const parsedError = extractStreamError(data);
-					log.error("SSE error event received", { error: parsedError });
-					return { kind: "error", error: parsedError };
-				}
+		if (data.type === "response.failed" || data.type === "response.incomplete") {
+			const parsedError =
+				(responseRecord && extractResponseError(responseRecord)) ??
+				extractStreamError(data);
+			log.error("SSE response terminal error event received", {
+				type: data.type,
+				error: parsedError,
+			});
+			return { kind: "error", error: parsedError };
+		}
 
-				if (data.type === "response.failed" || data.type === "response.incomplete") {
-					const parsedError =
-						(responseRecord && extractResponseError(responseRecord)) ??
-						extractStreamError(data);
-					log.error("SSE response terminal error event received", {
-						type: data.type,
+		if (data.type === "response.done" || data.type === "response.completed") {
+			if (responseRecord) {
+				const parsedError = extractResponseError(responseRecord);
+				if (parsedError) {
+					log.error("SSE response completed with terminal error", {
 						error: parsedError,
+						status: responseRecord.status,
 					});
 					return { kind: "error", error: parsedError };
 				}
-
-				if (data.type === "response.done" || data.type === "response.completed") {
-					if (responseRecord) {
-						const parsedError = extractResponseError(responseRecord);
-						if (parsedError) {
-							log.error("SSE response completed with terminal error", {
-								error: parsedError,
-								status: responseRecord.status,
-							});
-							return { kind: "error", error: parsedError };
-						}
-					}
-					return { kind: "response", response: data.response };
-				}
-			} catch {
-				// Skip malformed JSON
 			}
+			return { kind: "response", response: data.response };
 		}
+	} catch {
+		// Skip malformed JSON
+	}
+	return null;
+}
+
+function parseSseStream(sseText: string): ParsedSseResult | null {
+	const lines = sseText.split(/\r?\n/);
+
+	// WHATWG SSE: consecutive `data:` lines of a single event concatenate
+	// with "\n" into one payload, dispatched at the blank line. Each line is
+	// also tried on its own before the joined form, so a stream that omits
+	// the blank-line separator between events still parses. The residual
+	// buffer is dispatched at end-of-text so a final event without a
+	// trailing blank line still parses.
+	const dataLines: string[] = [];
+	const dispatch = (): ParsedSseResult | null => {
+		if (dataLines.length === 0) return null;
+		const payloads = dataLines.splice(0);
+		for (const candidate of [...payloads, payloads.join("\n")]) {
+			const result = processSsePayload(candidate);
+			if (result) return result;
+		}
+		return null;
+	};
+
+	for (const line of lines) {
+		const trimmedLine = line.trim();
+		if (trimmedLine === "") {
+			const result = dispatch();
+			if (result) return result;
+			continue;
+		}
+		const payload = parseDataPayload(trimmedLine);
+		if (payload !== null) dataLines.push(payload);
 	}
 
-	return null;
+	return dispatch();
 }
 
 /**
@@ -163,7 +188,19 @@ export async function convertSseToJson(
 	}
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
+	const textEncoder = new TextEncoder();
 	let fullText = '';
+	// The documented cap is bytes; counting UTF-16 code units lets a
+	// multibyte stream overshoot it up to 4x before tripping.
+	let totalBytes = 0;
+	const assertWithinLimit = (): void => {
+		if (totalBytes > MAX_SSE_SIZE) {
+			throw new RequestError(`SSE response exceeds ${MAX_SSE_SIZE} bytes limit`, {
+				code: 'SSE_TOO_LARGE',
+				context: { maxBytes: MAX_SSE_SIZE, actualBytes: totalBytes },
+			});
+		}
+	};
 	const streamStallTimeoutMs = Math.max(
 		1_000,
 		Math.floor(options?.streamStallTimeoutMs ?? DEFAULT_STREAM_STALL_TIMEOUT_MS),
@@ -173,16 +210,17 @@ export async function convertSseToJson(
 		// Consume the entire stream
 		while (true) {
 			const { done, value } = await readWithTimeout(reader, streamStallTimeoutMs);
-			if (done) break;
+			if (done || !value) break;
+			totalBytes += value.byteLength;
 			fullText += decoder.decode(value, { stream: true });
-			if (fullText.length > MAX_SSE_SIZE) {
-				throw new RequestError(`SSE response exceeds ${MAX_SSE_SIZE} bytes limit`, {
-					code: 'SSE_TOO_LARGE',
-					context: { maxBytes: MAX_SSE_SIZE, actualBytes: fullText.length },
-				});
-			}
+			assertWithinLimit();
 		}
-		fullText += decoder.decode();
+		const tail = decoder.decode();
+		if (tail) {
+			fullText += tail;
+			totalBytes += textEncoder.encode(tail).byteLength;
+			assertWithinLimit();
+		}
 
 		if (LOGGING_ENABLED) {
 			logRequest("stream-full", { fullContent: fullText });
