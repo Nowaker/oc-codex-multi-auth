@@ -97,7 +97,7 @@ Account indices are **1-based**. Destructive tools require an explicit confirm f
 | `codex-next` | `format?` (`text` \| `json`) |
 | `codex-list` | `tag?`, `format?`, `includeSensitive?` |
 | `codex-switch` | `index?`, omit for interactive picker when supported |
-| `codex-warm` | _(none)_ |
+| `codex-warm` | `format?` (`text` \| `json`) |
 | `codex-status` | `format?`, `includeSensitive?` |
 | `codex-limits` | `format?`, `includeSensitive?` |
 | `codex-reset` | `action?` (`status` \| `consume`), `creditId?`, `confirm?` (required true to redeem), `dryRun?`, `account?` (1-based), `format?`, `includeSensitive?` |
@@ -161,6 +161,13 @@ oc-codex-multi-auth warm
 ```
 
 `warm` exits non-zero if any account failed. Disabled accounts are skipped. `limits` exits 1 when it cannot load storage or any account's usage fetch fails.
+
+A successful warm request can clear unchanged cooldown state and the responding
+model's own rate-limit marker, not other model or family markers. If the account
+already has a subscription-quota block, warm checks live usage before clearing
+it; a successful response alone can be paid for with Credits and does not prove
+that subscription quota recovered. Cleanup failures are reported separately from
+the warm result, and newer concurrent block writes are preserved.
 
 ### Installer flags
 

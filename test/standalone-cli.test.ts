@@ -4,6 +4,29 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+vi.mock("../scripts/install-oc-codex-multi-auth-core.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../scripts/install-oc-codex-multi-auth-core.js")>();
+	return { ...actual, runInstaller: async (...args: Parameters<typeof actual.runInstaller>) => {
+		const [argv, options] = args;
+		return actual.runInstaller(argv, {
+			loadWarmRuntime: async () => {
+				const [storageMod, usageMod, warmReqMod, warmMod, recoveryMod] = await Promise.all([
+					import("../lib/storage.js"), import("../lib/codex-usage.js"), import("../lib/accounts/warm-request.js"),
+					import("../lib/accounts/warm.js"), import("../lib/accounts/warm-recovery.js"),
+				]);
+				return { storageMod, usageMod, warmReqMod, warmMod, recoveryMod };
+			},
+			loadLimitsRuntime: async () => {
+				const [storageMod, usageMod, loggerMod] = await Promise.all([
+					import("../lib/storage.js"), import("../lib/codex-usage.js"), import("../lib/logger.js"),
+				]);
+				return { storageMod, usageMod, loggerMod };
+			},
+			...options,
+		});
+	} };
+});
+
 // Exercise the shipped import boundary with source implementations, not stale dist.
 async function loadSourceDoctorRuntime() {
 	return Promise.all([
@@ -699,6 +722,35 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 
 		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
 		expect(output).toMatchObject({ totalAccounts: 0, warmed: 0, failed: 0, skipped: 0 });
+	});
+
+	it.each(["warm", "limits"])("%s clears proven recovered blocks on disk", async (command) => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount({ quotaExhaustedUntil: 1234, rateLimitResetTimes: { codex: 5678 } })]);
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ rate_limit: {
+			primary_window: { used_percent: 10, limit_window_seconds: 18_000 },
+			secondary_window: { used_percent: 20, limit_window_seconds: 604_800 },
+		} })));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const storageMod = await import("../lib/storage.js");
+		const usageMod = await import("../lib/codex-usage.js");
+		const warmReqMod = await import("../lib/accounts/warm-request.js");
+		const warmMod = await import("../lib/accounts/warm.js");
+		const recoveryMod = await import("../lib/accounts/warm-recovery.js");
+		const loggerMod = await import("../lib/logger.js");
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const result = await runInstaller([command, "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			loadWarmRuntime: async () => ({ storageMod, usageMod, warmReqMod, warmMod, recoveryMod }),
+			loadLimitsRuntime: async () => ({ storageMod, usageMod, loggerMod }),
+		});
+		const stored = JSON.parse(await readFile(join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json"), "utf-8"));
+		expect(result.exitCode).toBe(0);
+		expect(stored.accounts[0].quotaExhaustedUntil).toBeUndefined();
+		expect(stored.accounts[0].rateLimitResetTimes).toEqual({ codex: 5678 });
+		if (command === "warm") expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])).blocksCleared).toBe(1);
+		storageMod.setStoragePathDirect(null);
 	});
 
 	it("warm: opens the window for an enabled account when upstream returns 200", async () => {

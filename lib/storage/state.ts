@@ -45,12 +45,23 @@ export function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
 let currentStoragePath: string | null = null;
 let currentLegacyProjectStoragePath: string | null = null;
 let currentProjectRoot: string | null = null;
+const storagePathListeners = new Set<() => void>();
+
+export function subscribeToStoragePathChanges(listener: () => void): () => void {
+  storagePathListeners.add(listener);
+  return () => { storagePathListeners.delete(listener); };
+}
+
+function notifyStoragePathChanged(): void {
+  for (const listener of storagePathListeners) listener();
+}
 
 export function setStoragePath(projectPath: string | null): void {
   if (!projectPath) {
     currentStoragePath = null;
     currentLegacyProjectStoragePath = null;
     currentProjectRoot = null;
+    notifyStoragePathChanged();
     return;
   }
 
@@ -64,12 +75,14 @@ export function setStoragePath(projectPath: string | null): void {
     currentLegacyProjectStoragePath = null;
     currentProjectRoot = null;
   }
+  notifyStoragePathChanged();
 }
 
 export function setStoragePathDirect(path: string | null): void {
   currentStoragePath = path;
   currentLegacyProjectStoragePath = null;
   currentProjectRoot = null;
+  notifyStoragePathChanged();
 }
 
 /**

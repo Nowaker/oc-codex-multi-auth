@@ -396,8 +396,8 @@ export class AccountManager {
 		await this.persistence.flushPendingSave();
 	}
 
-	disposeShutdownHandler(): void {
-		this.persistence.disposeShutdownHandler();
+	disposeShutdownHandler(externalReload = false, clearedSnapshots?: Readonly<AccountStorageV3["accounts"]>): void {
+		this.persistence.disposeShutdownHandler(externalReload, clearedSnapshots);
 	}
 
 	// ----- recovery delegations -----

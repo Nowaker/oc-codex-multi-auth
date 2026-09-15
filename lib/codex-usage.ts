@@ -183,7 +183,8 @@ function mapUsageWindowMinutes(
 	return Math.max(1, Math.ceil(limitWindowSeconds / 60));
 }
 
-export function mapUsageWindow(window: UsageWindow): LimitWindow {
+export function mapUsageWindow(window: UsageWindow | undefined): LimitWindow {
+	if (window === null) return { windowMinutes: 0 };
 	if (!window) return {};
 	return {
 		usedPercent:
@@ -419,6 +420,35 @@ export async function persistUsageQuotaExhaustion(
 	});
 }
 
+export function isUsageQuotaRecovered(windows: readonly LimitWindow[]): boolean {
+	const active = windows.filter(hasUsageWindow);
+	return active.length > 0 && windows.every((window) => window.windowMinutes === 0 || (
+		typeof window.usedPercent === "number" && Number.isFinite(window.usedPercent) &&
+		window.usedPercent >= 0 && window.usedPercent < 100),
+	);
+}
+
+export async function persistUsageQuotaRecovery(account: AccountMetadataV3): Promise<boolean> {
+	const usageKey = getUsageAccountDedupeKey(account);
+	if (!usageKey) return false;
+	return withAccountStorageTransaction(async (current, persist) => {
+		if (!current) return false;
+		let changed = false;
+		for (const storedAccount of current.accounts) {
+			if (getUsageAccountDedupeKey(storedAccount) !== usageKey) continue;
+			if (storedAccount.quotaExhaustedUntil === undefined) continue;
+			if (storedAccount.quotaExhaustedUntil !== account.quotaExhaustedUntil ||
+				storedAccount.quotaExhaustedStampAt !== account.quotaExhaustedStampAt) continue;
+			delete storedAccount.quotaExhaustedUntil;
+			delete storedAccount.quotaExhaustedStampAt;
+			storedAccount.quotaExhaustedClearedAt = Date.now();
+			changed = true;
+		}
+		if (changed) await persist(current);
+		return changed;
+	});
+}
+
 /**
  * Reduce a `/wham/usage` document to the summary the callers render.
  *
@@ -444,8 +474,8 @@ export function parseCodexUsagePayload(
 	).filter((entry): entry is NonNullable<typeof entry> =>
 		typeof entry === "object" && entry !== null,
 	);
-	const primary = mapUsageWindow(source.rate_limit?.primary_window ?? null);
-	const secondary = mapUsageWindow(source.rate_limit?.secondary_window ?? null);
+	const primary = mapUsageWindow(source.rate_limit?.primary_window);
+	const secondary = mapUsageWindow(source.rate_limit?.secondary_window);
 	const codeReviewRateLimit =
 		source.code_review_rate_limit ??
 		additionalRateLimits.find(
