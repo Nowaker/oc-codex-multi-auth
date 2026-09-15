@@ -86,3 +86,52 @@ describe("retry-budget", () => {
 		expect(tracker.getLimits().network).toBe(2);
 	});
 });
+describe("retry budget tracker", () => {
+	it("usage counters never go negative and consumption is monotonic", () => {
+		const tracker = new RetryBudgetTracker({
+			authRefresh: 1,
+			network: 1,
+			server: 1,
+			rateLimitShort: 1,
+			rateLimitGlobal: 1,
+			emptyResponse: 1,
+		});
+		for (const bucket of [
+			"authRefresh",
+			"network",
+			"server",
+			"rateLimitShort",
+			"rateLimitGlobal",
+			"emptyResponse",
+		] as const) {
+			expect(tracker.consume(bucket)).toBe(true);
+			expect(tracker.consume(bucket)).toBe(false);
+			expect(tracker.consume(bucket)).toBe(false);
+			const usage = tracker.getUsage()[bucket];
+			expect(usage).toBe(1);
+			expect(tracker.getRemaining(bucket)).toBe(0);
+		}
+	});
+
+	it("zero-limit buckets block immediately; remaining never negative", () => {
+		const tracker = new RetryBudgetTracker({
+			authRefresh: 0,
+			network: 0,
+			server: 0,
+			rateLimitShort: 0,
+			rateLimitGlobal: 0,
+			emptyResponse: 0,
+		});
+		for (const bucket of [
+			"authRefresh",
+			"network",
+			"server",
+			"rateLimitShort",
+			"rateLimitGlobal",
+			"emptyResponse",
+		] as const) {
+			expect(tracker.consume(bucket)).toBe(false);
+			expect(tracker.getRemaining(bucket)).toBe(0);
+		}
+	});
+});

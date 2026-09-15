@@ -1535,7 +1535,11 @@ function parseRetryAfterMs(
         // takes the same authority gate as the exhausted-window shortcut above:
         // otherwise an untrusted snapshot walks straight back in through the
         // "ordinary throttle" door and produces the very hours-long delay the
-        // shortcut was gated to prevent.
+        // shortcut was gated to prevent. The generic `x-ratelimit-reset`
+        // header and the body `resets_at` sit on the same uncapped delay path
+        // and take the same gate: on any status other than a genuine 429 they
+        // are untrusted echoes, and honoring one hands a stale or hostile
+        // value an uncapped multi-year block through markRateLimitedWithReason.
         if (trustExhaustedWindows) {
                 for (const window of parseCodexQuotaWindows(response.headers, now)) {
                         if (isQuotaWindowDisabled(window)) continue;
@@ -1544,28 +1548,28 @@ function parseRetryAfterMs(
                         const delta = resetAtMs - now;
                         if (delta > 0) resetCandidates.push(delta);
                 }
-        }
 
-        const resetAtHeaders = ["x-ratelimit-reset"];
-        for (const header of resetAtHeaders) {
-                const value = response.headers.get(header);
-                if (!value) continue;
-                const parsed = Number.parseInt(value, 10);
-                if (!Number.isNaN(parsed) && parsed > 0) {
+                const resetAtHeaders = ["x-ratelimit-reset"];
+                for (const header of resetAtHeaders) {
+                        const value = response.headers.get(header);
+                        if (!value) continue;
+                        const parsed = Number.parseInt(value, 10);
+                        if (!Number.isNaN(parsed) && parsed > 0) {
+                                const timestamp =
+                                        parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+                                const delta = timestamp - now;
+                                if (delta > 0) resetCandidates.push(delta);
+                        }
+                }
+
+                if (parsedBody?.resetsAt) {
                         const timestamp =
-                                parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+                                parsedBody.resetsAt < 10_000_000_000
+                                        ? parsedBody.resetsAt * 1000
+                                        : parsedBody.resetsAt;
                         const delta = timestamp - now;
                         if (delta > 0) resetCandidates.push(delta);
                 }
-        }
-
-        if (parsedBody?.resetsAt) {
-                const timestamp =
-                        parsedBody.resetsAt < 10_000_000_000
-                                ? parsedBody.resetsAt * 1000
-                                : parsedBody.resetsAt;
-                const delta = timestamp - now;
-                if (delta > 0) resetCandidates.push(delta);
         }
 
         if (resetCandidates.length > 0) {
