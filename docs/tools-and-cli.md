@@ -162,11 +162,14 @@ oc-codex-multi-auth warm
 
 `warm` exits non-zero if any account failed. Disabled accounts are skipped. `limits` exits 1 when it cannot load storage or any account's usage fetch fails.
 
-A successful warm request can clear unchanged cooldown state and the responding
-model's own rate-limit marker, not other model or family markers. If the account
+A successful warm request can clear unchanged cooldown state, the responding
+model's own rate-limit marker, and that family's blanket marker, not other
+models' or other families' markers. If the account
 already has a subscription-quota block, warm checks live usage before clearing
 it; a successful response alone can be paid for with Credits and does not prove
-that subscription quota recovered. Cleanup failures are reported separately from
+that subscription quota recovered. A failed usage check leaves the quota block
+in place but still clears the unchanged model and cooldown state, and the
+failure is reported separately. Cleanup failures are reported separately from
 the warm result, and newer concurrent block writes are preserved.
 
 ### Installer flags
