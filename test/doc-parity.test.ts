@@ -195,7 +195,7 @@ describe("runtime documentation parity", () => {
 					"1455",
 					"`reasoning.encrypted_content`",
 					"auth.json",
-					"%LOCALAPPDATA%/opencode/auth.json",
+					"`~/.local/share/opencode/auth.json`",
 				],
 			],
 			[
