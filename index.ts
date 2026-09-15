@@ -1741,13 +1741,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (generation !== accountsWatchGeneration || !digest || path !== getStoragePath()) return;
 			if (digest === consumeLastWrittenAccountsDigest(path)) return;
 			const previous = cachedAccountManager;
-			if (!previous) return;
 			try {
-				if (previous !== retired) {
-					previous.disposeShutdownHandler(true);
-					retired = previous;
+				// A null cache means an invalidation retired the incumbent; the
+				// reload still must adopt the external change. Bailing here would
+				// strand it: onAccountsFileChanged already marked this digest
+				// observed, and an in-flight load started before the write can
+				// still resolve and install a pre-change snapshot whose
+				// full-membership save then deletes the imported accounts.
+				if (previous) {
+					if (previous !== retired) {
+						previous.disposeShutdownHandler(true);
+						retired = previous;
+					}
+					await previous.flushPendingSave();
 				}
-				await previous.flushPendingSave();
 				const reloaded = await AccountManager.loadFromDisk();
 				if (generation !== accountsWatchGeneration || accountsWatcherDisposed || path !== getStoragePath()) {
 					reloaded.disposeShutdownHandler();
@@ -2073,8 +2080,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							}
 						});
 					}
-					const accountManager = await accountManagerPromise;
-					cachedAccountManager = accountManager;
+					const loadedManager = await accountManagerPromise;
+					if (cachedAccountManager && cachedAccountManager !== loadedManager) {
+						// An external reload replaced the cache while this load was
+						// in flight. The loaded snapshot is stale; retiring it keeps
+						// its debounced save from writing full membership over the
+						// successor's state.
+						loadedManager.disposeShutdownHandler();
+					} else {
+						cachedAccountManager = loadedManager;
+					}
+					const accountManager = cachedAccountManager ?? loadedManager;
 					await ensureAccountsWatcher();
 					const refreshToken = authFallback?.refresh ?? "";
 					const needsPersist =
@@ -2215,9 +2231,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									if (accountManagerPromise === pending) accountManagerPromise = null;
 								});
 							}
-							if (!cachedAccountManager) {
-								cachedAccountManager = await accountManagerPromise;
+						if (!cachedAccountManager) {
+							const loadedManager = await accountManagerPromise;
+							if (cachedAccountManager && cachedAccountManager !== loadedManager) {
+								// External reload won the race while this load was in
+								// flight: adopt the cache and retire the stale load.
+								loadedManager.disposeShutdownHandler();
+							} else if (!cachedAccountManager) {
+								cachedAccountManager = loadedManager;
 							}
+						}
 							const codexMode = getCodexMode(pluginConfig);
 							const requestTransformMode = getRequestTransformMode(pluginConfig);
 							const fastSessionEnabled = getFastSession(pluginConfig);
@@ -2577,13 +2600,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									if (accountManagerPromise === pending) accountManagerPromise = null;
 								});
 							}
-							const reloaded = await accountManagerPromise;
-							if (cachedAccountManager) {
-								accountManager = cachedAccountManager;
-							} else {
-								cachedAccountManager = reloaded;
-								accountManager = reloaded;
+						const reloaded = await accountManagerPromise;
+						if (cachedAccountManager) {
+							if (cachedAccountManager !== reloaded) {
+								// The cache was repopulated while this load was in
+								// flight (external reload after an invalidation).
+								// The loaded manager is stale; retire it so its
+								// debounced save cannot write full membership over
+								// accounts imported after its snapshot was taken.
+								reloaded.disposeShutdownHandler();
 							}
+							accountManager = cachedAccountManager;
+						} else {
+							cachedAccountManager = reloaded;
+							accountManager = reloaded;
+						}
 						}
 						let accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();
