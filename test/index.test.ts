@@ -4037,6 +4037,58 @@ describe("OpenAIOAuthPlugin", () => {
 			}
 		});
 	});
+
+	// Every member of a ChatGPT Business workspace shares its `accountId`, so
+	// rendering that alone gave distinct members one identical `id:` and read as
+	// a single account duplicated. These drive the REAL `codex-list`, and so the
+	// real `formatCommandAccountLabel` closure behind every `codex-*` tool.
+	describe("seat identity across account-display surfaces", () => {
+		const setMaskEmail = async (value: boolean) => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCodexTuiMaskEmail).mockReturnValue(value);
+		};
+
+		it("codex-list: distinguishes two seats sharing one workspace account id", async () => {
+			await setMaskEmail(false);
+			// Same email AND same workspace id on both rows, so the seat is the
+			// only thing that can tell them apart.
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "shared@example.com",
+					accountId: "05cd9f040000000000989a40",
+					accountUserId: "user_aaaaaa111111",
+				},
+				{
+					refreshToken: "r2",
+					email: "shared@example.com",
+					accountId: "05cd9f040000000000989a40",
+					accountUserId: "user_bbbbbb222222",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			expect(output).toContain("seat:111111");
+			expect(output).toContain("seat:222222");
+		});
+
+		it("codex-list: renders no seat for an account with no member id", async () => {
+			await setMaskEmail(false);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "solo@example.com",
+					accountId: "05cd9f040000000000989a40",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			expect(output).toContain("solo@example.com");
+			expect(output).not.toContain("seat:");
+		});
+	});
 });
 
 describe("OpenAIOAuthPlugin edge cases", () => {
