@@ -399,6 +399,7 @@ describe("quota monitor lifecycle", () => {
 	});
 
 	it("does not poll a configuration that can never deliver", async () => {
+		vi.useFakeTimers();
 		const loadStorage = vi.fn().mockResolvedValue(null);
 		const monitor = createQuotaMonitor({
 			// Enabled, but with no thresholds and no every-check alert there is
@@ -406,11 +407,16 @@ describe("quota monitor lifecycle", () => {
 			loadConfig: () => ({ enabled: true, autoProtectCredits: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [] }),
 			loadStorage,
 			notificationsSupported: () => true,
+			initialDelayMs: 10,
 		});
 
-		await monitor.runNow();
+		// Driven through the scheduled poll rather than `runNow()`, which is
+		// forced by design for the on-demand caller.
+		monitor.start();
+		await vi.advanceTimersByTimeAsync(10);
 
 		expect(loadStorage).not.toHaveBeenCalled();
+		monitor.dispose();
 	});
 
 	it("keeps polling on the configured interval while enabled", async () => {
@@ -446,16 +452,36 @@ describe("quota monitor lifecycle", () => {
 		expect(loadStorage).not.toHaveBeenCalled();
 	});
 
-	it("does not poll accounts when notifications and credit protection are disabled", async () => {
-		const loadStorage = vi.fn().mockResolvedValue(null);
+	// Both switches govern the UNATTENDED poll, an invariant the two scheduling
+	// tests above already hold. `runNow()` is the on-demand path, and its one
+	// production caller is the all-accounts rate-limit wait, which is blocked
+	// until it learns whether upstream capacity has returned. Honouring the
+	// switches here left that wait asleep through a server-side reset, since
+	// nothing local changes when a reset is granted.
+	it("polls on demand even when notifications and credit protection are disabled", async () => {
+		const loadStorage = vi.fn().mockResolvedValue({
+			version: 3 as const,
+			accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+			activeIndex: 0,
+		});
+		const fetchSummary = vi.fn().mockResolvedValue(accountUsage({
+			fiveHourUsed: 10,
+			weeklyUsed: 10,
+		}));
+		const notify = vi.fn();
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, autoProtectCredits: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: false, autoProtectCredits: false, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage,
+			fetchSummary,
+			notify,
 			notificationsSupported: () => false,
 		});
 
 		await monitor.runNow();
-		expect(loadStorage).not.toHaveBeenCalled();
+
+		expect(fetchSummary).toHaveBeenCalledOnce();
+		// Forcing the probe must not deliver an alert the user switched off.
+		expect(notify).not.toHaveBeenCalled();
 	});
 
 	it("polls to protect Credits even when desktop notifications are unavailable", async () => {

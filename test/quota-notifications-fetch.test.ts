@@ -243,6 +243,30 @@ describe("default quota fetch path", () => {
 		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
 	});
 
+	// Setting and clearing a block are not symmetric. `autoProtectCredits`
+	// opts out of BLOCKING rotation, but the request path still stamps a block
+	// from 429 headers regardless of it, so gating the clear on it too left
+	// those accounts blocked with nothing able to release them.
+	it("clears recovered quota even with credit protection switched off", async () => {
+		ensureCodexUsageAccessToken.mockResolvedValue({ accessToken: "access-1", persisted: false });
+		fetchCodexUsage.mockResolvedValue({ rate_limit: {
+			primary_window: { used_percent: 10, limit_window_seconds: 18_000 },
+			secondary_window: { used_percent: 20, limit_window_seconds: 604_800 },
+		} });
+		persistUsageQuotaRecovery.mockResolvedValue(true);
+		await monitorWith({
+			loadConfig: () => ({
+				enabled: true,
+				autoProtectCredits: false,
+				intervalMs: 1_000,
+				notifyEveryCheck: true,
+				thresholds: [25, 10, 0],
+			}),
+			notify: vi.fn().mockResolvedValue(true),
+		}).runNow();
+		expect(persistUsageQuotaRecovery).toHaveBeenCalledWith(storage.accounts[0]);
+	});
+
 	it.each([
 		{},
 		{ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 0 } } },
