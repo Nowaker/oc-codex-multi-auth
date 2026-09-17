@@ -289,7 +289,12 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 			const listTableOptions: TableOptions = {
 				columns: [
 					{ header: "#", width: 3 },
-					{ header: "Label", width: 42 },
+					// Wide enough for a full Business-seat identity - "Account 10
+					// (name@example.com, id:05cd9f04...989a40, seat:989a40)" is 66
+					// characters. At 42 the cell truncated mid-`id:`, so two members
+					// of one workspace rendered as the same cut-off string and the
+					// seat that tells them apart never reached the screen.
+					{ header: "Label", width: 68 },
 					{ header: "Plan", width: 18 },
 					{ header: "Status", width: 20 },
 				],
