@@ -10,6 +10,7 @@ import type { PluginConfig } from "../lib/types.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import type { ModelFamily } from "../lib/prompts/codex.js";
 import { getModelPoolAccountKey } from "../lib/accounts/pool-identity.js";
+import { MAX_QUOTA_RESET_HORIZON_MS } from "../lib/quota-windows.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
@@ -429,5 +430,87 @@ describe("Business seat pool keys derived from bearer tokens", () => {
 				accessToken: seatToken("member-owner"),
 			}),
 		).not.toBe("business-account");
+	});
+});
+
+function makeAccount(overrides: Record<string, unknown> = {}): AccountStorageV3["accounts"][number] {
+	return {
+		refreshToken: `token-${Math.random().toString(36).slice(2)}`,
+		email: `user${Math.floor(Math.random() * 1000)}@example.com`,
+		addedAt: Date.now(),
+		lastUsed: 0,
+		...overrides,
+	};
+}
+
+describe("rotation selection invariants", () => {
+	beforeEach(() => {
+		resetTrackers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		resetTrackers();
+	});
+
+	it("round-robin never returns a disabled account and returns null when all are disabled", () => {
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			accounts: [makeAccount({ enabled: false }), makeAccount({ enabled: false })],
+			activeIndex: 0,
+		});
+		expect(manager.getAccountForStrategy("round-robin", FAMILY)).toBeNull();
+	});
+
+	it("round-robin never returns a cooling-down account when it reported none available", () => {
+		vi.useFakeTimers();
+		const tokens = ["tok-a", "tok-b"];
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			accounts: [makeAccount({ refreshToken: tokens[0] }), makeAccount({ refreshToken: tokens[1] })],
+			activeIndex: 0,
+		});
+		for (const token of tokens) {
+			manager.markAccountsWithRefreshTokenCoolingDown(token, 60_000, "network-error");
+		}
+		const explain = manager.getSelectionExplainability(FAMILY);
+		expect(explain.every((entry) => !entry.eligible)).toBe(true);
+		expect(manager.getAccountForStrategy("round-robin", FAMILY)).toBeNull();
+		expect(manager.getAccountForStrategy("sticky", FAMILY)).toBeNull();
+	});
+
+	it("hybrid never returns a disabled account even in the LRU fallback", () => {
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			accounts: [makeAccount({ enabled: false }), makeAccount({ enabled: false })],
+			activeIndex: 0,
+		});
+		expect(manager.getAccountForStrategy("hybrid", FAMILY)).toBeNull();
+	});
+
+	it("hybrid still selects around a disabled account when others are healthy", () => {
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			accounts: [makeAccount({ enabled: false }), makeAccount(), makeAccount()],
+			activeIndex: 0,
+		});
+		const picked = manager.getAccountForStrategy("hybrid", FAMILY);
+		expect(picked).not.toBeNull();
+		expect(picked?.enabled).not.toBe(false);
+	});
+
+	it("markQuotaExhausted rejects reset stamps beyond the 30-day horizon", () => {
+		vi.useFakeTimers();
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			accounts: [makeAccount()],
+			activeIndex: 0,
+		});
+		const account = manager.getAccountsSnapshot()[0]!;
+		const now = Date.now();
+		expect(manager.markQuotaExhausted(account, now + MAX_QUOTA_RESET_HORIZON_MS + 1, FAMILY)).toBe(false);
+		expect(manager.markQuotaExhausted(account, now + MAX_QUOTA_RESET_HORIZON_MS, FAMILY)).toBe(true);
+		expect(manager.markQuotaExhausted(account, Number.NaN, FAMILY)).toBe(false);
+		expect(manager.markQuotaExhausted(account, Number.POSITIVE_INFINITY, FAMILY)).toBe(false);
 	});
 });

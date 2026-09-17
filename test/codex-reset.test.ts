@@ -7,7 +7,9 @@ import {
 	formatCodexResetConsumeResult,
 	parseCodexResetCredits,
 	selectRedeemableCredit,
+	type CodexResetCreditsPayload,
 } from "../lib/codex-reset.js";
+import { parseUsageResetCredits } from "../lib/codex-usage.js";
 
 const request = {
 	accountId: "acct-1",
@@ -227,5 +229,49 @@ describe("formatCodexResetConsumeResult", () => {
 
 	it("falls back to a plain confirmation when the payload is bare", () => {
 		expect(formatCodexResetConsumeResult({})).toBe("redeemed");
+	});
+});
+
+describe("codex-reset credit parsing under hostile payloads", () => {
+	it("a null 200 body does not crash the credit parser", () => {
+		expect(() => parseCodexResetCredits(null as unknown as CodexResetCreditsPayload)).not.toThrow();
+	});
+
+	it("a non-array credits field does not crash the credit parser", () => {
+		expect(() =>
+			parseCodexResetCredits({ credits: 5 } as unknown as CodexResetCreditsPayload),
+		).not.toThrow();
+		expect(() =>
+			parseCodexResetCredits({ credits: { id: "x" } } as unknown as CodexResetCreditsPayload),
+		).not.toThrow();
+	});
+
+	it("end to end: fetchCodexResetCredits on a null 200 body parses without throwing", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				new Response("null", { status: 200, headers: { "content-type": "application/json" } }),
+			),
+		);
+		try {
+			const payload = await fetchCodexResetCredits({
+				accountId: "acct",
+				accessToken: "tok",
+				organizationId: undefined,
+				timeoutMs: 1000,
+			});
+			expect(() => parseCodexResetCredits(payload)).not.toThrow();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("negative and fractional counts never render as redeemable", () => {
+		expect(parseUsageResetCredits({ available_count: -1, applicable_available_count: -1 })).toBeNull();
+		expect(parseUsageResetCredits({ available_count: 2.5 })).toBeNull();
+		expect(parseUsageResetCredits({ available_count: 3, applicable_available_count: 5 })).toEqual({
+			available: 3,
+			applicableNow: null,
+		});
 	});
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
 	loadPluginConfig,
+	resetPluginConfigCache,
 	getCodexMode,
 	getCodexTuiV2,
 	getCodexTuiColorProfile,
@@ -25,6 +26,7 @@ import {
 	getAutoUpdate,
 	getAccountToastsEnabled,
 	getQuotaNotifications,
+	getParallelProbingMaxConcurrency,
 } from '../lib/config.js';
 import type { PluginConfig } from '../lib/types.js';
 import * as fs from 'node:fs';
@@ -39,6 +41,12 @@ vi.mock('node:fs', async () => {
 		...actual,
 		existsSync: vi.fn(),
 		readFileSync: vi.fn(),
+		statSync: vi.fn((filePath: fs.PathLike) => {
+			if (!fs.existsSync(filePath)) {
+				throw Object.assign(new Error('Config not found'), { code: 'ENOENT' });
+			}
+			return { mtimeMs: 0, size: 0 };
+		}),
 	};
 });
 
@@ -83,6 +91,7 @@ describe('Plugin Configuration', () => {
 			originalEnv[key] = process.env[key];
 		}
 		vi.clearAllMocks();
+		resetPluginConfigCache();
 	});
 
 	afterEach(() => {
@@ -99,6 +108,9 @@ describe('Plugin Configuration', () => {
 	describe('loadPluginConfig', () => {
 		it('should return default config when file does not exist', () => {
 			mockExistsSync.mockReturnValue(false);
+			mockReadFileSync.mockImplementationOnce(() => {
+				throw Object.assign(new Error('missing config'), { code: 'ENOENT' });
+			});
 
 			const config = loadPluginConfig();
 
@@ -141,8 +153,8 @@ describe('Plugin Configuration', () => {
 				fetchTimeoutMs: 60_000,
 				streamStallTimeoutMs: 45_000,
 			});
-			expect(mockExistsSync).toHaveBeenCalledWith(
-				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json')
+			expect(mockReadFileSync).toHaveBeenCalledWith(
+				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json'), 'utf-8'
 			);
 		});
 
@@ -923,6 +935,27 @@ describe('Plugin Configuration', () => {
 			expect(getQuotaNotifications({}).enabled).toBe(true);
 			expect(getQuotaNotifications({}).autoProtectCredits).toBe(false);
 			expect(getQuotaNotifications({}).intervalMs).toBe(600_000);
+		});
+	});
+
+	describe('getParallelProbingMaxConcurrency', () => {
+		it('returns default 2 when unconfigured', () => {
+			expect(getParallelProbingMaxConcurrency({})).toBe(2);
+		});
+
+		it('honors file config within bounds', () => {
+			expect(getParallelProbingMaxConcurrency({ parallelProbingMaxConcurrency: 4 })).toBe(4);
+		});
+
+		it('clamps environment overrides to min 1 and max 5', () => {
+			process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY = '9';
+			expect(getParallelProbingMaxConcurrency({})).toBe(5);
+
+			process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY = '0';
+			expect(getParallelProbingMaxConcurrency({})).toBe(1);
+
+			process.env.CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY = '3';
+			expect(getParallelProbingMaxConcurrency({})).toBe(3);
 		});
 	});
 });

@@ -10,6 +10,8 @@
 import { createLogger } from "../logger.js";
 import { extractAccountUserId, isStaleGeneratedAccountLabel } from "../auth/token-utils.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
+import { MAX_QUOTA_RESET_HORIZON_MS } from "../quota-windows.js";
+import { nowMs } from "../utils.js";
 import { AccountStorageV2DetectionSchema } from "../schemas.js";
 import { StorageError } from "./errors.js";
 import {
@@ -74,6 +76,97 @@ function dropStaleGeneratedLabel(account: AccountMetadataV3): AccountMetadataV3 
     accountIdSuffix: account.accountId?.slice(-6),
   });
   return next;
+}
+
+/**
+ * Boundary guard for the numeric timing fields on a stored account record.
+ *
+ * `JSON.parse` happily produces `Infinity` (from literals like `1e400`), and a
+ * hand-edited file can hold anything at all. The declared types say `number`,
+ * but nothing below the storage layer re-checks that, and a single non-finite
+ * value poisons rotation math in both directions:
+ *
+ *  - `Infinity` in `rateLimitResetTimes` blocks the account forever
+ *    (`nowMs() < Infinity` and `clearExpiredRateLimits` can never fire), and
+ *    `getMinWaitTimeForFamily` then returns `Infinity`, which the retry loop
+ *    feeds to `addJitter` — producing `NaN` (instant-return sleep, hot retry)
+ *    or `Infinity` (countdown that never ends).
+ *  - A non-number `quotaExhaustedUntil` fails every `typeof === "number"`
+ *    check, so rotation serves the account while diagnostics still report it.
+ *
+ * This runs on every load AND every save (the write path normalizes first), so
+ * a poisoned file is healed by the next persist even if a pre-sanitize build
+ * wrote it.
+ */
+function sanitizeAccountNumericState(account: AccountMetadataV3): AccountMetadataV3 {
+  const next = { ...account };
+
+  for (const key of [
+    "expiresAt",
+    "tokenRotatedAt",
+    "coolingDownUntil",
+    "quotaExhaustedUntil",
+    "quotaExhaustedStampAt",
+    "quotaExhaustedClearedAt",
+  ] as const) {
+    const value = next[key];
+    if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+      delete next[key];
+    }
+  }
+
+  // A finite-but-huge future stamp strands the account exactly like the
+  // non-finite values above: expiry can never fire, so rotation serves null
+  // and getMinWaitTimeForFamily counts down for centuries. The same 30-day
+  // horizon the header and stamp writers enforce bounds what a corrupt or
+  // unit-mangled file can claim.
+  const horizon = nowMs() + MAX_QUOTA_RESET_HORIZON_MS;
+  for (const key of ["coolingDownUntil", "quotaExhaustedUntil"] as const) {
+    const value = next[key];
+    if (typeof value === "number" && value > horizon) {
+      delete next[key];
+    }
+  }
+
+  for (const key of ["addedAt", "lastUsed"] as const) {
+    const value = next[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      next[key] = 0;
+    }
+  }
+
+  if (next.rateLimitResetTimes) {
+    let dropped = false;
+    for (const [key, value] of Object.entries(next.rateLimitResetTimes)) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value > horizon) {
+        delete next.rateLimitResetTimes[key];
+        dropped = true;
+      }
+    }
+    if (dropped && Object.keys(next.rateLimitResetTimes).length === 0) {
+      delete next.rateLimitResetTimes;
+    }
+  }
+
+  return next;
+}
+
+/**
+ * Seed V3 family-keyed rate-limit state from the V1 global stamp. Mirrors
+ * the mapping in {@link migrateV1ToV3} so the rebuilt account list keeps the
+ * migration's per-account output.
+ */
+function seedV1RateLimitState(account: AccountMetadataV3): AccountMetadataV3 {
+  const legacy = (account as AccountMetadataV3 & { rateLimitResetTime?: unknown })
+    .rateLimitResetTime;
+  if (typeof legacy !== "number" || !Number.isFinite(legacy) || legacy <= nowMs()) {
+    return account;
+  }
+  const rateLimitResetTimes: Record<string, number> = {};
+  for (const family of MODEL_FAMILIES) {
+    rateLimitResetTimes[family] = legacy;
+  }
+  return { ...account, rateLimitResetTimes };
 }
 
 /**
@@ -166,7 +259,14 @@ export function normalizeAccountStorage(
   );
 
   const accountsWithMemberIdentity = validAccounts.map((account) => {
-    const named = dropStaleGeneratedLabel(account);
+    // migrateV1ToV3 maps the V1 global rate-limit stamp onto every family
+    // key, but the account rebuild below starts from the raw records, so
+    // that mapped state must be seeded here or the migration's per-account
+    // output is silently discarded.
+    const seeded =
+      fromVersion === 1 ? seedV1RateLimitState(account) : account;
+    const sanitized = sanitizeAccountNumericState(seeded);
+    const named = dropStaleGeneratedLabel(sanitized);
     if (named.accountUserId?.trim()) return named;
     const accountUserId = extractAccountUserId(named.accessToken);
     return accountUserId ? { ...named, accountUserId } : named;

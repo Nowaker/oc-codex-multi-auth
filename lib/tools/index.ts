@@ -143,6 +143,10 @@ export interface ToolContext {
 		now: number,
 		family?: ModelFamily,
 	) => string | null;
+	formatQuotaExhaustionEntry: (
+		account: { quotaExhaustedUntil?: number },
+		now: number,
+	) => string | null;
 	buildJsonAccountIdentity: (
 		index: number,
 		options?: {
@@ -208,7 +212,7 @@ export interface ToolContext {
 		ui: UiRuntimeOptions,
 		state: Awaited<ReturnType<ToolContext["buildSetupChecklistState"]>>,
 	) => Promise<string>;
-	invalidateAccountManagerCache: () => void;
+	invalidateAccountManagerCache: (clearedSnapshots?: Readonly<AccountStorageV3["accounts"]>) => void;
 	upsertFlaggedAccountRecord: (
 		accounts: FlaggedAccountMetadataV1[],
 		record: FlaggedAccountMetadataV1,

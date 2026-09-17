@@ -150,13 +150,13 @@ function getSharedQuotaCachePath(api: TuiPluginApi): string {
 
 async function readSharedQuotaStatus(
 	api: TuiPluginApi,
-	fingerprint: string,
+	fingerprint?: string,
 ): Promise<StoredQuotaStatus | undefined> {
 	const cachePath = getSharedQuotaCachePath(api);
 	const snapshot = await readTuiQuotaSnapshot(cachePath);
-	if (snapshot?.fingerprint === fingerprint) return snapshot;
+	if (snapshot && (fingerprint === undefined || snapshot.fingerprint === fingerprint)) return snapshot;
 	const fallbackSnapshot = await readTuiQuotaSnapshot();
-	return fallbackSnapshot?.fingerprint === fingerprint
+	return fallbackSnapshot && (fingerprint === undefined || fallbackSnapshot.fingerprint === fingerprint)
 		? fallbackSnapshot
 		: undefined;
 }
@@ -173,15 +173,28 @@ async function writeSharedQuotaStatus(
 	}
 }
 
-async function resolveActiveQuotaFingerprint(): Promise<string | undefined> {
+export async function resolveQuotaPollFingerprint(
+	api: TuiPluginApi,
+): Promise<string | undefined> {
 	const storage = await loadAccounts();
-	const selection = storage ? resolveCodexUsageActiveAccount(storage) : null;
+	if (!storage || storage.accounts.length === 0) return undefined;
+	const shared = await readSharedQuotaStatus(api);
+	if (
+		shared?.source === "headers" &&
+		isFreshTuiQuotaSnapshot(shared) &&
+		storage.accounts.some(
+			(account) => createUsageAccountFingerprint(account) === shared.fingerprint,
+		)
+	) {
+		return shared.fingerprint;
+	}
+	const selection = resolveCodexUsageActiveAccount(storage);
 	return selection
 		? createUsageAccountFingerprint(selection.account)
 		: undefined;
 }
 
-async function refreshQuotaStatusInner(
+export async function refreshQuotaStatusInner(
 	api: TuiPluginApi,
 ): Promise<CompactQuotaStatus> {
 	try {
@@ -190,10 +203,7 @@ async function refreshQuotaStatusInner(
 			return { type: "missing" };
 		}
 
-		const selection = resolveCodexUsageActiveAccount(storage);
-		if (!selection) return { type: "missing" };
-		const fingerprint = createUsageAccountFingerprint(selection.account);
-		const shared = await readSharedQuotaStatus(api, fingerprint);
+		const latestShared = await readSharedQuotaStatus(api);
 		const now = Date.now();
 		// A shared snapshot only proves freshness while requests flow: the
 		// request path pushes it per response, but during an idle gap nothing
@@ -201,10 +211,15 @@ async function refreshQuotaStatusInner(
 		// server-side. Trust it as current within one refresh interval;
 		// otherwise fall through to a live /wham/usage read and keep the
 		// snapshot only as a stale fallback.
-		if (shared && isFreshTuiQuotaSnapshot(shared, now)) {
-			writeStoredQuotaStatus(api, shared);
-			return toCompactQuotaStatus(shared, false);
+		if (latestShared?.source === "headers" && isFreshTuiQuotaSnapshot(latestShared, now) &&
+			storage.accounts.some((account) => createUsageAccountFingerprint(account) === latestShared.fingerprint)) {
+			writeStoredQuotaStatus(api, latestShared);
+			return toCompactQuotaStatus(latestShared, false);
 		}
+		const selection = resolveCodexUsageActiveAccount(storage);
+		if (!selection) return { type: "missing" };
+		const fingerprint = createUsageAccountFingerprint(selection.account);
+		const shared = await readSharedQuotaStatus(api, fingerprint);
 		const stored = readStoredQuotaStatus(api, fingerprint);
 		const cached =
 			shared && (!stored || shared.fetchedAt >= stored.fetchedAt)
@@ -338,7 +353,7 @@ function createPromptStatus(
 		if (cachePollInFlight) return;
 		cachePollInFlight = true;
 		void (async () => {
-			const fingerprint = await resolveActiveQuotaFingerprint();
+			const fingerprint = await resolveQuotaPollFingerprint(api);
 			if (!fingerprint) {
 				if (currentFingerprint) applyQuota({ type: "missing" });
 				return;

@@ -252,7 +252,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `sessionRecovery` | `true` | `CODEX_AUTH_SESSION_RECOVERY` | Auto-recover common API errors |
 | `autoResume` | `true` | `CODEX_AUTH_AUTO_RESUME` | Auto-resume after thinking-block recovery |
 | `autoUpdate` | `true` | `CODEX_AUTH_AUTO_UPDATE` | Daily npm update check + cache refresh |
-| `parallelProbing` | `false` | `CODEX_AUTH_PARALLEL_PROBING` | Concurrent account health probes |
+| `parallelProbing` | `false` | `CODEX_AUTH_PARALLEL_PROBING` | Concurrent account health probes; probe infrastructure exists in `lib/parallel-probe.ts` with test coverage, but the main fetch loop probes sequentially, so this flag has no runtime consumer today |
 | `parallelProbingMaxConcurrency` | `2` | `CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY` | Max concurrent probes (1–5) |
 | `emptyResponseMaxRetries` | `2` | `CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES` | Retries after empty SSE bodies |
 | `emptyResponseRetryDelayMs` | `1000` | `CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS` | Delay between empty-response retries |
@@ -264,6 +264,22 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `quotaNotifications.intervalMs` | `1800000` | `CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS` | Quota poll interval (minimum `30000`) |
 | `quotaNotifications.notifyEveryCheck` | `false` | (file only) | Alert after every poll, not only on threshold crossings |
 | `quotaNotifications.thresholds` | `[25, 10, 0]` | (file only) | Remaining-percent alert thresholds; `[]` disables threshold alerts |
+
+### Numeric bounds
+
+`lib/schemas.ts` validates the config file with Zod. An out-of-bounds file value fails validation for that key, the loader logs a validation warning, and the key is dropped, so the default applies. It is never clamped to the nearest bound. Environment numeric overrides take a different path through `resolveNumberSetting` in `lib/config.ts`, which applies only a lower floor and no upper bound.
+
+| field | config-file bounds (Zod) | env bounds (resolver) |
+|-------|--------------------------|-----------------------|
+| `fastSessionMaxInputItems` | 8 to 200 | 8, no ceiling |
+| `parallelProbingMaxConcurrency` | 1 to 5 | 1 to 5 (clamped) |
+| `toastDurationMs` | at least 1000 | 1000 |
+| `fetchTimeoutMs` | at least 1000 | 1000 |
+| `streamStallTimeoutMs` | at least 1000 | 1000 |
+| `quotaNotifications.intervalMs` | at least 30000 | clamped up to 30000 |
+| `retryBudgetOverrides.*` | integer, at least 0 | (file only) |
+
+So `parallelProbingMaxConcurrency: 9` in the file falls back to the default `2`, while `CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY=9` is accepted with no ceiling.
 
 ### `modelAccountPools`
 
@@ -342,7 +358,25 @@ Not part of `PluginConfigSchema`, but used by runtime modules:
 | `OPENCODE_SKIP_EMAIL_HYDRATE=1` | Skip email hydrate during account bootstrap |
 | `FORCE_INTERACTIVE_MODE=1` | Force interactive menu paths for tests/special shells |
 | `CODEX_AUTH_SYNC_CODEX_CLI=0` | Disable `~/.codex` account hydrate (on unless `"0"`) |
+| `CODEX_AUTH_ACCOUNT_ID` | Force a specific workspace/account id during `opencode auth login` |
+| `CODEX_KEYCHAIN=1` | Opt in to OS-native keychain account storage |
+| `DEBUG_CODEX_PLUGIN=1` | Enable debug logging (request logging implies it) |
+| `ENABLE_PLUGIN_REQUEST_LOGGING=1` | Log request metadata (no raw bodies) |
+| `CODEX_PLUGIN_LOG_BODIES=1` | Include raw request/response bodies in request logs (sensitive) |
+| `CODEX_PLUGIN_LOG_LEVEL=debug` | Set request-log level (`debug` / `info` / `warn` / `error`) |
 | `CODEX_CONSOLE_LOG=1` | Mirror plugin logs to console |
+| `CODEX_AUTH_PREWARM=0` | Disable startup prewarm when legacy transform is enabled (native mode does not prewarm) |
+| `OPENAI_BASE_URL=https://gateway.example/v1` | OpenAI-compatible OAuth inference gateway; requires `CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1` |
+| `CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1` | Explicitly allow the trusted gateway to receive the ChatGPT OAuth access token (HTTPS required, HTTP only on loopback) |
+| `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1` | Disable the automatic `gpt-6-astra -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` rollout fallback chain |
+| `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` preview fallback chain |
+| `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.5 -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.2` fallback |
+| `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` | Disable the automatic `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` fallback |
+| `CODEX_AUTH_CLIENT_IDENTITY=codex` | Force one client identity for all models: `codex` or `opencode` (alias `host`) |
+| `CODEX_AUTH_CLIENT_VERSION=0.150.0` | Override the Codex CLI version advertised in the `codex_cli_rs` User-Agent |
+| `CODEX_AUTH_HOST_VERSION=1.18.0` | Override the opencode version advertised in the `opencode` User-Agent |
+| `CODEX_AUTH_DISABLE_CODEX_USER_AGENT=1` | Keep the host runtime's `User-Agent` instead of the identity's |
+| `CODEX_AUTH_SEND_ORGANIZATION_HEADER=1` | Restore legacy `openai-organization` request pinning (off by default) |
 | `CODEX_COLLABORATION_MODE` / `OPENCODE_COLLABORATION_MODE` | Collaboration mode hint for request shaping |
 | `OPENCODE_STATE_DIR` | Override state directory for TUI quota cache |
 

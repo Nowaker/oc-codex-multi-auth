@@ -69,6 +69,22 @@ describe("remapIndexedKeys (pure helper)", () => {
 		expect(next.get("1:gpt-5.2")).toBe("two-model");
 	});
 
+	it("drops the removed index and shifts higher indices for both key shapes", () => {
+		const source = new Map<string, number>([
+			["0", 10],
+			["2", 30],
+			["2:x", 31],
+			["10:y", 100],
+			["legacy", 7],
+		]);
+		const remapped = remapIndexedKeys(source, 2);
+		expect(remapped.get("0")).toBe(10);
+		expect(remapped.has("2")).toBe(false);
+		expect(remapped.has("2:x")).toBe(false);
+		expect(remapped.get("9:y")).toBe(100);
+		expect(remapped.get("legacy")).toBe(7);
+	});
+
 	it("preserves keys that do not parse to a leading integer", () => {
 		const source = new Map<string, string>([
 			["0", "zero"],

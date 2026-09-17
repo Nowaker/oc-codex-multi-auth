@@ -12,6 +12,7 @@ vi.mock("@opencode-ai/plugin/tool", () => {
 		boolean: () => makeSchema(),
 		string: () => makeSchema(),
 		array: () => makeSchema(),
+		enum: () => makeSchema(),
 	};
 
 	return { tool };
@@ -58,6 +59,8 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	},
 	isInvalidatedAuthTokenError: (_errorBody: unknown, status?: number) => status === 401,
 	resolveUnsupportedCodexFallbackModel: () => undefined,
+	isDefaultAutoFallbackModel: () => false,
+	pickFallbackChainTarget: () => undefined,
 	getUnsupportedCodexModelInfo: () => ({
 		isUnsupported: false,
 		unsupportedModel: undefined,

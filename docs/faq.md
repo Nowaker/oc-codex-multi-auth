@@ -2,7 +2,7 @@
 
 ## What is this project?
 
-`oc-codex-multi-auth` is an OpenCode plugin that lets you sign in with ChatGPT Plus/Pro through OAuth and use GPT-5/Codex model presets from OpenCode, including multi-account rotation, health checks, and recovery tools.
+`oc-codex-multi-auth` is an OpenCode plugin that lets you sign in with ChatGPT Plus/Pro through OAuth and use the GPT-5, GPT-6, and Codex model presets from OpenCode, including multi-account rotation, health checks, and recovery tools.
 
 ## Who is it for?
 
@@ -69,7 +69,7 @@ Tokens, account state, plugin config, quota cache, and logs are stored locally o
 
 ## Is there an API-key login?
 
-No. The plugin registers four OAuth methods (default browser, open URL manually, device code, manual URL/code paste). A dummy SDK key string is used internally for the OpenAI client; ChatGPT OAuth tokens do the real auth.
+No. The plugin registers four OAuth methods (default browser, open URL manually, device code, and manual URL paste). A dummy SDK key string is used internally for the OpenAI client, and ChatGPT OAuth tokens do the real auth.
 
 ## What should I do if authentication fails?
 

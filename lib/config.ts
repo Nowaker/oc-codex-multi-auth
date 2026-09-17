@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, promises as fs } from "node:fs";
+import { readFileSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -110,19 +110,42 @@ const DEFAULT_CONFIG: PluginConfig = {
 	streamStallTimeoutMs: 45_000,
 };
 
+let pluginConfigCache: {
+	readonly content: string | undefined;
+	readonly config: PluginConfig;
+} | undefined;
+
+export function resetPluginConfigCache(): void {
+	pluginConfigCache = undefined;
+}
+
 /**
  * Load plugin configuration from ~/.opencode/openai-codex-auth-config.json
- * Falls back to defaults if file doesn't exist or is invalid
+ * Keeps the last usable configuration during incomplete writes; defaults on cold start.
  *
  * @returns Plugin configuration
  */
 export function loadPluginConfig(): PluginConfig {
 	try {
-		if (!existsSync(CONFIG_PATH)) {
-			return DEFAULT_CONFIG;
+		const content = readFileSync(CONFIG_PATH, "utf-8");
+		if (pluginConfigCache?.content === content) {
+			return pluginConfigCache.config;
 		}
+		const config = readPluginConfig(content) ?? pluginConfigCache?.config ?? DEFAULT_CONFIG;
+		pluginConfigCache = { content, config };
+		return config;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+			pluginConfigCache = { content: undefined, config: pluginConfigCache?.config ?? DEFAULT_CONFIG };
+		} else {
+			logWarn(`Failed to read config from ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		return pluginConfigCache?.config ?? DEFAULT_CONFIG;
+	}
+}
 
-		const fileContent = readFileSync(CONFIG_PATH, "utf-8");
+function readPluginConfig(fileContent: string): PluginConfig | undefined {
+	try {
 		const normalizedFileContent = stripUtf8Bom(fileContent);
 		const userConfig = JSON.parse(normalizedFileContent) as unknown;
 		const hasFallbackEnvOverride =
@@ -148,11 +171,11 @@ export function loadPluginConfig(): PluginConfig {
 		// config. Callers still see DEFAULT_CONFIG as the base, so an invalid
 		// file degrades gracefully instead of silently mis-configuring retry
 		// budgets, timeouts, or feature flags.
-		if (!isRecord(userConfig)) {
+		if (!isRecord(userConfig) || Array.isArray(userConfig)) {
 			logWarn(
-				`Plugin config at ${CONFIG_PATH} is not a JSON object; using defaults.`,
+				`Plugin config at ${CONFIG_PATH} is not a JSON object; keeping the last usable configuration.`,
 			);
-			return DEFAULT_CONFIG;
+			return undefined;
 		}
 
 		const parseResult = PluginConfigSchema.safeParse(userConfig);
@@ -172,12 +195,12 @@ export function loadPluginConfig(): PluginConfig {
 			`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`,
 		);
 		const salvaged = salvageValidKeys(userConfig);
-		return { ...DEFAULT_CONFIG, ...salvaged };
+		return { ...(pluginConfigCache?.config ?? DEFAULT_CONFIG), ...salvaged };
 	} catch (error) {
 		logWarn(
 			`Failed to load config from ${CONFIG_PATH}: ${(error as Error).message}`,
 		);
-		return DEFAULT_CONFIG;
+		return undefined;
 	}
 }
 
@@ -572,16 +595,20 @@ function resolveNumberSetting(
 	envName: string,
 	configValue: number | undefined,
 	defaultValue: number,
-	options?: { min?: number },
+	options?: { min?: number; max?: number },
 ): number {
 	const envValue = parseNumberEnv(process.env[envName]);
 	const candidate = envValue ?? configValue ?? defaultValue;
 	const min = options?.min;
+	const max = options?.max;
+	let result = candidate;
 	if (min !== undefined) {
-		return Math.max(min, candidate);
+		result = Math.max(min, result);
 	}
-	// istanbul ignore next -- dead code: all callers pass { min: ... }
-	return candidate;
+	if (max !== undefined) {
+		result = Math.min(max, result);
+	}
+	return result;
 }
 
 function resolveStringSetting<T extends string>(
@@ -1023,7 +1050,7 @@ export function getParallelProbingMaxConcurrency(pluginConfig: PluginConfig): nu
 		"CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY",
 		pluginConfig.parallelProbingMaxConcurrency,
 		2,
-		{ min: 1 },
+		{ min: 1, max: 5 },
 	);
 }
 

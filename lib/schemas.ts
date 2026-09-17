@@ -146,8 +146,11 @@ export const AccountMetadataV3Schema = z.object({
 	lastUsed: z.number(),
 	lastSwitchReason: SwitchReasonSchema.optional(),
 	rateLimitResetTimes: RateLimitStateV3Schema.optional(),
-	coolingDownUntil: z.number().optional(),
-	cooldownReason: CooldownReasonSchema.optional(),
+ 	coolingDownUntil: z.number().optional(),
+ 	quotaExhaustedUntil: z.number().optional(),
+ 	quotaExhaustedStampAt: z.number().optional(),
+ 	quotaExhaustedClearedAt: z.number().optional(),
+ 	cooldownReason: CooldownReasonSchema.optional(),
 });
 
 export type AccountMetadataV3FromSchema = z.infer<typeof AccountMetadataV3Schema>;

@@ -43,6 +43,35 @@ describe("retry-budget", () => {
 		expect(tracker.getUsage().network).toBe(1);
 	});
 
+	it("verifies budget consumption semantics across error stages", () => {
+		const limits: RetryBudgetLimits = {
+			authRefresh: 2,
+			network: 2,
+			server: 2,
+			rateLimitShort: 2,
+			rateLimitGlobal: 1,
+			emptyResponse: 1,
+		};
+		const tracker = new RetryBudgetTracker(limits);
+
+		// An initial long-delay rate limit rotates without consuming rateLimitGlobal
+		expect(tracker.getUsage().rateLimitGlobal).toBe(0);
+		expect(tracker.getRemaining("rateLimitGlobal")).toBe(1);
+
+		// An invalidated 401 response triggers account rotation/cooldown without consuming authRefresh directly
+		expect(tracker.getUsage().authRefresh).toBe(0);
+		expect(tracker.getRemaining("authRefresh")).toBe(2);
+
+		// Global all-accounts blocked wait consumes rateLimitGlobal
+		expect(tracker.consume("rateLimitGlobal")).toBe(true);
+		expect(tracker.getRemaining("rateLimitGlobal")).toBe(0);
+		expect(tracker.consume("rateLimitGlobal")).toBe(false);
+
+		// Token refresh attempts consume authRefresh
+		expect(tracker.consume("authRefresh")).toBe(true);
+		expect(tracker.getUsage().authRefresh).toBe(1);
+	});
+
 	it("clones constructor limits to avoid external mutation", () => {
 		const limits: RetryBudgetLimits = {
 			authRefresh: 1,
@@ -55,5 +84,54 @@ describe("retry-budget", () => {
 		const tracker = new RetryBudgetTracker(limits);
 		limits.network = 0;
 		expect(tracker.getLimits().network).toBe(2);
+	});
+});
+describe("retry budget tracker", () => {
+	it("usage counters never go negative and consumption is monotonic", () => {
+		const tracker = new RetryBudgetTracker({
+			authRefresh: 1,
+			network: 1,
+			server: 1,
+			rateLimitShort: 1,
+			rateLimitGlobal: 1,
+			emptyResponse: 1,
+		});
+		for (const bucket of [
+			"authRefresh",
+			"network",
+			"server",
+			"rateLimitShort",
+			"rateLimitGlobal",
+			"emptyResponse",
+		] as const) {
+			expect(tracker.consume(bucket)).toBe(true);
+			expect(tracker.consume(bucket)).toBe(false);
+			expect(tracker.consume(bucket)).toBe(false);
+			const usage = tracker.getUsage()[bucket];
+			expect(usage).toBe(1);
+			expect(tracker.getRemaining(bucket)).toBe(0);
+		}
+	});
+
+	it("zero-limit buckets block immediately; remaining never negative", () => {
+		const tracker = new RetryBudgetTracker({
+			authRefresh: 0,
+			network: 0,
+			server: 0,
+			rateLimitShort: 0,
+			rateLimitGlobal: 0,
+			emptyResponse: 0,
+		});
+		for (const bucket of [
+			"authRefresh",
+			"network",
+			"server",
+			"rateLimitShort",
+			"rateLimitGlobal",
+			"emptyResponse",
+		] as const) {
+			expect(tracker.consume(bucket)).toBe(false);
+			expect(tracker.getRemaining(bucket)).toBe(0);
+		}
 	});
 });

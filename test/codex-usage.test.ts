@@ -9,19 +9,62 @@ import {
 	formatResetCredits,
 	formatUsageLimitSummary,
 	formatUsageReset,
+	formatUsageWindowLabel,
 	getUsageQuotaExhaustedResetAtMs,
 	getUsageLeftPercent,
 	hasUsageWindow,
 	parseCodexUsagePayload,
 	persistUsageQuotaExhaustion,
+	persistUsageQuotaRecovery,
+	isUsageQuotaRecovered,
 	resolveCodexUsageActiveAccount,
 	type UsagePayload,
 } from "../lib/codex-usage.js";
 import { loadAccounts, saveAccounts, type AccountStorageV3 } from "../lib/storage.js";
-import { MODEL_FAMILIES } from "../lib/prompts/codex.js";
 import { setStoragePathDirect } from "../lib/storage/state.js";
+import { formatQuotaDetailsText, type CompactQuotaStatus } from "../lib/tui-status.js";
 
 describe("codex usage helpers", () => {
+	it.each([
+		{ windows: [{}, {}], recovered: false },
+		{ windows: [{ windowMinutes: 300, resetAtMs: 1234 }, {}], recovered: false },
+		{ windows: [{ usedPercent: 5 }, { windowMinutes: 10080 }], recovered: false },
+		{ windows: [{ windowMinutes: 0, usedPercent: 0 }, {}], recovered: false },
+		{ windows: [{ windowMinutes: 300, usedPercent: 10 }, {}], recovered: false },
+		{ windows: [{ windowMinutes: 300, usedPercent: 10 }, { windowMinutes: 0 }], recovered: true },
+		{ windows: [{ usedPercent: 10 }, { usedPercent: 100, resetAtMs: Number.MAX_SAFE_INTEGER }], recovered: false },
+	])("recognizes recovered quota only from usable windows: $recovered", ({ windows, recovered }) => {
+		expect(isUsageQuotaRecovered(windows)).toBe(recovered);
+	});
+	it("distinguishes an omitted window from an explicitly absent window in a single-window plan", () => {
+		const missing = parseCodexUsagePayload({ rate_limit: {
+			primary_window: { used_percent: 1, limit_window_seconds: 604800 },
+		} });
+		const disabled = parseCodexUsagePayload({ rate_limit: {
+			primary_window: { used_percent: 1, limit_window_seconds: 604800 }, secondary_window: null,
+		} });
+		expect(isUsageQuotaRecovered([missing.primary, missing.secondary])).toBe(false);
+		expect(isUsageQuotaRecovered([disabled.primary, disabled.secondary])).toBe(true);
+	});
+
+	it.each([true, false])("clears matching quota stamps without changing enabled=%s or model rate limits", async (enabled) => {
+		const directory = await mkdtemp(join(tmpdir(), "usage-quota-recovery-"));
+		try {
+			setStoragePathDirect(join(directory, "accounts.json"));
+			const account = { refreshToken: "recovery", accountId: "recovered", addedAt: 0, lastUsed: 0,
+				quotaExhaustedUntil: 1234, rateLimitResetTimes: { codex: 5678 } };
+			await saveAccounts({ version: 3, activeIndex: 0, accounts: [{ ...account, enabled }] });
+			expect(await persistUsageQuotaRecovery(account)).toBe(true);
+			const stored = await loadAccounts();
+			expect(stored?.accounts[0]?.quotaExhaustedUntil).toBeUndefined();
+			expect(stored?.accounts[0]?.enabled).toBe(enabled);
+			expect(stored?.accounts[0]?.rateLimitResetTimes).toEqual({ codex: 5678 });
+			expect(await persistUsageQuotaRecovery(account)).toBe(false);
+		} finally {
+			setStoragePathDirect(null);
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
 	it("formats same-day reset times on a locale-independent 24-hour clock", () => {
 		// Pinned well clear of midnight: a real clock would cross into the next
 		// day inside the 60s offset and take the "on <date>" branch instead.
@@ -139,7 +182,7 @@ describe("codex usage helpers", () => {
 		).toBeUndefined();
 	});
 
-	it("persists a quota block for every model family without shortening a longer block", async () => {
+	it("persists an account-wide quota-exhaustion stamp without stamping per-family rate limits", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "usage-quota-persist-"));
 		try {
 			setStoragePathDirect(join(directory, "accounts.json"));
@@ -156,11 +199,45 @@ describe("codex usage helpers", () => {
 			expect(await persistUsageQuotaExhaustion(account, resetAtMs - 60_000)).toBe(false);
 
 			const persisted = await loadAccounts();
-			expect(persisted?.accounts[0]?.rateLimitResetTimes).toEqual(
-				expect.objectContaining(
-					Object.fromEntries(MODEL_FAMILIES.map((family) => [family, resetAtMs])),
-				),
-			);
+			// The account-wide subscription-quota fact lands on its own field, kept
+			// at the monotonic maximum reset stamp.
+			expect(persisted?.accounts[0]?.quotaExhaustedUntil).toBe(resetAtMs);
+			// It no longer forges a per-family rate-limit block for every model.
+			expect(persisted?.accounts[0]?.rateLimitResetTimes ?? {}).toEqual({});
+			// The stamp is dated so cross-process saves can compare it against a
+			// doctor-clear tombstone.
+			expect(persisted?.accounts[0]?.quotaExhaustedStampAt).toEqual(expect.any(Number));
+		} finally {
+			setStoragePathDirect(null);
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("displaces a doctor-clear tombstone when the poller re-stamps the account", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "usage-quota-persist-"));
+		try {
+			setStoragePathDirect(join(directory, "accounts.json"));
+			// Doctor cleared an active stamp; the record carries the tombstone.
+			const clearedAt = Date.now() - 60_000;
+			const account = {
+				refreshToken: "refresh-1",
+				accountId: "account-1",
+				addedAt: 0,
+				lastUsed: 0,
+				quotaExhaustedClearedAt: clearedAt,
+			};
+			await saveAccounts({ version: 3, accounts: [account], activeIndex: 0 });
+			const resetAtMs = Date.now() + 86_400_000;
+
+			expect(await persistUsageQuotaExhaustion(account, resetAtMs)).toBe(true);
+
+			const persisted = await loadAccounts();
+			// The poller's authoritative evidence is newer than the clear, so the
+			// stamp lands and the tombstone goes — otherwise the next save from
+			// any process would drop the freshly recorded block.
+			expect(persisted?.accounts[0]?.quotaExhaustedUntil).toBe(resetAtMs);
+			expect(persisted?.accounts[0]?.quotaExhaustedStampAt).toEqual(expect.any(Number));
+			expect(persisted?.accounts[0]?.quotaExhaustedClearedAt).toBeUndefined();
 		} finally {
 			setStoragePathDirect(null);
 			await rm(directory, { recursive: true, force: true });
@@ -621,5 +698,92 @@ describe("Codex usage endpoint", () => {
 		};
 		await expect(fetchCodexUsage(request)).rejects.toThrow("deactivated_workspace");
 		await expect(fetchCodexUsage(request)).rejects.toThrow("authentication token has been invalidated");
+	});
+});
+
+function makeAccount(overrides: Record<string, unknown> = {}): AccountStorageV3["accounts"][number] {
+	return {
+		refreshToken: `token-${Math.random().toString(36).slice(2)}`,
+		email: `user${Math.floor(Math.random() * 1000)}@example.com`,
+		addedAt: Date.now(),
+		lastUsed: 0,
+		...overrides,
+	};
+}
+
+describe("usage formatter hostile inputs", () => {
+	it("getUsageLeftPercent clamps out-of-range percents and rejects non-finite", () => {
+		expect(getUsageLeftPercent(-50)).toBe(100);
+		expect(getUsageLeftPercent(150)).toBe(0);
+		expect(getUsageLeftPercent(Number.NaN)).toBeUndefined();
+		expect(getUsageLeftPercent(Number.POSITIVE_INFINITY)).toBeUndefined();
+		expect(getUsageLeftPercent(-1e309)).toBeUndefined();
+	});
+
+	it("formatUsageWindowLabel rejects non-finite and non-positive windows", () => {
+		expect(formatUsageWindowLabel(0)).toBe("quota");
+		expect(formatUsageWindowLabel(-10)).toBe("quota");
+		expect(formatUsageWindowLabel(Number.NaN)).toBe("quota");
+		expect(formatUsageWindowLabel(Number.POSITIVE_INFINITY)).toBe("quota");
+	});
+
+	it("formatUsageReset rejects pre-epoch and non-finite resets without NaN", () => {
+		expect(formatUsageReset(Number.NaN)).toBeUndefined();
+		expect(formatUsageReset(Number.POSITIVE_INFINITY)).toBeUndefined();
+		expect(formatUsageReset(0)).toBeUndefined();
+		expect(formatUsageReset(-1000)).toBeUndefined();
+		expect(formatUsageReset(1)).toMatch(/^\d{2}:\d{2}/);
+	});
+
+	it("far-future finite reset stamps render as unavailable, not Invalid Date", () => {
+		const status: CompactQuotaStatus = {
+			type: "ready",
+			stale: false,
+			limits: [{ label: "5h limit", leftPercent: 40, resetAtMs: 1e300 }],
+		};
+		const text = formatQuotaDetailsText(status);
+		expect(text).not.toMatch(/Invalid Date|NaN|Infinity/);
+	});
+
+	it("parseCodexUsagePayload survives a null payload and null windows", () => {
+		const summary = parseCodexUsagePayload(null);
+		expect(summary.limits).toEqual([]);
+		expect(summary.credits).toBeNull();
+		const weird = parseCodexUsagePayload({
+			rate_limit: { primary_window: null, secondary_window: null },
+			additional_rate_limits: null,
+			rate_limit_reset_credits: null,
+		});
+		expect(weird.limits).toEqual([]);
+	});
+});
+
+describe("usage account resolution hostile storage", () => {
+	it("resolveCodexUsageActiveAccount tolerates empty and all-disabled pools", async () => {
+		const { resolveCodexUsageActiveAccount } = await import("../lib/codex-usage.js");
+		expect(
+			resolveCodexUsageActiveAccount({ version: 3, accounts: [], activeIndex: 0 }),
+		).toBeNull();
+		expect(
+			resolveCodexUsageActiveAccount({
+				version: 3,
+				accounts: [makeAccount({ enabled: false })],
+				activeIndex: 0,
+			}),
+		).toBeNull();
+	});
+
+	it("deduplicateUsageAccountIndices skips disabled and identity-less entries", async () => {
+		const { deduplicateUsageAccountIndices } = await import("../lib/codex-usage.js");
+		const indices = deduplicateUsageAccountIndices({
+			version: 3,
+			accounts: [
+				makeAccount({ refreshToken: "r1" }),
+				makeAccount({ refreshToken: "r2", enabled: false }),
+				makeAccount({ refreshToken: "r3" }),
+			],
+			activeIndex: 0,
+		});
+		expect(indices).toEqual([0, 2]);
 	});
 });

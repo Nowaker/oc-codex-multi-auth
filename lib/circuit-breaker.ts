@@ -62,6 +62,11 @@ export class CircuitBreaker {
 	 * exhausted and are denied with `probe-in-flight`. The probe slot is
 	 * released on the next {@link recordSuccess} (closes) or
 	 * {@link recordFailure} (reopens), which both reset `halfOpenAttempts`.
+	 *
+	 * A probe that never reports (caller abort, 401/4xx paths that bypass
+	 * breaker updates) would otherwise pin the key in half-open forever, so
+	 * after a full `resetTimeoutMs` with no verdict the slot is abandoned and
+	 * a fresh probe is admitted.
 	 */
 	canAttempt(): CanAttemptResult {
 		const now = Date.now();
@@ -76,11 +81,16 @@ export class CircuitBreaker {
 
 		if (this.state === "half-open") {
 			if (this.halfOpenAttempts >= this.config.halfOpenMaxAttempts) {
-				return {
-					allowed: false,
-					state: "half-open",
-					reason: "probe-in-flight",
-				};
+				if (now - this.lastStateChange >= this.config.resetTimeoutMs) {
+					this.halfOpenAttempts = 0;
+					this.lastStateChange = now;
+				} else {
+					return {
+						allowed: false,
+						state: "half-open",
+						reason: "probe-in-flight",
+					};
+				}
 			}
 			this.halfOpenAttempts += 1;
 			return { allowed: true, state: "half-open" };
@@ -102,7 +112,12 @@ export class CircuitBreaker {
 
 		if (this.state === "half-open") {
 			if (this.halfOpenAttempts >= this.config.halfOpenMaxAttempts) {
-				throw new CircuitOpenError("Circuit is half-open");
+				if (now - this.lastStateChange >= this.config.resetTimeoutMs) {
+					this.halfOpenAttempts = 0;
+					this.lastStateChange = now;
+				} else {
+					throw new CircuitOpenError("Circuit is half-open");
+				}
 			}
 			this.halfOpenAttempts += 1;
 			return true;

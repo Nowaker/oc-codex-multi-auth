@@ -15,6 +15,8 @@ import {
     createEntitlementErrorResponse,
 	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
+	isDefaultAutoFallbackModel,
+	pickFallbackChainTarget,
 	extractUnsupportedCodexModelFromText,
 	shouldFallbackToGpt52OnUnsupportedGpt53,
 } from '../lib/request/fetch-helpers.js';
@@ -23,6 +25,7 @@ import * as loggerModule from '../lib/logger.js';
 import type { Auth } from '../lib/types.js';
 import { OPENAI_HEADERS, OPENAI_HEADER_VALUES, CODEX_BASE_URL } from '../lib/constants.js';
 import { StorageTransactionContentionError } from '../lib/errors.js';
+import { clearRateLimitBackoffState } from '../lib/request/rate-limit-backoff.js';
 
 const { coordinatePersistedRefreshMock } = vi.hoisted(() => ({
 	coordinatePersistedRefreshMock: vi.fn(async (identity: { refreshToken: string }) => {
@@ -2046,5 +2049,249 @@ describe("quota header authority (issues #16/#17 vs #218)", () => {
 		const { quotaHeadersAuthoritative } = await handleErrorResponse(response);
 
 		expect(quotaHeadersAuthoritative).toBeFalsy();
+	});
+});
+
+
+describe("fallback chain reuse for non-entitlement degradation", () => {
+	afterEach(() => {
+		delete process.env.CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK;
+	});
+
+	it("walks the chain without needing an entitlement error body", () => {
+		// Given a default selector that owns a chain row.
+		// When the caller degrades for a reason other than a 400.
+		const target = pickFallbackChainTarget({ currentModel: "gpt-5.6-sol" });
+		// Then it still returns the next chain model.
+		expect(target).toBeTruthy();
+		expect(target).not.toBe("gpt-5.6-sol");
+	});
+
+	it("never returns a model already attempted, so a caller cannot cycle", () => {
+		const first = pickFallbackChainTarget({ currentModel: "gpt-5.6-sol" });
+		const second = pickFallbackChainTarget({
+			currentModel: "gpt-5.6-sol",
+			attemptedModels: ["gpt-5.6-sol", String(first)],
+		});
+		expect(second).not.toBe(first);
+		expect(second).not.toBe("gpt-5.6-sol");
+	});
+
+	it("exhausts to undefined once every chain target was attempted", () => {
+		const attempted = new Set<string>(["gpt-5.6-sol"]);
+		// Bounded walk: each pass must consume one target or stop.
+		for (let i = 0; i < 20; i += 1) {
+			const next = pickFallbackChainTarget({
+				currentModel: "gpt-5.6-sol",
+				attemptedModels: attempted,
+			});
+			if (!next) break;
+			expect(attempted.has(next)).toBe(false);
+			attempted.add(next);
+		}
+		expect(
+			pickFallbackChainTarget({
+				currentModel: "gpt-5.6-sol",
+				attemptedModels: attempted,
+			}),
+		).toBeUndefined();
+	});
+
+	it("treats a chainless model as non-degradable", () => {
+		expect(
+			pickFallbackChainTarget({ currentModel: "definitely-not-a-model" }),
+		).toBeUndefined();
+	});
+
+	it("survives a model id naming an Object.prototype member", () => {
+		expect(pickFallbackChainTarget({ currentModel: "constructor" })).toBeUndefined();
+		expect(pickFallbackChainTarget({ currentModel: "__proto__" })).toBeUndefined();
+	});
+
+	it("gates degradation on the default selector entry models", () => {
+		expect(isDefaultAutoFallbackModel("gpt-5.6-sol")).toBe(true);
+		// A directly chosen, non-entry model must never be swapped silently.
+		expect(isDefaultAutoFallbackModel("gpt-5.1")).toBe(false);
+	});
+
+	it("honours the same opt-out env var as the entitlement auto-fallback", () => {
+		process.env.CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK = "1";
+		expect(isDefaultAutoFallbackModel("gpt-5.6-sol")).toBe(false);
+	});
+});
+describe("hostile Retry-After / reset inputs through handleErrorResponse", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		clearRateLimitBackoffState();
+	});
+
+	const finitePositiveBounded = (value: number): void => {
+		expect(Number.isFinite(value)).toBe(true);
+		expect(value).toBeGreaterThanOrEqual(0);
+	};
+
+	const build = (status: number, headers: HeadersInit, body: unknown) =>
+		new Response(JSON.stringify(body), { status, headers });
+
+	it("retry-after: negative, zero, garbage, HTTP-date stay finite and bounded", async () => {
+		const cases = ["-5", "0", "not-a-number", "1e309", "Wed, 21 Oct 2099 07:28:00 GMT", "NaN"];
+		for (const value of cases) {
+			const { rateLimit } = await handleErrorResponse(
+				build(429, { "retry-after": value }, { error: { message: "rate limited" } }),
+			);
+			expect(rateLimit).toBeDefined();
+			finitePositiveBounded(rateLimit!.retryAfterMs);
+			expect(rateLimit!.retryAfterMs).toBeLessThanOrEqual(300_000);
+		}
+	});
+
+	it("retry-after-ms: negative, zero, garbage stay finite and bounded", async () => {
+		for (const value of ["-5", "0", "abc", "NaN"]) {
+			const { rateLimit } = await handleErrorResponse(
+				build(429, { "retry-after-ms": value }, { error: { message: "rate limited" } }),
+			);
+			finitePositiveBounded(rateLimit!.retryAfterMs);
+			expect(rateLimit!.retryAfterMs).toBeLessThanOrEqual(300_000);
+		}
+	});
+
+	it("hostile body retry_after_ms / retry_after values stay finite and bounded", async () => {
+		const bodies = [
+			{ error: { message: "rate limited", retry_after_ms: -1 } },
+			{ error: { message: "rate limited", retry_after_ms: 0 } },
+			{ error: { message: "rate limited", retry_after_ms: 1e309 } },
+			{ error: { message: "rate limited", retry_after_ms: "900" } },
+			{ error: { message: "rate limited", retry_after: -1 } },
+			{ error: { message: "rate limited", retry_after: 1e309 } },
+		];
+		for (const body of bodies) {
+			const { rateLimit } = await handleErrorResponse(build(429, {}, body));
+			finitePositiveBounded(rateLimit!.retryAfterMs);
+			expect(rateLimit!.retryAfterMs).toBeLessThanOrEqual(300_000);
+		}
+	});
+
+	it("NON-429 rate-limit-classified response cannot inherit an unbounded x-ratelimit-reset", async () => {
+		const resetSeconds = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
+		const { rateLimit } = await handleErrorResponse(
+			build(
+				400,
+				{ "x-ratelimit-reset": String(resetSeconds) },
+				{ error: { message: "rate_limit_exceeded for model gpt-5.5" } },
+			),
+		);
+		expect(rateLimit).toBeDefined();
+		finitePositiveBounded(rateLimit!.retryAfterMs);
+		expect(
+			rateLimit!.retryAfterMs,
+			`non-429 echo produced ${rateLimit!.retryAfterMs}ms delay`,
+		).toBeLessThanOrEqual(300_000);
+	});
+
+	it("NON-429 rate-limit-classified response cannot inherit an unbounded body resets_at", async () => {
+		const resetMs = Date.now() + 365 * 24 * 3600 * 1000;
+		const { rateLimit } = await handleErrorResponse(
+			build(
+				400,
+				{},
+				{ error: { message: "rate_limit_exceeded", resets_at: resetMs } },
+			),
+		);
+		expect(rateLimit).toBeDefined();
+		finitePositiveBounded(rateLimit!.retryAfterMs);
+		expect(
+			rateLimit!.retryAfterMs,
+			`non-429 body resets_at produced ${rateLimit!.retryAfterMs}ms delay`,
+		).toBeLessThanOrEqual(300_000);
+	});
+
+	it("pre-epoch and far-past reset values do not produce negative or NaN delays", async () => {
+		const past = Math.floor(Date.now() / 1000) - 10_000;
+		const { rateLimit: a } = await handleErrorResponse(
+			build(429, { "x-ratelimit-reset": String(past) }, { error: { message: "rate limited" } }),
+		);
+		finitePositiveBounded(a!.retryAfterMs);
+		const { rateLimit: b } = await handleErrorResponse(
+			build(429, {}, { error: { message: "rate limited" }, resets_at: -100 }),
+		);
+		finitePositiveBounded(b!.retryAfterMs);
+		const { rateLimit: c } = await handleErrorResponse(
+			build(429, {}, { error: { message: "rate limited" }, resets_at: 0 }),
+		);
+		finitePositiveBounded(c!.retryAfterMs);
+	});
+});
+
+describe("fallback chain walker", () => {
+	it("never yields a model already marked blocked (attempted set)", () => {
+		const first = pickFallbackChainTarget({
+			currentModel: "gpt-5.6-sol",
+			attemptedModels: ["gpt-5.6-terra"],
+		});
+		expect(first).not.toBe("gpt-5.6-terra");
+		expect(first).toBe("gpt-5.6-luna");
+
+		const allBlocked = pickFallbackChainTarget({
+			currentModel: "gpt-5.6-sol",
+			attemptedModels: ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.2"],
+		});
+		expect(allBlocked).toBeUndefined();
+	});
+
+	it("cyclic custom chain terminates and never repeats a model", () => {
+		const chain = { a: ["b"], b: ["a"] };
+		const visited: string[] = [];
+		let current = "a";
+		for (let hop = 0; hop < 10; hop++) {
+			const next = pickFallbackChainTarget({
+				currentModel: current,
+				attemptedModels: visited,
+				customChain: chain,
+			});
+			if (!next) break;
+			expect(visited).not.toContain(next);
+			visited.push(current);
+			current = next;
+		}
+		expect(visited.length).toBeLessThanOrEqual(2);
+	});
+
+	it("self-referencing chain entry does not return the current model", () => {
+		const result = pickFallbackChainTarget({
+			currentModel: "solo",
+			customChain: { solo: ["solo", "solo"] },
+		});
+		expect(result).toBeUndefined();
+	});
+
+	it("custom chain with non-array and prototype-member keys does not throw or pollute", () => {
+		expect(() =>
+			pickFallbackChainTarget({
+				currentModel: "x",
+				customChain: { x: "not-an-array" as unknown as string[] },
+			}),
+		).not.toThrow();
+		expect(() =>
+			pickFallbackChainTarget({
+				currentModel: "constructor",
+				customChain: { __proto__: ["a"] } as unknown as Record<string, string[]>,
+			}),
+		).not.toThrow();
+		expect(
+			pickFallbackChainTarget({ currentModel: "constructor" }),
+		).toBeUndefined();
+		expect(
+			pickFallbackChainTarget({
+				currentModel: "constructor",
+				customChain: { constructor: ["a"] },
+			}),
+		).toBe("a");
+	});
+
+	it("isDefaultAutoFallbackModel never treats a non-entry continuation as an entry", () => {
+		expect(isDefaultAutoFallbackModel("gpt-5.2")).toBe(false);
+		expect(isDefaultAutoFallbackModel("gpt-5.4", [])).toBe(false);
+		expect(isDefaultAutoFallbackModel("gpt-5.4", ["gpt-5.5"])).toBe(true);
+		expect(isDefaultAutoFallbackModel("gpt-5.6-terra", ["gpt-5.6-sol"])).toBe(true);
 	});
 });

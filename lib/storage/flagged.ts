@@ -142,6 +142,14 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
       rateLimitResetTimes,
       coolingDownUntil:
         typeof rawAccount.coolingDownUntil === "number" ? rawAccount.coolingDownUntil : undefined,
+      quotaExhaustedUntil:
+        typeof rawAccount.quotaExhaustedUntil === "number" ? rawAccount.quotaExhaustedUntil : undefined,
+      // Provenance/tombstone for the quota stamp: carried so a restore does
+      // not produce a stamp the cross-process merge treats as undated.
+      quotaExhaustedStampAt:
+        typeof rawAccount.quotaExhaustedStampAt === "number" ? rawAccount.quotaExhaustedStampAt : undefined,
+      quotaExhaustedClearedAt:
+        typeof rawAccount.quotaExhaustedClearedAt === "number" ? rawAccount.quotaExhaustedClearedAt : undefined,
       cooldownReason,
       flaggedAt,
       flaggedReason: typeof rawAccount.flaggedReason === "string" ? rawAccount.flaggedReason : undefined,

@@ -186,6 +186,175 @@ describe("AccountPersistence rate-limit merge (multi-process clobber guard)", ()
 		).toBeUndefined();
 	});
 
+	it("keeps a longer on-disk quota-exhaustion stamp instead of clobbering it", async () => {
+		// A shorter in-memory quota block must not pull a longer on-disk one
+		// forward, mirroring the per-family rate-limit monotonic merge (#218).
+		const state = makeState([
+			makeStoredAccount({ quotaExhaustedUntil: Date.now() + 30_000 }),
+		]);
+		const persistence = new AccountPersistence(state);
+
+		diskStateRef.current = {
+			version: 3,
+			accounts: [makeStoredAccount({ quotaExhaustedUntil: WEEKLY_RESET })],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		expect(persistedStorage()?.accounts[0]?.quotaExhaustedUntil).toBe(WEEKLY_RESET);
+	});
+
+	// The reverse direction of the #218 monotonic merge: `codex-doctor --fix`
+	// clears an active stamp on disk, but this process still holds it in memory.
+	// A plain save would write the stamp back and undo the repair. The doctor
+	// clear dates itself (quotaExhaustedClearedAt) and every authoritative
+	// stamp write dates itself (quotaExhaustedStampAt), so the save can tell a
+	// stale snapshot from newer evidence.
+	describe("doctor-clear tombstone (quota-stamp resurrection guard)", () => {
+		const STAMP_AT = Date.now() - 3_600_000;
+		const CLEARED_AT = Date.now() - 60_000;
+
+		it("does not resurrect a doctor-cleared stamp from a stale snapshot", async () => {
+			const state = makeState([
+				makeStoredAccount({
+					quotaExhaustedUntil: WEEKLY_RESET,
+					quotaExhaustedStampAt: STAMP_AT,
+				}),
+			]);
+			const persistence = new AccountPersistence(state);
+
+			// Doctor cleared the stamp on disk after this process loaded it.
+			diskStateRef.current = {
+				version: 3,
+				accounts: [makeStoredAccount({ quotaExhaustedClearedAt: CLEARED_AT })],
+				activeIndex: 0,
+			} satisfies AccountStorageV3;
+
+			await persistence.saveToDisk();
+
+			const persisted = persistedStorage()?.accounts[0];
+			expect(persisted?.quotaExhaustedUntil).toBeUndefined();
+			// The tombstone survives so later stale saves stay guarded too.
+			expect(persisted?.quotaExhaustedClearedAt).toBe(CLEARED_AT);
+		});
+
+		it("keeps a stamp written AFTER the doctor clear (new evidence wins)", async () => {
+			const freshStampAt = Date.now() - 1_000;
+			const state = makeState([
+				makeStoredAccount({
+					quotaExhaustedUntil: WEEKLY_RESET,
+					quotaExhaustedStampAt: freshStampAt,
+				}),
+			]);
+			const persistence = new AccountPersistence(state);
+
+			diskStateRef.current = {
+				version: 3,
+				accounts: [makeStoredAccount({ quotaExhaustedClearedAt: CLEARED_AT })],
+				activeIndex: 0,
+			} satisfies AccountStorageV3;
+
+			await persistence.saveToDisk();
+
+			const persisted = persistedStorage()?.accounts[0];
+			expect(persisted?.quotaExhaustedUntil).toBe(WEEKLY_RESET);
+			expect(persisted?.quotaExhaustedStampAt).toBe(freshStampAt);
+			expect(persisted?.quotaExhaustedClearedAt).toBeUndefined();
+		});
+
+		it("treats an undated stamp (pre-upgrade build) as predating the clear", async () => {
+			// No quotaExhaustedStampAt: written by a build before provenance
+			// tracking. Suppressing it costs at most one upstream 429 that
+			// re-stamps the account; resurrecting it costs the whole repair.
+			const state = makeState([
+				makeStoredAccount({ quotaExhaustedUntil: WEEKLY_RESET }),
+			]);
+			const persistence = new AccountPersistence(state);
+
+			diskStateRef.current = {
+				version: 3,
+				accounts: [makeStoredAccount({ quotaExhaustedClearedAt: CLEARED_AT })],
+				activeIndex: 0,
+			} satisfies AccountStorageV3;
+
+			await persistence.saveToDisk();
+
+			expect(persistedStorage()?.accounts[0]?.quotaExhaustedUntil).toBeUndefined();
+		});
+
+		it("carries a doctor-cleared stamp's absence through a disposed manager's save", async () => {
+			// The disposed path (mergeVolatileState) resurrects blocks from a
+			// replaced manager's stale state; the tombstone must hold there too.
+			const state = makeState([
+				makeStoredAccount({
+					quotaExhaustedUntil: WEEKLY_RESET,
+					quotaExhaustedStampAt: STAMP_AT,
+				}),
+			]);
+			const persistence = new AccountPersistence(state);
+			persistence.disposeShutdownHandler();
+
+			diskStateRef.current = {
+				version: 3,
+				accounts: [makeStoredAccount({ quotaExhaustedClearedAt: CLEARED_AT })],
+				activeIndex: 0,
+			} satisfies AccountStorageV3;
+
+			await persistence.saveToDisk();
+
+			const persisted = persistedStorage()?.accounts[0];
+			expect(persisted?.quotaExhaustedUntil).toBeUndefined();
+			expect(persisted?.quotaExhaustedClearedAt).toBe(CLEARED_AT);
+		});
+
+		it("still resurrects a fresh stamp through the disposed path when it postdates the clear", async () => {
+			const freshStampAt = Date.now() - 1_000;
+			const state = makeState([
+				makeStoredAccount({
+					quotaExhaustedUntil: WEEKLY_RESET,
+					quotaExhaustedStampAt: freshStampAt,
+				}),
+			]);
+			const persistence = new AccountPersistence(state);
+			persistence.disposeShutdownHandler();
+
+			diskStateRef.current = {
+				version: 3,
+				accounts: [makeStoredAccount({ quotaExhaustedClearedAt: CLEARED_AT })],
+				activeIndex: 0,
+			} satisfies AccountStorageV3;
+
+			await persistence.saveToDisk();
+
+			const persisted = persistedStorage()?.accounts[0];
+			expect(persisted?.quotaExhaustedUntil).toBe(WEEKLY_RESET);
+			expect(persisted?.quotaExhaustedClearedAt).toBeUndefined();
+		});
+
+		it("adopts a longer on-disk stamp together with its provenance", async () => {
+			const state = makeState([makeStoredAccount()]);
+			const persistence = new AccountPersistence(state);
+
+			diskStateRef.current = {
+				version: 3,
+				accounts: [
+					makeStoredAccount({
+						quotaExhaustedUntil: WEEKLY_RESET,
+						quotaExhaustedStampAt: STAMP_AT,
+					}),
+				],
+				activeIndex: 0,
+			} satisfies AccountStorageV3;
+
+			await persistence.saveToDisk();
+
+			const persisted = persistedStorage()?.accounts[0];
+			expect(persisted?.quotaExhaustedUntil).toBe(WEEKLY_RESET);
+			expect(persisted?.quotaExhaustedStampAt).toBe(STAMP_AT);
+		});
+	});
+
 	// Documents a known limitation rather than desired behavior. A record with
 	// neither organizationId nor accountId is identified by its refresh token
 	// (lib/storage/identity.ts), so once another process rotates that token

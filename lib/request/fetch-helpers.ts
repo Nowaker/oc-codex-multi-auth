@@ -406,6 +406,85 @@ export function getUnsupportedCodexModelInfo(
 	};
 }
 
+/**
+ * Whether the default auto-fallback (the one that does NOT require
+ * `unsupportedCodexPolicy: "fallback"`) currently applies to `currentModel`.
+ *
+ * Exported so a caller degrading for a reason OTHER than an entitlement 400 —
+ * notably a fully quota-blocked pool — gates on exactly the same entry models
+ * and opt-out env vars instead of inventing a second policy.
+ */
+export function isDefaultAutoFallbackModel(
+	currentModel: string,
+	attemptedModels?: Iterable<string>,
+): boolean {
+	const attempted = new Set<string>();
+	for (const model of attemptedModels ?? []) {
+		const normalized = canonicalizeModelName(model);
+		if (normalized) attempted.add(normalized);
+	}
+	const entryModel = resolveAutoFallbackEntryModel(
+		canonicalizeModelName(currentModel) ?? currentModel,
+		attempted,
+	);
+	const optOutEnv = entryModel
+		? DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV[entryModel]
+		: undefined;
+	return !!optOutEnv && process.env[optOutEnv] !== "1";
+}
+
+export interface PickFallbackChainTargetOptions {
+	currentModel: string;
+	attemptedModels?: Iterable<string>;
+	customChain?: Record<string, string[]>;
+	fallbackToGpt52OnUnsupportedGpt53?: boolean;
+}
+
+/**
+ * Walk the fallback chain and return the next model worth trying.
+ *
+ * This is the single chain-walking policy: both the entitlement fallback and
+ * the quota/rate-limit fallback go through it, so the two can never drift.
+ * It decides only what comes NEXT in the chain — whether degrading is allowed
+ * at all is the caller's gate.
+ */
+export function pickFallbackChainTarget(
+	options: PickFallbackChainTargetOptions,
+): string | undefined {
+	const currentModel = canonicalizeModelName(options.currentModel);
+	if (!currentModel) return undefined;
+
+	const attempted = new Set<string>();
+	for (const model of options.attemptedModels ?? []) {
+		const normalized = canonicalizeModelName(model);
+		if (normalized) attempted.add(normalized);
+	}
+
+	const chain = normalizeFallbackChain(options.customChain);
+	const targets = chain[currentModel] ?? [];
+	// `Array.isArray`, not just a length check. `currentModel` comes from the
+	// caller's `body.model`, so it can be any `Object.prototype` member name. On
+	// a plain object `chain["constructor"]` returns the Object constructor: a
+	// truthy non-array whose `.length` is 1, so an emptiness check passes it
+	// through and the `for...of` below throws `targets is not iterable` inside
+	// the request path. The chain is null-prototype now as well; this guard also
+	// covers a `customChain` value that is not an array.
+	if (!Array.isArray(targets) || targets.length === 0) return undefined;
+
+	for (const target of targets) {
+		if (!options.fallbackToGpt52OnUnsupportedGpt53 &&
+			currentModel === "gpt-5.3-codex" &&
+			target === "gpt-5.2-codex") {
+			continue;
+		}
+		if (target === currentModel) continue;
+		if (attempted.has(target)) continue;
+		return target;
+	}
+
+	return undefined;
+}
+
 export function resolveUnsupportedCodexFallbackModel(
 	options: ResolveUnsupportedCodexFallbackOptions,
 ): string | undefined {
@@ -444,29 +523,12 @@ export function resolveUnsupportedCodexFallbackModel(
 		return undefined;
 	}
 
-	const chain = normalizeFallbackChain(options.customChain);
-	const targets = chain[currentModel] ?? [];
-	// `Array.isArray`, not just a length check. `currentModel` comes from the
-	// caller's `body.model`, so it can be any `Object.prototype` member name. On
-	// a plain object `chain["constructor"]` returns the Object constructor: a
-	// truthy non-array whose `.length` is 1, so an emptiness check passes it
-	// through and the `for...of` below throws `targets is not iterable` inside
-	// the request path. The chain is null-prototype now as well; this guard also
-	// covers a `customChain` value that is not an array.
-	if (!Array.isArray(targets) || targets.length === 0) return undefined;
-
-	for (const target of targets) {
-		if (!options.fallbackToGpt52OnUnsupportedGpt53 &&
-			currentModel === "gpt-5.3-codex" &&
-			target === "gpt-5.2-codex") {
-			continue;
-		}
-		if (target === currentModel) continue;
-		if (attempted.has(target)) continue;
-		return target;
-	}
-
-	return undefined;
+	return pickFallbackChainTarget({
+		currentModel,
+		attemptedModels: attempted,
+		customChain: options.customChain,
+		fallbackToGpt52OnUnsupportedGpt53: options.fallbackToGpt52OnUnsupportedGpt53,
+	});
 }
 
 /**
@@ -1473,7 +1535,11 @@ function parseRetryAfterMs(
         // takes the same authority gate as the exhausted-window shortcut above:
         // otherwise an untrusted snapshot walks straight back in through the
         // "ordinary throttle" door and produces the very hours-long delay the
-        // shortcut was gated to prevent.
+        // shortcut was gated to prevent. The generic `x-ratelimit-reset`
+        // header and the body `resets_at` sit on the same uncapped delay path
+        // and take the same gate: on any status other than a genuine 429 they
+        // are untrusted echoes, and honoring one hands a stale or hostile
+        // value an uncapped multi-year block through markRateLimitedWithReason.
         if (trustExhaustedWindows) {
                 for (const window of parseCodexQuotaWindows(response.headers, now)) {
                         if (isQuotaWindowDisabled(window)) continue;
@@ -1482,28 +1548,28 @@ function parseRetryAfterMs(
                         const delta = resetAtMs - now;
                         if (delta > 0) resetCandidates.push(delta);
                 }
-        }
 
-        const resetAtHeaders = ["x-ratelimit-reset"];
-        for (const header of resetAtHeaders) {
-                const value = response.headers.get(header);
-                if (!value) continue;
-                const parsed = Number.parseInt(value, 10);
-                if (!Number.isNaN(parsed) && parsed > 0) {
+                const resetAtHeaders = ["x-ratelimit-reset"];
+                for (const header of resetAtHeaders) {
+                        const value = response.headers.get(header);
+                        if (!value) continue;
+                        const parsed = Number.parseInt(value, 10);
+                        if (!Number.isNaN(parsed) && parsed > 0) {
+                                const timestamp =
+                                        parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+                                const delta = timestamp - now;
+                                if (delta > 0) resetCandidates.push(delta);
+                        }
+                }
+
+                if (parsedBody?.resetsAt) {
                         const timestamp =
-                                parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+                                parsedBody.resetsAt < 10_000_000_000
+                                        ? parsedBody.resetsAt * 1000
+                                        : parsedBody.resetsAt;
                         const delta = timestamp - now;
                         if (delta > 0) resetCandidates.push(delta);
                 }
-        }
-
-        if (parsedBody?.resetsAt) {
-                const timestamp =
-                        parsedBody.resetsAt < 10_000_000_000
-                                ? parsedBody.resetsAt * 1000
-                                : parsedBody.resetsAt;
-                const delta = timestamp - now;
-                if (delta > 0) resetCandidates.push(delta);
         }
 
         if (resetCandidates.length > 0) {

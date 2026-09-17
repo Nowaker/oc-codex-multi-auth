@@ -24,6 +24,12 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { watchFile, unwatchFile } from "node:fs";
+import { consumeLastWrittenAccountsDigest } from "./lib/storage/load-save.js";
+import { subscribeToStoragePathChanges } from "./lib/storage/state.js";
+import { isKeychainOptInEnabled } from "./lib/storage/keychain.js";
+import { AnyAccountStorageSchema } from "./lib/schemas.js";
+import { registerCleanup, unregisterCleanup } from "./lib/shutdown.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -166,6 +172,8 @@ import {
 	createAbortError,
 	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
+	isDefaultAutoFallbackModel,
+	pickFallbackChainTarget,
         refreshAndUpdateToken,
         rewriteUrlForCodex,
 	shouldRefreshToken,
@@ -842,8 +850,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		 * served request and on a refused one alike, so the moment an account hits
 		 * 0% left we can record it instead of rediscovering it with a failed request
 		 * on every subsequent prompt. The block lands on the persisted
-		 * `rateLimitResetTimes` map, so it is remembered across restarts and shared
-		 * with other processes, and it clears itself once the window rolls over.
+		 * account-wide `quotaExhaustedUntil` field, so it is remembered across
+		 * restarts and clears itself once the window rolls over.
 		 *
 		 * Call this only for responses whose headers are authoritative: one the
 		 * backend served, or one it refused for a confirmed usage limit. Every other
@@ -874,7 +882,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				account.lastSwitchReason = "rate-limit";
 				manager.saveToDiskDebounced();
 				logWarn(
-					`Account ${account.index + 1} (${account.email ?? "unknown"}) has no ${family} quota left; skipping it for ${formatWaitTime(resetAtMs - Date.now())}.`,
+					`Account ${account.index + 1} has no shared subscription quota left; skipping it for ${formatWaitTime(resetAtMs - Date.now())}.`,
 				);
 				return true;
 			} catch (error) {
@@ -1190,6 +1198,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				return `resets in ${formatWaitTime(remaining)}`;
 		};
 
+		// Account-wide subscription-quota exhaustion is a DIFFERENT block from the
+		// per-family rate limits above: it lives on its own field and is reported
+		// with its own label so a spent weekly quota is never shown as a transient
+		// 429 ("rate limit").
+		const getQuotaExhaustedUntil = (
+				account: { quotaExhaustedUntil?: number },
+				now: number,
+		): number | null => {
+				const until = account.quotaExhaustedUntil;
+				if (typeof until !== "number" || !Number.isFinite(until) || until <= now) {
+						return null;
+				}
+				return until;
+		};
+
+		const formatQuotaExhaustionEntry = (
+				account: { quotaExhaustedUntil?: number },
+				now: number,
+		): string | null => {
+				const until = getQuotaExhaustedUntil(account, now);
+				if (until === null) return null;
+				return `quota exhausted, resets in ${formatWaitTime(until - now)}`;
+		};
+
 		const applyUiRuntimeFromConfig = (
 			pluginConfig: ReturnType<typeof loadPluginConfig>,
 		): UiRuntimeOptions => {
@@ -1275,10 +1307,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		};
 
 		const supportsInteractiveMenus = (): boolean => {
+			if (process.env.FORCE_INTERACTIVE_MODE === "1") return true;
 			if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
 			if (process.env.OPENCODE_TUI === "1") return false;
 			if (process.env.OPENCODE_DESKTOP === "1") return false;
 			if (process.env.TERM_PROGRAM === "opencode") return false;
+			if (process.env.ELECTRON_RUN_AS_NODE === "1") return false;
 			return true;
 		};
 
@@ -1624,24 +1658,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
-		const invalidateAccountManagerCache = (): void => {
-			// Dispose the outgoing manager so we don't leak its shutdown handler
-			// into the global cleanup queue or leave a pending debounce timer
-			// pointing at a stale instance. Flush first (best-effort, in the
-			// background) so any queued debounced save is not silently dropped.
+		const invalidateAccountManagerCache = (clearedSnapshots?: Readonly<AccountStorageV3["accounts"]>): void => {
+			// Retire before flushing: keep disk membership authoritative while
+			// publishing queued rate-limit evidence through the volatile merge.
 			const previous = cachedAccountManager;
 			cachedAccountManager = null;
 			accountManagerPromise = null;
 			if (previous) {
+				previous.disposeShutdownHandler(false, clearedSnapshots);
 				void previous
 					.flushPendingSave()
 					.catch((error: unknown) => {
 						logWarn(
 							`Failed to flush pending save while invalidating account manager: ${error instanceof Error ? error.message : String(error)}`,
 						);
-					})
-					.finally(() => {
-						previous.disposeShutdownHandler();
 					});
 			}
 		};
@@ -1675,6 +1705,130 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					`Failed to reload account manager: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
+		};
+
+		let watchedAccountsPath: string | undefined;
+		let observedAccountsDigest: string | undefined;
+		let accountsReloadTimer: ReturnType<typeof setTimeout> | undefined;
+		let accountsWatcherDisposed = false;
+		let accountsWatchGeneration = 0;
+		let unsubscribeAccountsPath: (() => void) | undefined;
+
+		const stopAccountsWatcher = (): void => {
+			accountsWatchGeneration += 1;
+			if (watchedAccountsPath) unwatchFile(watchedAccountsPath, onAccountsStatChanged);
+			watchedAccountsPath = undefined;
+			observedAccountsDigest = undefined;
+			clearTimeout(accountsReloadTimer);
+			accountsReloadTimer = undefined;
+		};
+		const disposeAccountsWatcher = (): void => {
+			accountsWatcherDisposed = true;
+			unsubscribeAccountsPath?.();
+			stopAccountsWatcher();
+			unregisterCleanup(disposeAccountsWatcher);
+		};
+		const readAccountsDigest = async (path: string): Promise<string | undefined> => {
+			try {
+				const content = await readFile(path, "utf8");
+				if (!AnyAccountStorageSchema.safeParse(JSON.parse(content)).success) return;
+				return createHash("sha256").update(content).digest("hex");
+			} catch {
+				return;
+			}
+		};
+		const reloadForExternalAccountsChange = async (path: string, generation: number, attempt = 0, retired?: AccountManager): Promise<void> => {
+			const digest = await readAccountsDigest(path);
+			if (generation !== accountsWatchGeneration || !digest || path !== getStoragePath()) return;
+			if (digest === consumeLastWrittenAccountsDigest(path)) return;
+			const previous = cachedAccountManager;
+			try {
+				// A null cache means an invalidation retired the incumbent; the
+				// reload still must adopt the external change. Bailing here would
+				// strand it: onAccountsFileChanged already marked this digest
+				// observed, and an in-flight load started before the write can
+				// still resolve and install a pre-change snapshot whose
+				// full-membership save then deletes the imported accounts.
+				if (previous) {
+					if (previous !== retired) {
+						previous.disposeShutdownHandler(true);
+						retired = previous;
+					}
+					await previous.flushPendingSave();
+				}
+				const reloaded = await AccountManager.loadFromDisk();
+				if (generation !== accountsWatchGeneration || accountsWatcherDisposed || path !== getStoragePath()) {
+					reloaded.disposeShutdownHandler();
+					return;
+				}
+				const outgoing = cachedAccountManager;
+				if (outgoing && outgoing !== retired) {
+					// Another actor replaced the cached manager while this reload
+					// was in flight (concurrent fetch reload or tool mutation).
+					// Retire the incumbent with the same external-reload
+					// semantics, or its queued membership save can clobber the
+					// external change this reload is about to adopt.
+					outgoing.disposeShutdownHandler(true);
+					retired = outgoing;
+				}
+				cachedAccountManager = reloaded;
+				accountManagerPromise = Promise.resolve(reloaded);
+				observedAccountsDigest = digest;
+			} catch {
+				logWarn("Could not reload externally updated account storage");
+				if (attempt < 2 && generation === accountsWatchGeneration && !accountsWatcherDisposed) {
+					accountsReloadTimer = setTimeout(() => {
+						accountsReloadTimer = undefined;
+						void reloadForExternalAccountsChange(path, generation, attempt + 1, retired);
+					}, 1500);
+					accountsReloadTimer.unref();
+				}
+				return;
+			}
+			logDebug("Reloaded cached account manager after external accounts file change");
+		};
+		const onAccountsFileChanged = async (): Promise<void> => {
+			if (accountsWatcherDisposed) return;
+			if (watchedAccountsPath !== getStoragePath()) {
+				await ensureAccountsWatcher();
+				return;
+			}
+			const path = watchedAccountsPath;
+			if (!path) return;
+			const generation = accountsWatchGeneration;
+			const digest = await readAccountsDigest(path);
+			if (generation !== accountsWatchGeneration || !digest || digest === observedAccountsDigest) return;
+			observedAccountsDigest = digest;
+			clearTimeout(accountsReloadTimer);
+			accountsReloadTimer = undefined;
+			if (digest === consumeLastWrittenAccountsDigest(path)) return;
+			accountsReloadTimer = setTimeout(() => {
+				accountsReloadTimer = undefined;
+				void reloadForExternalAccountsChange(path, generation);
+			}, 500);
+			accountsReloadTimer.unref();
+		};
+		const onAccountsStatChanged = (): void => {
+			void onAccountsFileChanged();
+		};
+		const ensureAccountsWatcher = async (): Promise<void> => {
+			if (accountsWatcherDisposed) return;
+			const path = getStoragePath();
+			if (path === watchedAccountsPath) return;
+			stopAccountsWatcher();
+			if (isKeychainOptInEnabled()) return;
+			unsubscribeAccountsPath ??= subscribeToStoragePathChanges(() => {
+				void ensureAccountsWatcher();
+			});
+			watchedAccountsPath = path;
+			const generation = accountsWatchGeneration;
+			const initialDigest = await readAccountsDigest(path);
+			if (generation !== accountsWatchGeneration) return;
+			observedAccountsDigest = initialDigest;
+			// Stat polling follows the path across the storage writer's temp-file rename.
+			watchFile(path, { interval: 1500, persistent: false }, onAccountsStatChanged);
+			unregisterCleanup(disposeAccountsWatcher);
+			registerCleanup(disposeAccountsWatcher);
 		};
 
 		const persistAuthenticatedSelections = async (
@@ -1716,6 +1870,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 const { event } = input;
                 if (event.type === "server.instance.disposed") {
                         quotaMonitor.dispose();
+						disposeAccountsWatcher();
                         return;
                 }
                 // Handle TUI account selection events
@@ -1812,6 +1967,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			resolveActiveIndex,
 			getRateLimitResetTimeForFamily,
 			formatRateLimitEntry,
+			formatQuotaExhaustionEntry,
 			buildJsonAccountIdentity,
 			buildRoutingVisibilitySnapshot,
 			appendRoutingVisibilityText,
@@ -1876,7 +2032,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					});
 				}
 				applyUiRuntimeFromConfig(pluginConfig);
-				const perProjectAccounts = getPerProjectAccounts(pluginConfig);
+				let perProjectAccounts = getPerProjectAccounts(pluginConfig);
+				let storageTransition: Promise<void> | undefined;
+				const activeFetches = new Set<Promise<void>>();
 				setStoragePath(perProjectAccounts ? process.cwd() : null);
 				const authFallback = auth.type === "oauth" ? (auth as OAuthAuthDetails) : undefined;
 
@@ -1923,8 +2081,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							}
 						});
 					}
-					let accountManager = await accountManagerPromise;
-					cachedAccountManager = accountManager;
+					const loadedManager = await accountManagerPromise;
+					if (cachedAccountManager && cachedAccountManager !== loadedManager) {
+						// An external reload replaced the cache while this load was
+						// in flight. The loaded snapshot is stale; retiring it keeps
+						// its debounced save from writing full membership over the
+						// successor's state.
+						loadedManager.disposeShutdownHandler();
+					} else {
+						cachedAccountManager = loadedManager;
+					}
+					const accountManager = cachedAccountManager ?? loadedManager;
+					await ensureAccountsWatcher();
 					const refreshToken = authFallback?.refresh ?? "";
 					const needsPersist =
 						refreshToken &&
@@ -1959,73 +2127,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					models: providerConfig?.models || {},
 				};
 
-				// Load plugin configuration and determine CODEX_MODE
-				// Priority: CODEX_MODE env var > config file > default (true)
-				const codexMode = getCodexMode(pluginConfig);
-				const requestTransformMode = getRequestTransformMode(pluginConfig);
-				const useLegacyRequestTransform = requestTransformMode === "legacy";
-				const fastSessionEnabled = getFastSession(pluginConfig);
-				const fastSessionStrategy = getFastSessionStrategy(pluginConfig);
-				const fastSessionMaxInputItems = getFastSessionMaxInputItems(pluginConfig);
-				const beginnerSafeMode = getBeginnerSafeMode(pluginConfig);
-				beginnerSafeModeEnabled = beginnerSafeMode;
-				const maskEmailEnabled = getCodexTuiMaskEmail(pluginConfig);
-				const retryProfile = beginnerSafeMode
-					? "conservative"
-					: getRetryProfile(pluginConfig);
-				const retryBudgetOverrides = beginnerSafeMode
-					? {}
-					: getRetryBudgetOverrides(pluginConfig);
-				const retryBudgetLimits = resolveRetryBudgetLimits(
-					retryProfile,
-					retryBudgetOverrides,
-				);
-				runtimeMetrics.retryProfile = retryProfile;
-				runtimeMetrics.retryBudgetLimits = { ...retryBudgetLimits };
-				const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
-				const rateLimitToastDebounceMs = getRateLimitToastDebounceMs(pluginConfig);
-				const retryAllAccountsRateLimited = beginnerSafeMode
-					? false
-					: getRetryAllAccountsRateLimited(pluginConfig);
-				const retryAllAccountsMaxWaitMs = getRetryAllAccountsMaxWaitMs(pluginConfig);
-				const retryAllAccountsMaxRetries = beginnerSafeMode
-					? Math.min(1, getRetryAllAccountsMaxRetries(pluginConfig))
-					: getRetryAllAccountsMaxRetries(pluginConfig);
-				const unsupportedCodexPolicy = getUnsupportedCodexPolicy(pluginConfig);
-				const fallbackOnUnsupportedCodexModel = unsupportedCodexPolicy === "fallback";
-				const fallbackToGpt52OnUnsupportedGpt53 =
-					getFallbackToGpt52OnUnsupportedGpt53(pluginConfig);
-				const unsupportedCodexFallbackChain =
-					getUnsupportedCodexFallbackChain(pluginConfig);
-				const toastDurationMs = getToastDurationMs(pluginConfig);
-				const accountToastsEnabled = getAccountToastsEnabled(pluginConfig);
-				const fetchTimeoutMs = getFetchTimeoutMs(pluginConfig);
-				const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
-
 				const sessionRecoveryEnabled = getSessionRecovery(pluginConfig);
+				beginnerSafeModeEnabled = getBeginnerSafeMode(pluginConfig);
+				const initialRetryProfile = beginnerSafeModeEnabled ? "conservative" : getRetryProfile(pluginConfig);
+				runtimeMetrics.retryProfile = initialRetryProfile;
+				runtimeMetrics.retryBudgetLimits = resolveRetryBudgetLimits(
+					initialRetryProfile,
+					beginnerSafeModeEnabled ? {} : getRetryBudgetOverrides(pluginConfig),
+				);
 				const autoResumeEnabled = getAutoResume(pluginConfig);
 				const autoUpdateEnabled = getAutoUpdate(pluginConfig);
-				const emptyResponseMaxRetries = getEmptyResponseMaxRetries(pluginConfig);
-				const emptyResponseRetryDelayMs = getEmptyResponseRetryDelayMs(pluginConfig);
-				const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
-				const rotationStrategy = getRotationStrategy(pluginConfig);
-				const effectiveUserConfig = fastSessionEnabled
-					? applyFastSessionDefaults(userConfig)
-					: userConfig;
-				if (fastSessionEnabled) {
+				if (getFastSession(pluginConfig)) {
 					logDebug("Fast session mode enabled", {
 						reasoningEffort: "none/low",
 						reasoningSummary: "auto",
 						textVerbosity: "low",
-						fastSessionStrategy,
-						fastSessionMaxInputItems,
+						fastSessionStrategy: getFastSessionStrategy(pluginConfig),
+						fastSessionMaxInputItems: getFastSessionMaxInputItems(pluginConfig),
 					});
 				}
-				if (beginnerSafeMode) {
+				if (getBeginnerSafeMode(pluginConfig)) {
 					logInfo("Beginner safe mode enabled", {
-						retryProfile,
-						retryAllAccountsRateLimited,
-						retryAllAccountsMaxRetries,
+						retryProfile: "conservative",
+						retryAllAccountsRateLimited: false,
+						retryAllAccountsMaxRetries: Math.min(1, getRetryAllAccountsMaxRetries(pluginConfig)),
 					});
 				}
 
@@ -2034,11 +2159,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					process.env.VITEST !== "true" &&
 					process.env.NODE_ENV !== "test";
 
-				if (!startupPrewarmTriggered && prewarmEnabled && useLegacyRequestTransform) {
+				if (!startupPrewarmTriggered && prewarmEnabled && getRequestTransformMode(pluginConfig) === "legacy") {
 					startupPrewarmTriggered = true;
 					const configuredModels = Object.keys(userConfig.models ?? {});
 					prewarmCodexInstructions(configuredModels);
-					if (codexMode) {
+					if (getCodexMode(pluginConfig)) {
 						prewarmOpenCodeCodexPrompt();
 					}
 				}
@@ -2081,10 +2206,76 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						input: Request | string | URL,
 						init?: RequestInit,
 					): Promise<Response> {
+						let finishFetch: (() => void) | undefined;
+						let pendingFetch: Promise<void> | undefined;
 						try {
-							if (cachedAccountManager && cachedAccountManager !== accountManager) {
-								accountManager = cachedAccountManager;
+							const pluginConfig = loadPluginConfig();
+							const currentPerProjectAccounts = getPerProjectAccounts(pluginConfig);
+							while (storageTransition) await storageTransition;
+							if (currentPerProjectAccounts !== perProjectAccounts) {
+								storageTransition = (async () => {
+									await Promise.all(activeFetches);
+									// Drain the old pool's pending write before changing the global path.
+									await cachedAccountManager?.flushPendingSave();
+									setStoragePath(currentPerProjectAccounts ? process.cwd() : null);
+									invalidateAccountManagerCache();
+									perProjectAccounts = currentPerProjectAccounts;
+								})().finally(() => { storageTransition = undefined; });
+								await storageTransition;
 							}
+							pendingFetch = new Promise<void>((resolve) => { finishFetch = resolve; });
+							activeFetches.add(pendingFetch);
+							if (!accountManagerPromise) {
+								const pending = AccountManager.loadFromDisk();
+								accountManagerPromise = pending;
+								void pending.catch(() => {
+									if (accountManagerPromise === pending) accountManagerPromise = null;
+								});
+							}
+						if (!cachedAccountManager) {
+							const loadedManager = await accountManagerPromise;
+							if (cachedAccountManager && cachedAccountManager !== loadedManager) {
+								// External reload won the race while this load was in
+								// flight: adopt the cache and retire the stale load.
+								loadedManager.disposeShutdownHandler();
+							} else if (!cachedAccountManager) {
+								cachedAccountManager = loadedManager;
+							}
+						}
+							const codexMode = getCodexMode(pluginConfig);
+							const requestTransformMode = getRequestTransformMode(pluginConfig);
+							const fastSessionEnabled = getFastSession(pluginConfig);
+							const fastSessionStrategy = getFastSessionStrategy(pluginConfig);
+							const fastSessionMaxInputItems = getFastSessionMaxInputItems(pluginConfig);
+							const beginnerSafeMode = getBeginnerSafeMode(pluginConfig);
+							beginnerSafeModeEnabled = beginnerSafeMode;
+							const maskEmailEnabled = getCodexTuiMaskEmail(pluginConfig);
+							const retryProfile = beginnerSafeMode ? "conservative" : getRetryProfile(pluginConfig);
+							const retryBudgetOverrides = beginnerSafeMode ? {} : getRetryBudgetOverrides(pluginConfig);
+							const retryBudgetLimits = resolveRetryBudgetLimits(retryProfile, retryBudgetOverrides);
+							runtimeMetrics.retryProfile = retryProfile;
+							runtimeMetrics.retryBudgetLimits = { ...retryBudgetLimits };
+							const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
+							const rateLimitToastDebounceMs = getRateLimitToastDebounceMs(pluginConfig);
+							const retryAllAccountsRateLimited = beginnerSafeMode ? false : getRetryAllAccountsRateLimited(pluginConfig);
+							const retryAllAccountsMaxWaitMs = getRetryAllAccountsMaxWaitMs(pluginConfig);
+							const retryAllAccountsMaxRetries = beginnerSafeMode
+								? Math.min(1, getRetryAllAccountsMaxRetries(pluginConfig))
+								: getRetryAllAccountsMaxRetries(pluginConfig);
+							const unsupportedCodexPolicy = getUnsupportedCodexPolicy(pluginConfig);
+							const fallbackOnUnsupportedCodexModel = unsupportedCodexPolicy === "fallback";
+							const fallbackToGpt52OnUnsupportedGpt53 = getFallbackToGpt52OnUnsupportedGpt53(pluginConfig);
+							const unsupportedCodexFallbackChain = getUnsupportedCodexFallbackChain(pluginConfig);
+							const toastDurationMs = getToastDurationMs(pluginConfig);
+							const accountToastsEnabled = getAccountToastsEnabled(pluginConfig);
+							const fetchTimeoutMs = getFetchTimeoutMs(pluginConfig);
+							const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
+							const emptyResponseMaxRetries = getEmptyResponseMaxRetries(pluginConfig);
+							const emptyResponseRetryDelayMs = getEmptyResponseRetryDelayMs(pluginConfig);
+							const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
+							const rotationStrategy = getRotationStrategy(pluginConfig);
+							const effectiveUserConfig = fastSessionEnabled ? applyFastSessionDefaults(userConfig) : userConfig;
+							let accountManager = cachedAccountManager;
 
                                                 // Step 1: Extract and rewrite URL for Codex backend
                                                 const originalUrl = extractRequestUrl(input);
@@ -2265,6 +2456,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						const endTime = startTime + totalMs;
 						
 						while (Date.now() < endTime) {
+							if (cachedAccountManager !== accountManager) return;
 							if (abortSignal?.aborted) {
 								throw abortError();
 							}
@@ -2293,7 +2485,138 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								attemptedUnsupportedFallbackModels.add(model);
 							}
 
+							// Degrading the model mid-request touches several coupled pieces:
+							// the attempted-model set, the routing snapshot, the model's own
+							// instructions, the reasoning clamp (only the 5.6 tiers accept
+							// `max`, so an un-clamped sol -> gpt-5.5 hop turns a graceful
+							// fallback into a hard 400) and the per-model body shape. Both the
+							// entitlement fallback and the quota fallback go through here so
+							// the two can never drift apart on any of them.
+							const applyModelFallback = async (
+								previousModel: string,
+								target: string,
+								reason: string,
+							): Promise<void> => {
+								attemptedUnsupportedFallbackModels.add(previousModel);
+								attemptedUnsupportedFallbackModels.add(target);
+
+								model = target;
+								modelFamily = getModelFamily(model);
+								quotaKey = `${modelFamily}:${model}`;
+								fallbackApplied = true;
+								fallbackFrom = previousModel;
+								fallbackTo = model;
+								fallbackReason = reason;
+								const fallbackInstructions = await getCodexInstructions(model);
+
+								if (transformedBody && typeof transformedBody === "object") {
+									transformedBody = {
+										...transformedBody,
+										model,
+										instructions: fallbackInstructions,
+										input: upsertBackendModelIdentityMessage(
+											transformedBody.input,
+											model,
+										),
+									};
+								} else {
+									let fallbackBody: Record<string, unknown> = {
+										model,
+										instructions: fallbackInstructions,
+									};
+									if (requestInit?.body && typeof requestInit.body === "string") {
+										try {
+											const parsed = JSON.parse(requestInit.body) as Record<string, unknown>;
+											fallbackBody = {
+												...parsed,
+												model,
+												instructions: fallbackInstructions,
+											};
+											if (Array.isArray(fallbackBody.input)) {
+												fallbackBody.input = upsertBackendModelIdentityMessage(
+													fallbackBody.input,
+													model,
+												);
+											}
+										} catch {
+											// Keep minimal fallback body if parsing fails.
+										}
+									}
+									transformedBody = fallbackBody as RequestBody;
+								}
+
+								const clampedReasoning = clampReasoningForModel(
+									transformedBody.reasoning,
+									model,
+								);
+								if (clampedReasoning !== transformedBody.reasoning) {
+									transformedBody = {
+										...transformedBody,
+										reasoning: clampedReasoning,
+									};
+								}
+
+								requestInit = {
+									...(requestInit ?? {}),
+									body: JSON.stringify(shapeBodyForModel(transformedBody)),
+								};
+								if (runtimeMetrics.lastSelectionSnapshot) {
+									runtimeMetrics.lastSelectionSnapshot = {
+										...runtimeMetrics.lastSelectionSnapshot,
+										family: modelFamily,
+										model: model ?? null,
+										requestedModel,
+										effectiveModel: model ?? null,
+										quotaKey,
+										fallbackApplied,
+										fallbackFrom,
+										fallbackTo,
+										fallbackReason,
+									};
+								}
+							};
+
+							// A degraded model must not degrade again without bound, even if a
+							// custom chain is cyclic. The attempted set already prevents
+							// revisiting a model; this caps the total hops per request.
+							const MAX_QUOTA_FALLBACK_SWITCHES = 3;
+							let quotaFallbackSwitches = 0;
+
 							while (true) {
+						if (cachedAccountManager && cachedAccountManager !== accountManager) {
+							accountManager = cachedAccountManager;
+						} else if (!cachedAccountManager) {
+							// Reload through the shared accountManagerPromise so
+							// concurrent requests (and the startup path above)
+							// share one load. Racing independent loadFromDisk()
+							// calls here can orphan the slower manager while an
+							// in-flight request still holds it, and an orphaned
+							// manager is never retired, so its next save would
+							// write full membership and drop externally imported
+							// accounts.
+							if (accountManagerPromise === null) {
+								const pending = AccountManager.loadFromDisk();
+								accountManagerPromise = pending;
+								void pending.catch(() => {
+									if (accountManagerPromise === pending) accountManagerPromise = null;
+								});
+							}
+						const reloaded = await accountManagerPromise;
+						if (cachedAccountManager) {
+							if (cachedAccountManager !== reloaded) {
+								// The cache was repopulated while this load was in
+								// flight (external reload after an invalidation).
+								// The loaded manager is stale; retire it so its
+								// debounced save cannot write full membership over
+								// accounts imported after its snapshot was taken.
+								reloaded.disposeShutdownHandler();
+							}
+							accountManager = cachedAccountManager;
+						} else {
+							cachedAccountManager = reloaded;
+							accountManager = reloaded;
+						}
+						}
 						let accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();
 						// Diagnostics for the terminal error message below. The composite key keeps
@@ -2345,6 +2668,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					break;
 				}
 							attempted.add(account.index);
+							// Hybrid's last-resort result is not necessarily eligible. Requests
+							// must honor active blocks rather than sending it upstream anyway.
+							if (selectionExplainability.some((entry) => entry.index === account.index && !entry.eligible)) {
+								continue;
+							}
 							runtimeMetrics.lastSelectedAccountIndex = account.index;
 							runtimeMetrics.lastQuotaKey = quotaKey;
 							if (runtimeMetrics.lastSelectionSnapshot) {
@@ -2896,92 +3224,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (fallbackModel) {
 				const previousModel = model ?? "gpt-5-codex";
 				const previousModelFamily = modelFamily;
-				attemptedUnsupportedFallbackModels.add(previousModel);
-				attemptedUnsupportedFallbackModels.add(fallbackModel);
 				accountManager.refundToken(account, previousModelFamily, previousModel);
-
-				model = fallbackModel;
-				modelFamily = getModelFamily(model);
-				quotaKey = `${modelFamily}:${model}`;
-				fallbackApplied = true;
-				fallbackFrom = previousModel;
-				fallbackTo = model;
-				fallbackReason = "fallback-unsupported-model-entitlement";
-				const fallbackInstructions = await getCodexInstructions(model);
-
-				if (transformedBody && typeof transformedBody === "object") {
-					transformedBody = {
-						...transformedBody,
-						model,
-						instructions: fallbackInstructions,
-						input: upsertBackendModelIdentityMessage(
-							transformedBody.input,
-							model,
-						),
-					};
-				} else {
-					let fallbackBody: Record<string, unknown> = {
-						model,
-						instructions: fallbackInstructions,
-					};
-					if (requestInit?.body && typeof requestInit.body === "string") {
-						try {
-							const parsed = JSON.parse(requestInit.body) as Record<string, unknown>;
-							fallbackBody = {
-								...parsed,
-								model,
-								instructions: fallbackInstructions,
-							};
-							if (Array.isArray(fallbackBody.input)) {
-								fallbackBody.input = upsertBackendModelIdentityMessage(
-									fallbackBody.input,
-									model,
-								);
-							}
-						} catch {
-							// Keep minimal fallback body if parsing fails.
-						}
-					}
-					transformedBody = fallbackBody as RequestBody;
-				}
-
-				// The carried-over reasoning effort was clamped for the ORIGINAL
-				// model; the fallback target may not accept it (`max` exists only
-				// on the 5.6 tiers, so a sol -> gpt-5.5 hop must degrade it or the
-				// graceful fallback turns into a hard 400).
-				const clampedReasoning = clampReasoningForModel(
-					transformedBody.reasoning,
-					model,
+				await applyModelFallback(
+					previousModel,
+					fallbackModel,
+					"fallback-unsupported-model-entitlement",
 				);
-				if (clampedReasoning !== transformedBody.reasoning) {
-					transformedBody = {
-						...transformedBody,
-						reasoning: clampedReasoning,
-					};
-				}
-
-				// Shape for whichever model this attempt targets. A 5.6 -> 5.5 fallback
-				// must go out in the classic shape, and a 5.6 -> 5.6 hop must re-fold
-				// the new model's instructions into `input` rather than leaving them
-				// at the top level.
-				requestInit = {
-					...(requestInit ?? {}),
-					body: JSON.stringify(shapeBodyForModel(transformedBody)),
-				};
-				if (runtimeMetrics.lastSelectionSnapshot) {
-					runtimeMetrics.lastSelectionSnapshot = {
-						...runtimeMetrics.lastSelectionSnapshot,
-						family: modelFamily,
-						model: model ?? null,
-						requestedModel,
-						effectiveModel: model ?? null,
-						quotaKey,
-						fallbackApplied,
-						fallbackFrom,
-						fallbackTo,
-						fallbackReason,
-					};
-				}
 				runtimeMetrics.lastError = `Model fallback: ${previousModel} -> ${model}`;
 				runtimeMetrics.lastErrorCategory = "model-fallback";
 				logWarn(
@@ -3135,13 +3383,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 															continue;
 																																}
 
-				accountManager.markRateLimitedWithReason(
-					account,
-					delayMs,
-					modelFamily,
-					parseRateLimitReason(rateLimit.code),
-					model,
-				);
+				// Authoritative subscription exhaustion already has its own block.
+				// Do not duplicate its reset as a model/family transient 429; retain
+				// any genuine transient state written by other in-flight requests.
+				if (!quotaExhausted) {
+					accountManager.markRateLimitedWithReason(
+						account,
+						delayMs,
+						modelFamily,
+						parseRateLimitReason(rateLimit.code),
+						model,
+					);
+				}
 				accountManager.recordRateLimit(account, modelFamily, model);
 				account.lastSwitchReason = "rate-limit";
 				runtimeMetrics.accountRotations++;
@@ -3449,6 +3702,90 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											!fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
 									).length;
 
+								const enabledSelection = count > 0 ? accountManager
+									.getSelectionExplainability(modelFamily, model)
+									.filter((entry) => entry.enabled) : [];
+								const upstreamBlocked = enabledSelection.length > 0 && enabledSelection.every(
+									(entry) => entry.rateLimitedUntil !== undefined || entry.quotaExhaustedUntil !== undefined,
+								);
+
+								// Every enabled account has an active upstream block. Before waiting out a
+								// block that can run for days (`retryAllAccountsMaxRetries`
+								// defaults to Infinity), degrade to the next chain model that is
+								// actually usable right now. Gated exactly like the entitlement
+								// auto-fallback -- same default-selector entry models, same
+								// opt-out env vars -- even when an entry ID was selected directly.
+								// Local token depletion and auth cooldown alone never trigger it.
+								// An account-wide quota block fails the eligibility test
+								// on every candidate, so it correctly falls through to the wait.
+								if (
+									upstreamBlocked &&
+									waitMs > 0 &&
+									count > 0 &&
+									model &&
+									quotaFallbackSwitches < MAX_QUOTA_FALLBACK_SWITCHES &&
+									isDefaultAutoFallbackModel(
+										model,
+										attemptedUnsupportedFallbackModels,
+									)
+								) {
+									const rejected = new Set<string>();
+									let usableFallback: string | undefined;
+									while (true) {
+										const candidate = pickFallbackChainTarget({
+											currentModel: model,
+											attemptedModels: new Set([
+												...attemptedUnsupportedFallbackModels,
+												...rejected,
+											]),
+											customChain: unsupportedCodexFallbackChain,
+											fallbackToGpt52OnUnsupportedGpt53,
+										});
+										if (!candidate || rejected.has(candidate)) break;
+										// Only degrade to a model some account can serve NOW,
+										// otherwise the hop just moves the same block sideways.
+										const candidatePool = getModelAccountPool(pluginConfig, candidate);
+										const strictCandidatePool = candidatePool.length > 0 &&
+											getModelAccountPoolMode(pluginConfig, candidate) === "strict";
+										const candidateAccounts = accountManager.getAccountsSnapshot();
+										const candidateEligible = accountManager.getSelectionExplainability(
+											getModelFamily(candidate), candidate,
+										).some((entry) => entry.eligible && (!strictCandidatePool ||
+											candidateAccounts.some((account) => account.index === entry.index &&
+												candidatePool.some((key) => matchesModelPoolAccountKey(account, key)))));
+									// A preferred pool may spill into general accounts; a strict
+									// pool must contain an eligible member. This does not select
+									// an account or advance any rotation cursor.
+										if (candidateEligible) {
+											usableFallback = candidate;
+											break;
+										}
+										rejected.add(candidate);
+									}
+
+									if (usableFallback) {
+										const previousModel = model;
+										quotaFallbackSwitches++;
+										await applyModelFallback(
+											previousModel,
+											usableFallback,
+											"fallback-quota-exhausted",
+										);
+										runtimeMetrics.lastError = `Model fallback: ${previousModel} -> ${model}`;
+										runtimeMetrics.lastErrorCategory = "model-fallback";
+										logWarn(
+											`All ${count} account(s) are rate-limited or out of quota for ${previousModel}. Falling back to ${model}.`,
+											{
+												requestedModel: previousModel,
+												effectiveModel: model,
+												fallbackApplied: true,
+												fallbackReason: "fallback-quota-exhausted",
+											},
+										);
+										continue;
+									}
+								}
+
 								if (
 									retryAllAccountsRateLimited &&
 									count > 0 &&
@@ -3510,6 +3847,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										});
 									}
 						} finally {
+							if (pendingFetch) activeFetches.delete(pendingFetch);
+							finishFetch?.();
 							clearCorrelationId();
 						}
 										},

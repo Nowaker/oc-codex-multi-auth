@@ -7,7 +7,7 @@ model catalog, rotation logic, storage, tools/CLI, TUI, and recovery.
 
 The suite is large and evolves frequently. Use the current test tree and local
 commands as the source of truth instead of hard-coded totals or committed file
-lists. As of this writing the suite is 113 test files: 95 top-level plus
+lists. As of this writing the suite is 136 test files: 118 top-level plus
 `chaos/` (9), `property/` (6), and `contracts/` (3).
 
 ```bash
@@ -75,7 +75,7 @@ coverage.
 - Do not rely on `dist/` in tests; import from source.
 - Do not skip tests without justification.
 - Do not assert on wall-clock timing; use fake timers or injected clocks.
-- Do not commit an exhaustive test-file list into docs — it goes stale. Point at
+- Do not commit an exhaustive test-file list into docs. It goes stale. Point at
   `find test -name '*.test.ts'` instead.
 - When changing a documented contract (tool count, config key, storage path,
   catalog size), update `doc-parity.test.ts` and the affected docs in the same

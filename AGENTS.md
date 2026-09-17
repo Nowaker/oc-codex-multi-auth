@@ -44,7 +44,7 @@ Package version: see `package.json` (`version` field).
 | SSE to JSON | `lib/request/response-handler.ts` | stream parsing and empty-response detection |
 | Prompt templates | `lib/prompts/codex.ts`, `lib/prompts/opencode-codex.ts`, `lib/prompts/codex-opencode-bridge.ts` | model-family detection, Codex prompt cache, bridge prompts |
 | Config parsing | `lib/config.ts`, `lib/schemas.ts` | plugin config and environment overrides (bool env truthy only `"1"`) |
-| Session recovery | `lib/recovery/`, `lib/recovery.ts` | recoverable error handling and auto-resume |
+| Session recovery | `lib/recovery/`, `lib/recovery.ts` | recoverable error detection and TUI toast notifications; underlying auto-resume/repair engine exists in hook.ts |
 | Health monitoring | `lib/health.ts`, `lib/parallel-probe.ts` | account health status and concurrent probes |
 | Circuit breaker | `lib/circuit-breaker.ts` | failure isolation |
 | Public architecture | `docs/architecture.md` | user-facing architecture overview |
@@ -77,7 +77,7 @@ Package version: see `package.json` (`version` field).
 - Do not treat `oc-chatgpt-multi-auth` as current except in migration/cleanup logic.
 - Do not expose account emails, access tokens, refresh tokens, or raw prompt/response bodies in normal diagnostics.
 - Do not silently delete JSON credentials when keychain operations fail.
-- Do not document boolean env overrides as truthy for `"true"` / `"yes"` — only `"1"` is truthy.
+- Do not document boolean env overrides as truthy for `"true"` or `"yes"`. Only `"1"` is truthy.
 
 ## COMMANDS
 
@@ -103,7 +103,7 @@ oc-codex-multi-auth doctor
 
 ## NOTES
 
-- OAuth callback: `http://127.0.0.1:1455/auth/callback`.
+- OAuth redirect URI: `http://localhost:1455/auth/callback` (registered with the Codex OAuth client). The callback server binds both `127.0.0.1:1455` and `[::1]:1455`.
 - ChatGPT backend requires `store: false`, include `reasoning.encrypted_content`.
 - OpenCode config: `~/.config/opencode/opencode.json`.
 - OpenCode TUI config: `~/.config/opencode/tui.json`.
@@ -111,12 +111,12 @@ oc-codex-multi-auth doctor
 - Plugin config: `~/.opencode/openai-codex-auth-config.json`.
 - Per-project accounts: `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json`.
 - Global accounts: `~/.opencode/oc-codex-multi-auth-accounts.json`.
-- Flagged accounts: `~/.opencode/oc-codex-multi-auth-flagged-accounts.json`.
+- Flagged accounts: `oc-codex-multi-auth-flagged-accounts.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
 - Quota notification state: `oc-codex-multi-auth-quota-notifications.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
 - Request logs: `~/.opencode/logs/codex-plugin/` when logging is enabled.
 - Model catalog: 13 modern bases / 59 variants; legacy 59 explicit.
 - Bases: `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-fast`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`. Routed but deliberately unshipped (Daybreak-gated, add by hand): `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`.
-- Prompt templates sync from Codex CLI GitHub releases with ETag caching; 5.6 and Daybreak instructions come from the Codex model catalog. `gpt-6-astra` is registered as a catalog slug but has no entry yet, so it reads the prompt file until openai/codex publishes one.
+- Prompt templates sync from Codex CLI GitHub releases with ETag caching; 5.6 and Daybreak instructions come from the Codex model catalog. `gpt-6-astra` has a catalog entry, but its `base_instructions` is empty and the loader treats empty as absent, so Astra reads its prompt file until openai/codex publishes catalog text.
 - 5xx server errors trigger account rotation and health penalty like network errors.
 - API deprecation/sunset headers (RFC 8594) are logged as warnings.
 - StorageError preserves original stack traces via `cause` parameter.

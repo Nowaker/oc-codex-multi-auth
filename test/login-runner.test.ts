@@ -468,6 +468,56 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 		expect(mergeStoredAccountPair(a, b).enabled).toBe(false);
 		expect(mergeStoredAccountPair(b, a).enabled).toBe(false);
 	});
+
+	it("carries the winning stamp's provenance through the quota-exhaustion merge", () => {
+		const now = Date.now();
+		const a = {
+			addedAt: 1,
+			lastUsed: 1,
+			rateLimitResetTimes: {},
+			quotaExhaustedUntil: now + 86_400_000,
+			quotaExhaustedStampAt: now - 3_600_000,
+		};
+		const b = {
+			addedAt: 2,
+			lastUsed: 2,
+			rateLimitResetTimes: {},
+			quotaExhaustedUntil: now + 43_200_000,
+			quotaExhaustedStampAt: now - 60_000,
+		};
+
+		const merged = mergeStoredAccountPair(a, b);
+
+		// Longest stamp wins; its write time travels with it so a later
+		// cross-process save still compares correctly against a doctor clear.
+		expect(merged.quotaExhaustedUntil).toBe(now + 86_400_000);
+		expect(merged.quotaExhaustedStampAt).toBe(now - 3_600_000);
+		expect(merged.quotaExhaustedClearedAt).toBeUndefined();
+	});
+
+	it("keeps the later doctor-clear tombstone when no stamp survives the merge", () => {
+		const now = Date.now();
+		const a = {
+			addedAt: 1,
+			lastUsed: 1,
+			rateLimitResetTimes: {},
+			quotaExhaustedClearedAt: now - 3_600_000,
+		};
+		const b = {
+			addedAt: 2,
+			lastUsed: 2,
+			rateLimitResetTimes: {},
+			quotaExhaustedClearedAt: now - 60_000,
+		};
+
+		const merged = mergeStoredAccountPair(a, b);
+
+		// No stamp on either side: the later clear wins, so a re-login cannot
+		// resurrect what doctor cleared.
+		expect(merged.quotaExhaustedUntil).toBeUndefined();
+		expect(merged.quotaExhaustedStampAt).toBeUndefined();
+		expect(merged.quotaExhaustedClearedAt).toBe(now - 60_000);
+	});
 });
 
 describe("login-runner account and quota identities", () => {

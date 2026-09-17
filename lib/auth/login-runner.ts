@@ -43,6 +43,9 @@ type MergeableAccountRecord = {
 	lastSwitchReason?: string;
 	rateLimitResetTimes?: Record<string, number | undefined>;
 	coolingDownUntil?: number;
+	quotaExhaustedUntil?: number;
+	quotaExhaustedStampAt?: number;
+	quotaExhaustedClearedAt?: number;
 	cooldownReason?: string;
 	tokenRotatedAt?: number;
 };
@@ -107,6 +110,44 @@ export function mergeStoredAccountPair<T extends MergeableAccountRecord>(
 	);
 	const mergedCoolingDownUntil =
 		mergedCoolingDownUntilValue > 0 ? mergedCoolingDownUntilValue : undefined;
+	const targetQuotaExhaustedUntil =
+		typeof target.quotaExhaustedUntil === "number" && Number.isFinite(target.quotaExhaustedUntil)
+			? target.quotaExhaustedUntil
+			: 0;
+	const sourceQuotaExhaustedUntil =
+		typeof source.quotaExhaustedUntil === "number" && Number.isFinite(source.quotaExhaustedUntil)
+			? source.quotaExhaustedUntil
+			: 0;
+	const mergedQuotaExhaustedUntilValue = Math.max(
+		targetQuotaExhaustedUntil,
+		sourceQuotaExhaustedUntil,
+	);
+	const mergedQuotaExhaustedUntil =
+		mergedQuotaExhaustedUntilValue > 0 ? mergedQuotaExhaustedUntilValue : undefined;
+	// Provenance follows the winning stamp: whichever side supplied the max
+	// also supplies quotaExhaustedStampAt, and a live stamp displaces any
+	// doctor-clear tombstone. Without a surviving stamp, the later tombstone
+	// wins so a re-login does not resurrect a stamp doctor cleared.
+	const mergedQuotaExhaustedStampAt = (() => {
+		if (mergedQuotaExhaustedUntil === undefined) return undefined;
+		return targetQuotaExhaustedUntil >= sourceQuotaExhaustedUntil
+			? target.quotaExhaustedStampAt
+			: source.quotaExhaustedStampAt;
+	})();
+	const mergedQuotaExhaustedClearedAt = (() => {
+		if (mergedQuotaExhaustedUntil !== undefined) return undefined;
+		const targetCleared =
+			typeof target.quotaExhaustedClearedAt === "number" &&
+			Number.isFinite(target.quotaExhaustedClearedAt)
+				? target.quotaExhaustedClearedAt
+				: 0;
+		const sourceCleared =
+			typeof source.quotaExhaustedClearedAt === "number" &&
+			Number.isFinite(source.quotaExhaustedClearedAt)
+				? source.quotaExhaustedClearedAt
+				: 0;
+		return Math.max(targetCleared, sourceCleared) || undefined;
+	})();
 	const mergedCooldownReason = (() => {
 		if (mergedCoolingDownUntilValue <= 0) {
 			return target.cooldownReason ?? source.cooldownReason;
@@ -152,6 +193,9 @@ export function mergeStoredAccountPair<T extends MergeableAccountRecord>(
 		lastSwitchReason: target.lastSwitchReason ?? source.lastSwitchReason,
 		rateLimitResetTimes: mergedRateLimitResetTimes,
 		coolingDownUntil: mergedCoolingDownUntil,
+		quotaExhaustedUntil: mergedQuotaExhaustedUntil,
+		quotaExhaustedStampAt: mergedQuotaExhaustedStampAt,
+		quotaExhaustedClearedAt: mergedQuotaExhaustedClearedAt,
 		cooldownReason: mergedCooldownReason,
 	};
 }

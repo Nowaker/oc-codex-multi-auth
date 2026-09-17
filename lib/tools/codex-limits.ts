@@ -17,6 +17,8 @@ import {
 	hasUsageWindow,
 	parseCodexUsagePayload,
 	persistUsageQuotaExhaustion,
+	persistUsageQuotaRecovery,
+	isUsageQuotaRecovered,
 	resolveCodexUsageAccountId,
 } from "../codex-usage.js";
 import { getQuotaDisplay, loadPluginConfig } from "../config.js";
@@ -234,6 +236,17 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 									error instanceof Error ? error.message : String(error)
 								}`,
 							);
+						}
+					}
+					if (isUsageQuotaRecovered([usage.primary, usage.secondary])) {
+						try {
+							if (await persistUsageQuotaRecovery(account)) {
+								storageChanged = true;
+								quotaExhaustionPersistedOrKnown = true;
+								invalidateAccountManagerCache();
+							}
+						} catch {
+							logWarn("Failed to persist recovered usage quota");
 						}
 					}
 					jsonAccounts.push({

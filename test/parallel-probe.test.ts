@@ -5,7 +5,9 @@ import {
 	getTopCandidates,
 	type ProbeCandidate,
 } from "../lib/parallel-probe.js";
-import type { ManagedAccount } from "../lib/accounts.js";
+import { AccountManager, type ManagedAccount } from "../lib/accounts.js";
+import { resetTrackers } from "../lib/rotation.js";
+import type { ModelFamily } from "../lib/prompts/codex.js";
 
 function createMockAccount(index: number, overrides: Partial<ManagedAccount> = {}): ManagedAccount {
 	return {
@@ -260,5 +262,35 @@ describe("parallel-probe", () => {
 			expect(candidates).toHaveLength(2);
 			expect(candidates[0].index).toBe(1);
 		});
+	});
+});
+
+function makeAccount(overrides: Record<string, unknown> = {}): AccountStorageV3["accounts"][number] {
+	return {
+		refreshToken: `token-${Math.random().toString(36).slice(2)}`,
+		email: `user${Math.floor(Math.random() * 1000)}@example.com`,
+		addedAt: Date.now(),
+		lastUsed: 0,
+		...overrides,
+	};
+}
+
+const FAMILY: ModelFamily = "codex";
+
+describe("parallel probe candidates", () => {
+	beforeEach(() => resetTrackers());
+	afterEach(() => resetTrackers());
+
+	it("getTopCandidates never proposes disabled accounts", () => {
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			accounts: [makeAccount({ enabled: false }), makeAccount(), makeAccount()],
+			activeIndex: 0,
+		});
+		const candidates = getTopCandidates(manager, FAMILY, null, 5);
+		expect(candidates.length).toBeGreaterThan(0);
+		for (const candidate of candidates) {
+			expect(candidate.enabled).not.toBe(false);
+		}
 	});
 });

@@ -19,6 +19,8 @@ import {
 	hasUsageWindow,
 	parseCodexUsagePayload,
 	persistUsageQuotaExhaustion,
+	persistUsageQuotaRecovery,
+	isUsageQuotaRecovered,
 	resolveCodexUsageAccountId,
 	type CodexUsageSummary,
 } from "./codex-usage.js";
@@ -569,6 +571,12 @@ async function fetchUsageForAccount(
 				// The backend's usage observation remains useful for notifications;
 				// only the proactive routing guard is unavailable until the next poll.
 				logWarn(`Failed to persist exhausted usage quota: ${(error as Error).message}`);
+			}
+		} else if (autoProtectCredits && isUsageQuotaRecovered([usage.primary, usage.secondary])) {
+			try {
+				if (await persistUsageQuotaRecovery(account)) onCredentialsPersisted();
+			} catch {
+				logWarn("Failed to persist recovered usage quota");
 			}
 		}
 		return {

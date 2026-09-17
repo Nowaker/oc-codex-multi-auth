@@ -34,7 +34,9 @@ import {
 	resolveCodexUsageAccountId,
 	type CodexUsageSummary,
 } from "../codex-usage.js";
-import { loadAccounts } from "../storage.js";
+import { loadAccounts, withAccountStorageTransaction } from "../storage.js";
+import { clearUnchangedRecoveryState } from "../accounts/stale-state.js";
+import { findAccountIndexByIdentity } from "./refresh-account.js";
 import {
 	formatUiHeader,
 	formatUiItem,
@@ -326,6 +328,7 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 					].join("\n");
 				}
 
+				const recoverySnapshot = { ...target, rateLimitResetTimes: { ...target.rateLimitResetTimes } };
 				let result: CodexResetConsumePayload;
 				try {
 					result = await consumeCodexResetCredit({
@@ -366,6 +369,35 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 				// usage refresh below is a courtesy read, so its failure must never
 				// reach the outer catch: reporting `redeemed: false` for a credit the
 				// server already consumed would send the user to redeem another one.
+				let blocksCleared = false;
+				let clearedSnapshot: typeof recoverySnapshot | undefined;
+				let blocksClearError: string | undefined;
+				try {
+					blocksCleared = await withAccountStorageTransaction(async (current, persist) => {
+						if (!current) throw new Error("Account storage is unavailable");
+						const recordIndex = findAccountIndexByIdentity(current.accounts, {
+							organizationId: target.organizationId,
+							accountId: target.accountId,
+							accountUserId: target.accountUserId,
+							refreshToken: target.refreshToken,
+						});
+						const record = current.accounts[recordIndex];
+						if (!record || record.enabled === false) return false;
+						const cleared = clearUnchangedRecoveryState(record, recoverySnapshot);
+						if (!cleared) return false;
+						await persist(current);
+						clearedSnapshot = { ...recoverySnapshot, coolingDownUntil: undefined,
+							quotaExhaustedUntil: undefined, quotaExhaustedStampAt: undefined,
+							...cleared, cooldownReason: cleared.cooldownReason ? recoverySnapshot.cooldownReason : undefined,
+							rateLimitResetTimes: cleared.rateLimitResetTimes ?? {} };
+						return true;
+					});
+					invalidateAccountManagerCache(clearedSnapshot ? [clearedSnapshot] : undefined);
+				} catch {
+					blocksCleared = false;
+					blocksClearError = "could not clear local rate-limit/quota markers";
+				}
+
 				let usageAfter: CodexUsageSummary | undefined;
 				let usageError: string | undefined;
 				try {
@@ -379,6 +411,8 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 						...identity,
 						action: "consume",
 						redeemed: true,
+						blocksCleared,
+						blocksClearError: blocksClearError ?? null,
 						credit,
 						result: {
 							code: result.code ?? null,
@@ -394,6 +428,8 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 					`${displayLabel}:`,
 					`  redeemed ${credit.id}`,
 					`  ${formatCodexResetConsumeResult(result)}`,
+					...(blocksCleared ? ["  cleared local rate-limit/quota markers"] : []),
+					...(blocksClearError ? [`  Note: ${blocksClearError}; the credit was redeemed.`] : []),
 					"",
 					...(usageAfter
 						? ["new usage:", ...buildUsageLines(usageAfter)]

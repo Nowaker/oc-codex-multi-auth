@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
 	HealthScoreTracker,
 	TokenBucketTracker,
+	resetTrackers,
 	selectHybridAccount,
 	addJitter,
 	randomDelay,
@@ -510,5 +511,57 @@ describe("utility functions", () => {
 
 			vi.spyOn(Math, "random").mockRestore();
 		});
+	});
+});
+
+describe("health tracker edge cases", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		resetTrackers();
+	});
+
+	it("passive recovery never turns a backwards clock into a penalty", () => {
+		vi.useFakeTimers();
+		const tracker = new HealthScoreTracker();
+		vi.setSystemTime(1_000_000);
+		tracker.recordFailure(0);
+		const afterFailure = tracker.getScore(0);
+		vi.setSystemTime(500_000);
+		expect(tracker.getScore(0)).toBe(afterFailure);
+	});
+
+	it("score is clamped to [minScore, maxScore] across many failures and successes", () => {
+		const tracker = new HealthScoreTracker();
+		for (let i = 0; i < 50; i += 1) tracker.recordFailure(0);
+		expect(tracker.getScore(0)).toBe(0);
+		for (let i = 0; i < 200; i += 1) tracker.recordSuccess(0);
+		expect(tracker.getScore(0)).toBe(100);
+	});
+});
+
+describe("token bucket edge cases", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		resetTrackers();
+	});
+
+	it("refund fails after the 30s window and never exceeds maxTokens", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000_000);
+		const bucket = new TokenBucketTracker();
+		expect(bucket.tryConsume(0)).toBe(true);
+		vi.setSystemTime(1_000_000 + 31_000);
+		expect(bucket.refundToken(0)).toBe(false);
+		for (let i = 0; i < 200; i += 1) bucket.refundToken(0);
+		expect(bucket.getTokens(0)).toBeLessThanOrEqual(50);
+	});
+
+	it("msUntilToken is 0 when a token exists and finite after drain", () => {
+		const bucket = new TokenBucketTracker();
+		expect(bucket.msUntilToken(0)).toBe(0);
+		bucket.drain(0, undefined, 50);
+		const wait = bucket.msUntilToken(0);
+		expect(wait).toBeGreaterThan(0);
+		expect(Number.isFinite(wait)).toBe(true);
 	});
 });

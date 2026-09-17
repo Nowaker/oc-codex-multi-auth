@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createRedeemRequestId } from "../lib/codex-reset.js";
 import { createCodexResetTool } from "../lib/tools/codex-reset.js";
@@ -6,9 +9,10 @@ import type { ToolContext } from "../lib/tools/index.js";
 
 vi.mock("../lib/storage.js", () => ({
 	loadAccounts: vi.fn(),
+	withAccountStorageTransaction: vi.fn(),
 }));
 
-import { loadAccounts } from "../lib/storage.js";
+import { loadAccounts, withAccountStorageTransaction } from "../lib/storage.js";
 
 const CREDITS_URL =
 	"https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
@@ -92,6 +96,7 @@ function callsTo(
 
 describe("codex-reset tool", () => {
 	beforeEach(() => {
+		vi.mocked(withAccountStorageTransaction).mockReset();
 		vi.mocked(loadAccounts).mockResolvedValue({
 			version: 3,
 			activeIndex: 0,
@@ -164,6 +169,100 @@ describe("codex-reset tool", () => {
 		expect(body.redeem_request_id).toBeTruthy();
 		expect(output).toContain("redeemed RateLimitResetCredit_1");
 		expect(output).toContain("new usage:");
+	});
+	it("preserves new limits recorded during redemption and retires only the markers actually cleared", async () => {
+		const future = Date.now() + 3_600_000;
+		const account = { accountId: "acct-1", refreshToken: "refresh-token", accessToken: "access-token",
+			expiresAt: future, addedAt: 1, lastUsed: 1, quotaExhaustedUntil: future,
+			quotaExhaustedStampAt: 100, rateLimitResetTimes: { codex: future, "gpt-5.1": future },
+			coolingDownUntil: future, cooldownReason: "auth-failure" as const };
+		const before = { version: 3 as const, activeIndex: 0, accounts: [account] };
+		const current = structuredClone(before);
+		vi.mocked(loadAccounts).mockResolvedValue(before);
+		const persist = vi.fn();
+		vi.mocked(withAccountStorageTransaction).mockImplementation(async (callback) => callback(current, persist));
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			if (String(input) === CREDITS_URL) return jsonResponse(creditsPayload);
+			if (String(input) === USAGE_URL) return jsonResponse(usagePayload);
+			if (String(input) === CONSUME_URL) {
+				current.accounts[0].quotaExhaustedStampAt = 200;
+				current.accounts[0].rateLimitResetTimes.codex = future + 60_000;
+				return jsonResponse({ code: "ok", windows_reset: ["primary"] });
+			}
+			throw new Error("Unexpected test URL");
+		});
+		const ctx = buildCtx();
+		const invalidate = vi.spyOn(ctx, "invalidateAccountManagerCache");
+		const execute = createCodexResetTool(ctx).execute as ToolExecute;
+		const output = JSON.parse(await execute({ action: "consume", confirm: true, format: "json" }));
+		expect(output).toMatchObject({ redeemed: true, blocksCleared: true });
+		expect(current.accounts[0].quotaExhaustedStampAt).toBe(200);
+		expect(current.accounts[0].quotaExhaustedUntil).toBe(future);
+		expect(current.accounts[0].rateLimitResetTimes).toEqual({ codex: future + 60_000 });
+		expect(current.accounts[0].coolingDownUntil).toBeUndefined();
+		expect(invalidate.mock.calls[0]?.[0]?.[0]).toMatchObject({
+			rateLimitResetTimes: { "gpt-5.1": future }, quotaExhaustedUntil: undefined,
+		});
+	});
+
+	it.each(["json", "text"])("clears persisted local blocks after successful consume (%s)", async (format) => {
+		const actualStorage = await vi.importActual<typeof import("../lib/storage.js")>("../lib/storage.js");
+		const directory = await mkdtemp(join(tmpdir(), "codex-reset-blocks-"));
+		const path = join(directory, "accounts.json");
+		const future = Date.now() + 3_600_000;
+		const storage = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [{
+				accountId: "acct-1", refreshToken: "refresh-token", accessToken: "access-token",
+				expiresAt: future, addedAt: 1, lastUsed: 1,
+				quotaExhaustedUntil: future, rateLimitResetTimes: { codex: future },
+				coolingDownUntil: future, cooldownReason: "auth-failure" as const,
+			}],
+		};
+		actualStorage.setStoragePathDirect(path);
+		try {
+			await writeFile(path, JSON.stringify(storage));
+			vi.mocked(loadAccounts).mockResolvedValue(storage);
+			vi.mocked(withAccountStorageTransaction).mockImplementation(actualStorage.withAccountStorageTransaction);
+			mockCodexFetch();
+			const ctx = buildCtx();
+			const invalidate = vi.spyOn(ctx, "invalidateAccountManagerCache");
+			const execute = createCodexResetTool(ctx).execute as ToolExecute;
+
+			const output = await execute({ action: "consume", confirm: true, format });
+
+			const persisted = JSON.parse(await readFile(path, "utf8"));
+			expect(persisted.accounts[0].quotaExhaustedUntil).toBeUndefined();
+			expect(persisted.accounts[0].coolingDownUntil).toBeUndefined();
+			expect(persisted.accounts[0].cooldownReason).toBeUndefined();
+			expect(persisted.accounts[0].rateLimitResetTimes).toEqual({});
+			expect(invalidate).toHaveBeenCalledOnce();
+			if (format === "json") expect(JSON.parse(output)).toMatchObject({ redeemed: true, blocksCleared: true });
+			else expect(output).toContain("cleared local rate-limit/quota markers");
+		} finally {
+			actualStorage.setStoragePathDirect(null);
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["json", "text"])("preserves successful redemption when local cleanup fails (%s)", async (format) => {
+		mockCodexFetch();
+		vi.mocked(withAccountStorageTransaction).mockRejectedValue(new Error("secret-refresh-token"));
+		const execute = createCodexResetTool(buildCtx()).execute as ToolExecute;
+
+		const output = await execute({ action: "consume", confirm: true, format });
+
+		if (format === "json") {
+			expect(JSON.parse(output)).toMatchObject({
+				redeemed: true, blocksCleared: false, blocksClearError: expect.any(String),
+			});
+		} else {
+			expect(output).toContain("redeemed RateLimitResetCredit_1");
+			expect(output).toContain("could not clear local rate-limit/quota markers");
+		}
+		expect(output).not.toContain("secret-refresh-token");
 	});
 
 	it("still reports the redemption when the usage re-read fails afterwards", async () => {

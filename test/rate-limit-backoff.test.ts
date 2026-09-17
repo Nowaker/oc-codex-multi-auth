@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
 	clearRateLimitBackoffState,
 	getRateLimitBackoff,
+	remapRateLimitBackoffAfterRemoval,
 	resetRateLimitBackoff,
 	calculateBackoffMs,
 	getRateLimitBackoffWithReason,
@@ -154,5 +155,56 @@ describe("Rate limit backoff", () => {
 			expect(second.attempt).toBe(2);
 			expect(second.delayMs).toBe(12000);
 		});
+	});
+});
+describe("rate-limit backoff with hostile server inputs", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		clearRateLimitBackoffState();
+	});
+
+	const finitePositiveBounded = (value: number): void => {
+		expect(Number.isFinite(value)).toBe(true);
+		expect(value).toBeGreaterThanOrEqual(0);
+	};
+
+	it("delayMs stays finite and non-negative for NaN/Infinity/negative/zero inputs", () => {
+		for (const input of [NaN, Infinity, -Infinity, -5, 0, 1e309, Number.MIN_VALUE]) {
+			const result = getRateLimitBackoff(0, `q-${String(input)}`, input);
+			finitePositiveBounded(result.delayMs);
+			expect(result.attempt).toBeGreaterThanOrEqual(1);
+			expect(Number.isFinite(result.attempt)).toBe(true);
+		}
+	});
+
+	it("huge-but-finite server delay does not overflow to NaN/Infinity", () => {
+		const result = getRateLimitBackoff(1, "q-huge", 1e12);
+		finitePositiveBounded(result.delayMs);
+	});
+
+	it("exponential component never exceeds the 60s cap regardless of attempt count", () => {
+		for (let i = 0; i < 2000; i++) {
+			const result = getRateLimitBackoff(2, "q-growth", 1000);
+			finitePositiveBounded(result.delayMs);
+			expect(result.delayMs).toBeLessThanOrEqual(60_000);
+		}
+	});
+
+	it("backoff with reason stays finite for all reasons and huge attempt counts", () => {
+		for (const reason of ["quota", "tokens", "concurrent", "unknown"] as const) {
+			const capped = calculateBackoffMs(60_000, 5000, reason);
+			finitePositiveBounded(capped);
+			expect(capped).toBeLessThanOrEqual(60_000);
+		}
+		const adjusted = getRateLimitBackoffWithReason(3, "q-reason", 1000, "quota");
+		finitePositiveBounded(adjusted.delayMs);
+	});
+
+	it("remapRateLimitBackoffAfterRemoval survives malformed keys without resurrecting blocks", () => {
+		getRateLimitBackoff(0, "a", 1000);
+		getRateLimitBackoff(1, "b", 1000);
+		expect(() => remapRateLimitBackoffAfterRemoval(0)).not.toThrow();
+		expect(() => remapRateLimitBackoffAfterRemoval(-1)).not.toThrow();
+		expect(() => remapRateLimitBackoffAfterRemoval(9999)).not.toThrow();
 	});
 });

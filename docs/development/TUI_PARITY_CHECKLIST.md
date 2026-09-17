@@ -18,7 +18,7 @@ Use this checklist to keep `oc-codex-multi-auth` aligned with the Antigravity-st
 - Core actions visible:
   - `Add account`
   - `Check quotas`
-  - `Deep probe accounts`
+  - `Deep check accounts`
   - `Verify flagged accounts`
   - `Start fresh`
   - `Delete all accounts`
@@ -49,7 +49,7 @@ Use this checklist to keep `oc-codex-multi-auth` aligned with the Antigravity-st
 ## Health/Quota Check Parity
 
 - `Check quotas` scans all active accounts and prints per-account results.
-- `Deep probe` performs stricter validation and surfaces richer diagnostic output.
+- `Deep check accounts` performs stricter validation and surfaces richer diagnostic output.
 - Output includes index progress (`[i/N]`) and per-account status (`OK`, `ERROR`, `DISABLED`).
 - Summary line always shown at end (`ok/error/disabled` counts).
 
@@ -78,7 +78,7 @@ Use this checklist to keep `oc-codex-multi-auth` aligned with the Antigravity-st
 - Visual controls:
   - `codexTuiColorProfile`: `truecolor` / `ansi256` / `ansi16`
   - `codexTuiGlyphMode`: `ascii` / `unicode` / `auto`
-- Privacy controls: `maskEmail: true` or `CODEX_TUI_MASK_EMAIL=1` masks the account email across **every** human-facing surface — interactive auth menu, `codex-list` / `codex-status` / `codex-limits` / `codex-health` / `codex-dashboard` output, runtime and log messages, the standalone CLI login menu, and TUI prompt quota status. A user-defined account label is preferred over the email wherever one exists. `maskEmailInQuotaDetails: true` or `CODEX_TUI_MASK_EMAIL_DETAILS=1` additionally masks the email in the quota **details** view. The shared helpers live in `lib/account-display.ts`; new display surfaces must route through them rather than formatting the email directly.
+- Privacy controls: `maskEmail: true` or `CODEX_TUI_MASK_EMAIL=1` masks the account email across **every** human-facing surface, including the interactive auth menu, `codex-list` / `codex-status` / `codex-limits` / `codex-health` / `codex-dashboard` output, runtime and log messages, the standalone CLI login menu, and TUI prompt quota status. A user-defined account label is preferred over the email wherever one exists. `maskEmailInQuotaDetails: true` or `CODEX_TUI_MASK_EMAIL_DETAILS=1` additionally masks the email in the quota **details** view. The shared helpers live in `lib/account-display.ts`; new display surfaces must route through them rather than formatting the email directly.
 
 ## Tooling Parity
 

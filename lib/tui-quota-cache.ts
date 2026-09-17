@@ -73,7 +73,9 @@ function parseFiniteIntHeader(
 	const raw = headers.get(name);
 	if (!raw) return undefined;
 	const parsed = Number.parseInt(raw, 10);
-	return Number.isFinite(parsed) ? parsed : undefined;
+	// A negative count is nonsense from a hostile or broken gateway; treat
+	// it as absent so the details dialog never renders "Active limit: -5".
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function formatWindowLabel(windowMinutes: number | undefined): string {

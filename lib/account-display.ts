@@ -28,7 +28,9 @@ export function maskEmailForDisplay(email: string | undefined): string | undefin
 	if (!trimmed) return undefined;
 	const atIndex = trimmed.indexOf("@");
 	if (atIndex <= 0) return "*****";
-	const prefix = trimmed.slice(0, Math.min(2, atIndex));
+	// Slice by code points, not UTF-16 units: an astral character at the
+	// boundary would otherwise split into a lone surrogate.
+	const prefix = Array.from(trimmed.slice(0, atIndex)).slice(0, 2).join("");
 	const domain = trimmed.slice(atIndex);
 	return `${prefix}***${domain}`;
 }

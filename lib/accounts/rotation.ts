@@ -20,8 +20,10 @@ import { MAX_QUOTA_RESET_HORIZON_MS } from "../quota-windows.js";
 import type { CooldownReason } from "../storage.js";
 import { nowMs } from "../utils.js";
 import {
+	clearExpiredQuotaExhaustion,
 	clearExpiredRateLimits,
 	getQuotaKey,
+	isQuotaExhausted,
 	isRateLimitedForFamily,
 	type RateLimitReason,
 } from "./rate-limits.js";
@@ -49,6 +51,8 @@ export class AccountRotation {
 	): boolean {
 		if (account.enabled === false) return false;
 		clearExpiredRateLimits(account);
+		clearExpiredQuotaExhaustion(account);
+		if (isQuotaExhausted(account)) return false;
 		if (isRateLimitedForFamily(account, family, model)) return false;
 		if (this.state.isAccountCoolingDown(account)) return false;
 		const quotaKey = model ? `${family}:${model}` : family;
@@ -146,16 +150,25 @@ export class AccountRotation {
 	 * Health/token/freshness-weighted selection. The historical default.
 	 *
 	 * When at least one account is selectable this returns the best-scoring one.
-	 * When NONE is — every account disabled, rate-limited or cooling down —
-	 * `selectHybridAccount` deliberately falls back to the least-recently-used
-	 * account instead of returning null, because retrying a blocked account
-	 * beats refusing to send anything (a single-account pool has nowhere to fail
-	 * over to, and a persisted block can outlive the limit that caused it).
+	 * When NONE is — every account disabled, rate-limited, quota-exhausted or
+	 * cooling down — `selectHybridAccount` deliberately falls back to the
+	 * least-recently-used account instead of returning null, because retrying a
+	 * blocked account beats refusing to send anything (a single-account pool has
+	 * nowhere to fail over to, and a persisted block can outlive the limit that
+	 * caused it).
 	 *
 	 * So a returned account is NOT a promise that it is selectable. Callers that
 	 * need that guarantee must consult `getSelectionExplainability`, which is
 	 * what `codex-doctor` does. {@link getCurrentOrNextForFamilySticky} and
 	 * {@link getCurrentOrNextForFamily} return null in the same situation.
+	 *
+	 * The request path overrides this last-resort behavior: when the fallback
+	 * account is marked ineligible in the selection explainability, the request
+	 * loop discards it instead of sending it upstream, so an all-blocked pool
+	 * waits out (or fails on) the block rather than retrying it — which is also
+	 * what allows model fallback to degrade the model when every account is
+	 * blocked. The last-resort retry still applies to callers that do not
+	 * re-check eligibility (for example `codex-doctor` probing).
 	 */
 	getCurrentOrNextForFamilyHybrid(
 		family: ModelFamily,
@@ -441,31 +454,21 @@ export class AccountRotation {
 	 * Block an account until a quota window the backend reported as fully spent
 	 * resets (issue #218).
 	 *
-	 * Differs from {@link markRateLimitedWithReason} in taking an ABSOLUTE reset
-	 * stamp, so a week-long weekly-quota block is never rebuilt from a capped or
-	 * backed-off retry delay. Like every writer it goes through
-	 * {@link extendRateLimitReset}, so it neither shortens an existing block nor
-	 * can be shortened by a later one.
-	 *
-	 * The block rides on the same persisted `rateLimitResetTimes` map as server
-	 * 429s, so it survives restarts and is shared with other processes through
-	 * the accounts file, and it expires on its own via `clearExpiredRateLimits`.
-	 *
-	 * Because that write is monotonic and persisted, it is also unforgiving: a
-	 * reset stamp further out than any real window would strand the account for
-	 * as long as it claims, with nothing in the product able to walk it back. The
-	 * upper bound below is the same guard `parseQuotaResetAtMs` applies to the
-	 * headers, repeated here because this is the method that makes a block
-	 * permanent — the lower bound on the next line has always been checked for
-	 * the same reason.
+	 * Primary/secondary subscription windows are account-wide, irrespective of
+	 * the request's family/model. Keep their absolute reset monotonically in
+	 * `quotaExhaustedUntil`, persisted separately from transient server 429s and
+	 * expired by `clearExpiredQuotaExhaustion`. Legacy family/model arguments
+	 * remain accepted, but cannot narrow the subscription block's scope.
+	 * Reject implausible timestamps using the parser's horizon guard so a bad
+	 * header cannot strand an account indefinitely.
 	 *
 	 * @returns true when a new (or longer) block was written.
 	 */
 	markQuotaExhausted(
 		account: ManagedAccount,
 		resetAtMs: number,
-		family: ModelFamily,
-		model?: string | null,
+		_family: ModelFamily,
+		_model?: string | null,
 	): boolean {
 		if (!Number.isFinite(resetAtMs)) return false;
 		const resetAt = Math.floor(resetAtMs);
@@ -473,13 +476,18 @@ export class AccountRotation {
 		if (resetAt <= now) return false;
 		if (resetAt - now > MAX_QUOTA_RESET_HORIZON_MS) return false;
 
-		let changed = false;
-		for (const key of this.getBlockedQuotaKeys(family, model)) {
-			if (this.extendRateLimitReset(account, key, resetAt)) changed = true;
+		const existing = account.quotaExhaustedUntil;
+		if (typeof existing === "number" && Number.isFinite(existing) && existing >= resetAt) {
+			return false;
 		}
-
-		if (changed) account.lastRateLimitReason = "quota";
-		return changed;
+		account.quotaExhaustedUntil = resetAt;
+		// Provenance for the cross-process merge: a stamp whose write time is
+		// not newer than a doctor-clear tombstone must not be resurrected by a
+		// stale-snapshot save. Every authoritative write re-dates the stamp.
+		account.quotaExhaustedStampAt = now;
+		delete account.quotaExhaustedClearedAt;
+		account.lastRateLimitReason = "quota";
+		return true;
 	}
 
 	markAccountCoolingDown(
@@ -536,27 +544,47 @@ export class AccountRotation {
 		if (available.length > 0) return 0;
 		if (enabledAccounts.length === 0) return 0;
 
-		const waitTimes: number[] = [];
+		// Per-account semantics: an account is unavailable until its LAST active
+		// block clears (max over its own blocks), and the pool recovers when the
+		// FIRST account becomes available (min across accounts). Flattening
+		// every block into one list and taking the global min underestimates:
+		// a legacy all-family weekly stamp (6d) plus a newer quota stamp (2h)
+		// on the same account used to promise a 2h wait while the account
+		// stayed blocked for 6 days, sending the wait loop back to sleep in a
+		// cycle until the longer block elapsed.
+		const accountWaits: number[] = [];
 		const baseKey = getQuotaKey(family);
 		const modelKey = model ? getQuotaKey(family, model) : null;
 		const tokenQuotaKey = model ? `${family}:${model}` : family;
 		const tokenTracker = getTokenTracker();
 
 		for (const account of enabledAccounts) {
+			const blocks: number[] = [];
+
 			const baseResetAt = account.rateLimitResetTimes[baseKey];
 			if (typeof baseResetAt === "number") {
-				waitTimes.push(Math.max(0, baseResetAt - now));
+				blocks.push(Math.max(0, baseResetAt - now));
 			}
 
 			if (modelKey) {
 				const modelResetAt = account.rateLimitResetTimes[modelKey];
 				if (typeof modelResetAt === "number") {
-					waitTimes.push(Math.max(0, modelResetAt - now));
+					blocks.push(Math.max(0, modelResetAt - now));
 				}
 			}
 
 			if (typeof account.coolingDownUntil === "number") {
-				waitTimes.push(Math.max(0, account.coolingDownUntil - now));
+				blocks.push(Math.max(0, account.coolingDownUntil - now));
+			}
+
+			// An account whose shared subscription quota is spent is blocked
+			// account-wide until the stamp resets; surface that wait so a
+			// quota-exhausted-only pool waits instead of returning 0 (503).
+			if (
+				typeof account.quotaExhaustedUntil === "number" &&
+				account.quotaExhaustedUntil > now
+			) {
+				blocks.push(account.quotaExhaustedUntil - now);
 			}
 
 			// An account blocked only by a depleted local token bucket becomes
@@ -565,11 +593,15 @@ export class AccountRotation {
 			if (account.enabled !== false) {
 				const tokenWait = tokenTracker.msUntilToken(account.index, tokenQuotaKey);
 				if (tokenWait > 0 && Number.isFinite(tokenWait)) {
-					waitTimes.push(tokenWait);
+					blocks.push(tokenWait);
 				}
+			}
+
+			if (blocks.length > 0) {
+				accountWaits.push(Math.max(...blocks));
 			}
 		}
 
-		return waitTimes.length > 0 ? Math.min(...waitTimes) : 0;
+		return accountWaits.length > 0 ? Math.min(...accountWaits) : 0;
 	}
 }

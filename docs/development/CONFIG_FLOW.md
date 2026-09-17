@@ -249,6 +249,8 @@ Important runtime behavior:
 | `~/.opencode/auth/openai.json` | OAuth token storage |
 | `~/.opencode/oc-codex-multi-auth-accounts.json` | global account storage |
 | `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json` | per-project account storage |
+| `~/.opencode/projects/<project-key>/oc-codex-multi-auth-flagged-accounts.json` | flagged/deactivated account metadata for the project scope. The flagged file is always written beside the active accounts file, so with the default `perProjectAccounts` it is per-project, and with project storage off it is `~/.opencode/oc-codex-multi-auth-flagged-accounts.json` |
+| `~/.local/state/opencode/oc-codex-multi-auth-tui-quota.json` | TUI quota snapshot cache shared by the provider and TUI plugins. `$OPENCODE_STATE_DIR` overrides the directory when set |
 | `~/.opencode/logs/codex-plugin/` | plugin request/debug logs |
 
 ## See Also

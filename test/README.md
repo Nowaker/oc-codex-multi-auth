@@ -6,7 +6,7 @@ The tree evolves frequently. Use `rg --files test` (or `find test -name '*.test.
 as the source of truth rather than any list committed here; this file describes
 the **shape** of the suite, not an exhaustive inventory.
 
-Current size: 113 test files — 95 at the top level plus `chaos/` (9),
+Current size: 136 test files, 118 at the top level plus `chaos/` (9),
 `property/` (6), and `contracts/` (3).
 
 ## Layout

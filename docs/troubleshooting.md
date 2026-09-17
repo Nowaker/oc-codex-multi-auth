@@ -2,11 +2,11 @@
 
 Common setup, authentication, model, and request-debugging issues for `oc-codex-multi-auth` (current package line, including the 24-tool surface and GPT-5.6 catalog).
 
-For install modes, the full tool list (with args), and standalone CLI commands (`doctor`, `status`, `list`, `limits`, `health`, `diag`, `warm`), see [Tools and CLI](tools-and-cli.md) and [Getting Started](getting-started.md). For advanced env vars (`CODEX_THREAD_ID`, `OPENCODE_CODEX_PROMPT_URL`, etc.) see [Configuration](configuration.md#advanced--power-user-environment-variables).
+For install modes, the full tool list (with args), and standalone CLI commands (`doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm`), see [Tools and CLI](tools-and-cli.md) and [Getting Started](getting-started.md). For advanced env vars (`CODEX_THREAD_ID`, `OPENCODE_CODEX_PROMPT_URL`, etc.) see [Configuration](configuration.md#advanced--power-user-environment-variables).
 
 ---
 
-> **Quick Reset**: Most issues can be resolved by deleting `~/.opencode/auth/openai.json` and running `opencode auth login` again.
+> **Quick Reset**: Most issues can be resolved by clearing the `openai` entry in OpenCode's host auth store (`~/.local/share/opencode/auth.json`, the same path on every platform including Windows; older host layouts used `~/.opencode/auth/openai.json`) and running `opencode auth login` again. Clearing the host auth entry only resets the host OAuth fallback. To fully clear pooled accounts, also remove `~/.opencode/oc-codex-multi-auth-accounts.json`, any project-specific account files under `~/.opencode/projects/<project-key>/`, and flagged account files (`*-flagged-accounts.json`). When `CODEX_KEYCHAIN=1` is active, stored accounts live in the OS keychain under service `oc-codex-multi-auth` rather than JSON, requiring `codex-keychain rollback` or OS keychain tools to clear. See [Privacy](privacy.md) for full cleanup procedures.
 
 If you prefer guided recovery before manual debugging, run:
 
@@ -45,7 +45,7 @@ codex-doctor deep=true format="json"
 <details>
 <summary><b>✅ RESOLVED: OpenCode plugin blocking (v4.9.0+)</b></summary>
 
-**Status:** Fixed in v4.9.0 by renaming the package.
+**Status.** Fixed in v4.9.0 by renaming the package.
 
 **What was happening:**
 
@@ -100,7 +100,7 @@ Update your `~/.config/opencode/opencode.json`:
    ```bash
    npm view oc-codex-multi-auth version
    ```
-5. **If the plugin is present but still won’t load**, rerun `npx -y oc-codex-multi-auth@latest` so the installer refreshes the config and clears OpenCode's cached plugin copy.
+5. **If the plugin is present but still won't load**, rerun `npx -y oc-codex-multi-auth@latest` so the installer refreshes the config and clears OpenCode's cached plugin copy.
 
 </details>
 
@@ -111,7 +111,7 @@ Update your `~/.config/opencode/opencode.json`:
 <details open>
 <summary><b>Slow first response / startup latency</b></summary>
 
-**What’s normal:**
+**What's normal:**
 - The first request may fetch **Codex instructions** and/or the **OpenCode codex prompt** from GitHub (catalog + prompt caches under `~/.opencode/cache/`).
 - Default `requestTransformMode` is **`native`**. Startup prewarm of prompt caches only runs when legacy transform is enabled (`CODEX_AUTH_REQUEST_TRANSFORM_MODE=legacy` or config `requestTransformMode: "legacy"`) and is not disabled with `CODEX_AUTH_PREWARM=0`.
 
@@ -149,9 +149,9 @@ Update your `~/.config/opencode/opencode.json`:
 - A pool mutation reports `config_locked` with `retryable: true` in JSON output.
 - Text output says the plugin configuration is locked by another process and no change was made.
 
-**Cause:** Another OpenCode process is updating `~/.opencode/openai-codex-auth-config.json`. Pool dry-runs do not acquire this lock. Every non-dry mutation, including a possible no-op, waits for the bounded retry window and is revalidated under the lock so its result cannot rely on a stale preview.
+**Cause.** Another OpenCode process is updating `~/.opencode/openai-codex-auth-config.json`. Pool dry-runs do not acquire this lock. Every non-dry mutation, including a possible no-op, waits for the bounded retry window and is revalidated under the lock so its result cannot rely on a stale preview.
 
-**Solution:** No partial change was applied. Retry the same `codex-pool` action shortly. If contention persists, finish or stop other processes that are actively changing plugin configuration, then retry.
+**Solution.** No partial change was applied. Retry the same `codex-pool` action shortly. If contention persists, finish or stop other processes that are actively changing plugin configuration, then retry.
 
 </details>
 
@@ -222,10 +222,10 @@ Failed to access Codex API
 1. **Alternate login:**
    - Re-run `opencode auth login`
    - **If localhost port 1455 is reachable** (including via `ssh -L 1455:localhost:1455 user@remote`):
-     choose **`Codex OAuth (Open URL Manually)`** - it prints the URL after the listener is ready; open it in any browser; login completes automatically through localhost
+     choose **`Codex OAuth (Open URL Manually)`**, which prints the URL after the listener is ready. Open it in any browser and login completes automatically through localhost
    - **If localhost is not reachable** (containers, restricted networks):
-     choose **`Codex OAuth (Device Code)`** - follow the verification link and one-time code;
-     if device code is unavailable, fall back to **`Codex OAuth (Manual URL Paste)`** - paste the full callback URL, including its `state` parameter
+     choose **`Codex OAuth (Device Code)`** and follow the verification link and one-time code.
+     If device code is unavailable, fall back to **`Codex OAuth (Manual URL Paste)`** and paste the full callback URL, including its `state` parameter
 
 2. **Check port 1455 availability:**
    ```bash
@@ -236,7 +236,7 @@ Failed to access Codex API
    netstat -ano | findstr :1455
    ```
 
-3. **Stop Codex CLI if running** — both use port 1455
+3. **Stop Codex CLI if running.** Both use port 1455
 
 </details>
 
@@ -251,19 +251,34 @@ Failed to access Codex API
 - Open the URL directly in browser (don't use a stale link)
 - For SSH/WSL/remote: if localhost port 1455 is reachable (including via SSH port forwarding), choose **Open URL Manually**; if localhost is not reachable, choose **Device Code**; use **Manual URL Paste** only as a last resort
 
+The callback window is five minutes long and starts when the login listener starts, not when you open the URL. A login left waiting past five minutes releases port 1455, so start a fresh login and open the new URL promptly.
+
+</details>
+
+<details>
+<summary><b>Device Code Login Fails or Times Out</b></summary>
+
+**Mechanics:**
+- The one-time code expires in about 15 minutes, and the plugin stops polling after 15 minutes with a timeout message.
+- The plugin polls the device authorization endpoint every 5 seconds, or the interval the server returns with the session.
+- A 403 or 404 while polling means authorization is not finished yet, so the plugin keeps polling until the deadline. Complete the sign-in in the browser and the next poll succeeds.
+
+**If the device login never starts:**
+- A 404 from the start request means the auth server does not have device code login enabled. Retry with browser login or `Codex OAuth (Manual URL Paste)`.
+
 </details>
 
 <details>
 <summary><b>403 Forbidden Error</b></summary>
 
-**Cause:** ChatGPT subscription issue
+**Cause.** ChatGPT subscription issue
 
 **Check:**
 1. Active ChatGPT Plus or Pro subscription
 2. Subscription not expired
 3. Billing is current
 
-**Solution:** Visit [ChatGPT](https://chatgpt.com) and verify subscription status
+**Solution.** Visit [ChatGPT](https://chatgpt.com) and verify subscription status
 
 </details>
 
@@ -274,11 +289,11 @@ Failed to access Codex API
 - Requests fail with: `Usage not included in your plan`
 - Often reported on Business/Team workspaces
 
-**Cause:** The plugin is using the wrong workspace/account id (personal vs business).
+**Cause.** The plugin is using the wrong workspace/account id (personal vs business).
 
 **Solutions:**
 1. Upgrade to the current release of `oc-codex-multi-auth` (workspace routing logic was hardened for Business + Personal dual accounts in the 5.x line and renamed in 6.0.0).
-2. Re-run `opencode auth login` and select the correct workspace when prompted.
+2. Re-run `opencode auth login` and choose the intended workspace in the browser session. There is no CLI or web prompt for workspace selection, and each login binds the account to the token's `chatgpt_account_id` claim.
 3. If running non-interactively, set `CODEX_AUTH_ACCOUNT_ID` to the workspace account id and re-login.
 4. Verify the workspace has Codex access in the ChatGPT UI.
 
@@ -294,11 +309,11 @@ Failed to access Codex API
   consuming the quota of whichever member logged in last.
 - `codex-health` reports a Business member credential conflict.
 
-**Cause:** A Business workspace id identifies the subscription, not an
+**Cause.** A Business workspace id identifies the subscription, not an
 individual seat. Older builds could match the host OAuth fallback by that
 shared id and replace every matching entry with the last member's token.
 
-**Solution:** Upgrade to a build with member-aware account identity, then remove
+**Solution.** Upgrade to a build with member-aware account identity, then remove
 the affected entries and run `opencode auth login` once for each member. Make
 sure the browser is signed in as the intended member for each login. The plugin
 stores the token's `chatgpt_account_user_id`, so each entry keeps its own bearer
@@ -313,17 +328,17 @@ credentials cannot be reconstructed and require re-login.
 **Symptoms:**
 
 - One ChatGPT login (one email / Apple ID) holding **two workspace
-  subscriptions** - for example Team and Plus.
+  subscriptions**, for example Team and Plus.
 - `codex-limits` reports the same plan and the same percentage for every entry.
 - `codex-switch` to the other account keeps draining the same pool.
 - Logging in again under the other workspace appears to overwrite every entry.
 
-**Cause:** The OAuth flow requests `id_token_add_organizations=true`, so the
+**Cause.** The OAuth flow requests `id_token_add_organizations=true`, so the
 id_token lists every organization the login belongs to. Releases before this
 fix persisted one account entry per organization, but all of those entries
 shared the login's single OAuth token. The Codex backend meters quota by the
 `chatgpt-account-id` header and ignores organization ids, so an entry whose id
-was an organization id silently fell back to the token's default subscription -
+was an organization id silently fell back to the token's default subscription.
 N entries, one pool.
 
 Each workspace subscription is a distinct ChatGPT account with its own
@@ -332,10 +347,12 @@ Each workspace subscription is a distinct ChatGPT account with its own
 **Solutions:**
 
 1. Upgrade to a release containing this fix. One `opencode auth login` now
-   persists exactly one account, bound to the token's ChatGPT account id and
-   labelled with the workspace you selected.
-2. Log in once per workspace: run `opencode auth login`, pick the first
-   workspace, then run it again and pick the second. Each login appends a
+   persists exactly one account, bound to the token's `chatgpt_account_id`
+   claim. The workspace is chosen in the browser session during login, and
+   there is no workspace prompt in the CLI or the web flow.
+2. Log in once per workspace. Run `opencode auth login` and choose the first
+   workspace in the browser session, then run it again and choose the second.
+   Each login appends a
    separate account carrying its own token, so `codex-limits` reports the two
    subscriptions independently.
 3. **Existing entries are not rewritten.** Accounts persisted by an older
@@ -389,6 +406,20 @@ mode, then add the second workspace.
 
 </details>
 
+<details>
+<summary><b>Token Refresh Failures</b></summary>
+
+When a stored access token expires, the plugin refreshes it with the stored refresh token. A failed refresh reports one of four reasons.
+
+- `http_error`: the auth server returned an HTTP error, and the status code is carried along. A 4xx usually means the refresh token was revoked or expired, so re-run `opencode auth login`. A 5xx is transient, so retry later.
+- `invalid_response`: the server answered but the body failed schema validation. Transient, so retry, and check upstream status if it repeats.
+- `missing_refresh`: the account has no refresh token to exchange. Re-run `opencode auth login`.
+- `network_error`: the request never completed (DNS, TLS, or connection failure). Check connectivity and any proxy.
+
+A successful refresh keeps the prior refresh token when the response omits one, so a refresh never drops the stored credential on its own. `network_error`, `invalid_response`, and 5xx `http_error` are treated as transient and do not count toward permanent account removal. A 4xx `http_error` or `missing_refresh` counts as genuine auth invalidation and drives the account toward flagged storage.
+
+</details>
+
 ---
 
 ## Model Issues
@@ -396,7 +427,7 @@ mode, then add the second workspace.
 <details open>
 <summary><b>Model Not Found</b></summary>
 
-**Error:** `Model 'openai/gpt-5-codex-low' not found`
+**Error.** `Model 'openai/gpt-5-codex-low' not found`
 
 **Cause 1: Config key mismatch**
 
@@ -420,9 +451,9 @@ opencode run "test" --model=openai/gpt-5-codex-low  # Must match config key
 |-------|---------|
 | `--model=gpt-5-codex-low` | `--model=openai/gpt-5-codex-low` |
 
-**Note:** `opencode models openai` currently shows only OpenCode's built-in provider catalog. If you add template-defined or custom models, use `opencode debug config` to confirm they were merged into the effective config.
+**Note.** `opencode models openai` currently shows only OpenCode's built-in provider catalog. If you add template-defined or custom models, use `opencode debug config` to confirm they were merged into the effective config.
 
-**Selector note:** a compact modern (`--modern`) install exposes base OAuth families with the `--variant` presets. The default install writes no catalog, so if a selector below is missing, reinstall with `--modern`. Prefer:
+**Selector note.** A compact modern (`--modern`) install exposes base OAuth families with the `--variant` presets. The default install writes no catalog, so if a selector below is missing, reinstall with `--modern`. Prefer:
 
 ```bash
 opencode run "test" --model=openai/gpt-5.5 --variant=medium
@@ -435,7 +466,7 @@ Use explicit IDs such as `openai/gpt-5.5-medium` only after installing with `--f
 <details>
 <summary><b>Per-Model Options Not Applied</b></summary>
 
-**Symptom:** All models behave the same despite different `reasoningEffort`
+**Symptom.** All models behave the same despite different `reasoningEffort`
 
 **Debug:**
 ```bash
@@ -462,7 +493,7 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
 - Request fails with an entitlement-style 400/403 mentioning model support for ChatGPT Codex OAuth
 - Common after switching workspaces or selecting a model your workspace is not currently entitled to
 
-**Cause:** The selected model is currently not entitled for the active ChatGPT account/workspace.
+**Cause.** The selected model is currently not entitled for the active ChatGPT account/workspace.
 
 **Solutions:**
 1. Re-auth/login to refresh workspace selection:
@@ -480,14 +511,14 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    CODEX_AUTH_SEND_ORGANIZATION_HEADER=1 opencode   # restore legacy openai-organization pinning
    ```
    If the model still fails only through the plugin, run `codex-health` and compare the failing pooled account ids against the account the Codex CLI uses (`~/.codex/auth.json`).
-4. Default public selectors that are commonly entitlement-gated can auto-fallback: `gpt-6-astra` degrades into the GPT-5.6 tiers, the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain to `gpt-5.5`, and `gpt-5.5`/canonical `gpt-5-codex` degrade through `gpt-5.6-terra`, `gpt-5.6-luna`, then `gpt-5.2`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones. The Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`) have no chain by design: an unentitled account gets a hard failure rather than a silent substitution by a general model.
-5. Enable fallback policy if you also want automatic downgrades for manual/legacy selectors:
+4. Default public selectors that are commonly entitlement-gated can auto-fallback: `gpt-6-astra` degrades into the GPT-5.6 tiers, the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain to `gpt-5.5`, and `gpt-5.5` degrades through `gpt-5.6-terra` and `gpt-5.6-luna` to `gpt-5.2`, while canonical `gpt-5-codex` degrades through `gpt-5.6-terra` and `gpt-5.5` to `gpt-5.2`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones. The Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`) have no chain by design: an unentitled account gets a hard failure rather than a silent substitution by a general model.
+5. Enable fallback policy if you also want automatic downgrades for manual/legacy selectors (live targets `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.2` succeed retired GPT-5.4 IDs):
    ```bash
    CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback opencode
    ```
 6. Default fallback chain (auto-fallback for `gpt-6-astra`, the 5.6 tiers and `gpt-5.5`/`gpt-5-codex`; full chain when policy is `fallback` and not overridden):
-   - `gpt-6-astra -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` (then the `gpt-5.5` chain below)
-   - `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` (then the `gpt-5.5` chain below)
+   - `gpt-6-astra -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
+   - `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
    - `gpt-5.5 -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.2`
    - `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2`
    - `gpt-5.4 -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (the successor its catalog entry names)
@@ -504,12 +535,11 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    "unsupportedCodexPolicy": "fallback",
    "fallbackOnUnsupportedCodexModel": true,
    "unsupportedCodexFallbackChain": {
-      "gpt-5.5": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
-      "gpt-5.4": ["gpt-5.4-mini", "gpt-5.4-nano"],
-      "gpt-5.4-pro": ["gpt-5.4"],
-      "gpt-5-codex": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+      "gpt-5.5": ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.2"],
+      "gpt-5.6-sol": ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.2"],
+      "gpt-5-codex": ["gpt-5.6-terra", "gpt-5.5", "gpt-5.2"],
       "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
-       "gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"]
+      "gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"]
      }
    }
    ```
@@ -553,7 +583,7 @@ AI_APICallError: Item with id 'msg_abc123' not found.
 Items are not persisted when `store` is set to false.
 ```
 
-**Cause:** Old plugin version (fixed in v2.1.2+)
+**Cause.** Old plugin version (fixed in v2.1.2+)
 
 **Solution:**
 ```bash
@@ -576,7 +606,7 @@ Should see: `Successfully removed all X message IDs`
 <details>
 <summary><b>Context Not Preserved</b></summary>
 
-**Symptom:** Model doesn't remember previous turns
+**Symptom.** Model doesn't remember previous turns
 
 **Check logs:**
 ```bash
@@ -667,7 +697,7 @@ Your input exceeds the context window
 - `codex-switch`, `codex-label`, or `codex-remove` returns a missing index message
 - You expected an interactive picker
 
-**Cause:** Interactive pickers require an interactive TTY session. In non-interactive sessions, you must pass `index`.
+**Cause.** Interactive pickers require an interactive TTY session. In non-interactive sessions, you must pass `index`.
 
 **Solutions:**
 1. Pass explicit index arguments:
@@ -709,7 +739,7 @@ Your input exceeds the context window
 - "fail to authorize" after successful login
 - Safari shows "Safari can't open the page"
 
-**Cause:** Safari's "HTTPS-Only Mode" blocks `http://localhost` callback.
+**Cause.** Safari's "HTTPS-Only Mode" blocks `http://localhost` callback.
 
 **Solutions:**
 
@@ -725,6 +755,14 @@ Your input exceeds the context window
 
 <details>
 <summary><b>Port Conflict (Address Already in Use)</b></summary>
+
+Login fails fast when the callback port cannot be bound. The error message is:
+
+```
+OAuth callback server failed to start on localhost loopback port 1455. Retry with "Codex OAuth (Device Code)" or "Codex OAuth (Manual URL Paste)".
+```
+
+No browser is opened and no URL is printed in that case. Free port 1455, then retry `opencode auth login`. Device Code and Manual URL Paste avoid the loopback listener entirely.
 
 **macOS / Linux:**
 ```bash
@@ -759,6 +797,31 @@ ssh -L 1455:localhost:1455 user@remote
 **Docker / Containers:**
 - OAuth with localhost redirect doesn't work in containers
 - Use Device Code first, then SSH port forwarding or manual URL flow if needed
+
+</details>
+
+---
+
+## Rotation, Recovery, and Notifications
+
+<details open>
+<summary><b>Circuit-open account rotations</b></summary>
+
+The plugin keeps a circuit breaker per account and model family in the runtime request pipeline (`lib/circuit-breaker.ts` keyed via `index.ts:2713-2724`). Three failures inside a 60-second window open the circuit for a 30-second cooldown. While it is open, requests short-circuit to the next account instead of retrying the degraded one, and the log line reads `[circuit-breaker] Circuit open ... Rotating account.` After the cooldown the circuit admits a single probe request. A successful probe closes the circuit, and a failed probe reopens it. No action is required. If one account rotates constantly, run `codex-health` to verify its refresh token and `codex-diag` for the breaker aggregates. (Note that standalone `lib/health.ts` defines an isolated breaker instance for diagnostic summaries, whereas active request routing wires its breaker directly in `index.ts`).
+
+</details>
+
+<details>
+<summary><b>Recovery toasts in the OpenCode TUI</b></summary>
+
+Recoverable request errors (a missing tool result, an out-of-order thinking block, or a thinking-mode violation) surface a warning toast in the OpenCode TUI. Warning and error toasts are always shown. The informational "Using &lt;account&gt; (N/N)" account-selection toast is the only one a setting controls, via `accountToasts` in plugin config or `CODEX_AUTH_ACCOUNT_TOASTS=0`. Toast duration follows `toastDurationMs` in plugin config or `CODEX_AUTH_TOAST_DURATION_MS` (default 5000 ms, minimum 1000 ms). While `lib/recovery/hook.ts` contains an underlying session repair and auto-resume engine, runtime requests in `index.ts` currently surface the warning toast without executing host session mutation hooks.
+
+</details>
+
+<details>
+<summary><b>macOS quota notifications</b></summary>
+
+On macOS the plugin can post Notification Center alerts when account usage crosses a configured percentage threshold. Control it with the `quotaNotifications` plugin config block: `enabled` turns delivery on, `thresholds` lists percentages (0-100), `intervalMs` sets the poll interval (minimum 30000), and `autoProtectCredits` (default on) also records a durable quota block when usage is exhausted. Delivery runs through `osascript`, so Linux and Windows stay silent. Cross-process state lives in `oc-codex-multi-auth-quota-notifications.json` beside the active accounts file.
 
 </details>
 
@@ -843,7 +906,7 @@ Include:
 | Issue | Solution |
 |-------|----------|
 | Auth problems | Verify subscription at [ChatGPT Settings](https://chatgpt.com/settings) |
-| Free tier | Not supported — requires Plus or Pro |
+| Free tier | Not supported, requires Plus or Pro |
 | Usage limits | Check subscription limits |
 | Account flagged | Contact OpenAI support |
 
@@ -854,4 +917,4 @@ Include:
 
 ---
 
-**Next**: [Configuration Guide](configuration.md) | [Architecture](development/ARCHITECTURE.md) | [Back to Home](index.md)
+**Next.** [Configuration Guide](configuration.md) | [Architecture](development/ARCHITECTURE.md) | [Back to Home](index.md)

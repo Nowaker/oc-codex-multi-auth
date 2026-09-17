@@ -234,3 +234,64 @@ describe("Circuit breaker", () => {
     expect(breaker.getTimeUntilReset()).toBe(0);
   });
 });
+describe("circuit breaker half-open probe and failure-window lifecycle", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("recovers when the half-open probe never reports (abort / 4xx path)", () => {
+		vi.useFakeTimers();
+		const breaker = new CircuitBreaker();
+
+		for (let i = 0; i < DEFAULT_CIRCUIT_BREAKER_CONFIG.failureThreshold; i++) {
+			breaker.recordFailure();
+		}
+		expect(breaker.getState()).toBe("open");
+
+		vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+		const probe = breaker.canAttempt();
+		expect(probe.allowed).toBe(true);
+		expect(probe.state).toBe("half-open");
+
+		vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs * 10);
+
+		const next = breaker.canAttempt();
+		expect({
+			allowed: next.allowed,
+			state: next.state,
+			reason: next.reason,
+		}).toEqual({ allowed: true, state: "half-open" });
+	});
+
+	it("recovers when the half-open canExecute probe never reports", () => {
+		vi.useFakeTimers();
+		const breaker = new CircuitBreaker();
+		for (let i = 0; i < 3; i++) breaker.recordFailure();
+		vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1);
+		expect(breaker.canExecute()).toBe(true);
+
+		vi.advanceTimersByTime(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs * 10);
+		expect(breaker.canExecute()).toBe(true);
+		expect(breaker.canAttempt()).toEqual({
+			allowed: false,
+			state: "half-open",
+			reason: "probe-in-flight",
+		});
+	});
+
+	it("does not block a key whose recorded failures have aged out of the window", () => {
+		vi.useFakeTimers();
+		const breaker = new CircuitBreaker({
+			...DEFAULT_CIRCUIT_BREAKER_CONFIG,
+			failureThreshold: 3,
+			failureWindowMs: 60_000,
+			resetTimeoutMs: 30_000,
+		});
+		breaker.recordFailure();
+		vi.advanceTimersByTime(61_000);
+		breaker.recordFailure();
+		vi.advanceTimersByTime(61_000);
+		breaker.recordFailure();
+		expect(breaker.getState()).toBe("closed");
+	});
+});

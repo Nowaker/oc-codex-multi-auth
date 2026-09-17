@@ -9,6 +9,7 @@ import type { AccountStorageV3 } from "../lib/storage.js";
 const ensureCodexUsageAccessToken = vi.fn();
 const fetchCodexUsage = vi.fn();
 const persistUsageQuotaExhaustion = vi.fn();
+const persistUsageQuotaRecovery = vi.fn();
 
 // Only the two network/credential seams are stubbed. Everything else in
 // `codex-usage.js` stays real so this exercises the default `fetchSummary`
@@ -17,6 +18,7 @@ vi.mock("../lib/codex-usage.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/codex-usage.js")>();
 	return {
 		...actual,
+		persistUsageQuotaRecovery: (...args: unknown[]) => persistUsageQuotaRecovery(...args),
 		ensureCodexUsageAccessToken: (...args: unknown[]) =>
 			ensureCodexUsageAccessToken(...args) as unknown,
 		fetchCodexUsage: (...args: unknown[]) => fetchCodexUsage(...args) as unknown,
@@ -56,6 +58,7 @@ describe("default quota fetch path", () => {
 		vi.stubEnv("CODEX_AUTH_QUOTA_DISPLAY", "free");
 		vi.clearAllMocks();
 		persistUsageQuotaExhaustion.mockResolvedValue(false);
+		persistUsageQuotaRecovery.mockResolvedValue(false);
 		const directory = await mkdtemp(join(tmpdir(), "quota-fetch-"));
 		directories.push(directory);
 		setStoragePathDirect(join(directory, "accounts.json"));
@@ -86,7 +89,7 @@ describe("default quota fetch path", () => {
 
 		await monitorWith({ onCredentialsPersisted, notify: vi.fn().mockResolvedValue(true) }).runNow();
 
-		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
+		expect(onCredentialsPersisted).toHaveBeenCalledTimes(1);
 		expect(order).toEqual(["refresh", "invalidate", "usage"]);
 	});
 
@@ -108,7 +111,8 @@ describe("default quota fetch path", () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
-	it("does not invalidate the cache when the token was still valid", async () => {
+	it("invalidates recovered quota even when the token was still valid", async () => {
+		persistUsageQuotaRecovery.mockResolvedValue(true);
 		ensureCodexUsageAccessToken.mockResolvedValue({
 			accessToken: "access-1",
 			refreshed: false,
@@ -125,7 +129,7 @@ describe("default quota fetch path", () => {
 
 		await monitorWith({ onCredentialsPersisted, notify }).runNow();
 
-		expect(onCredentialsPersisted).not.toHaveBeenCalled();
+		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
 		expect(notify).toHaveBeenCalledWith(
 			"Codex quota status",
 			"5h: 10% | resets unavailable\nWeekly: 90% | resets unavailable",
@@ -133,6 +137,7 @@ describe("default quota fetch path", () => {
 	});
 
 	it("persists an exhausted subscription quota and invalidates cached routing", async () => {
+		persistUsageQuotaRecovery.mockResolvedValue(false);
 		ensureCodexUsageAccessToken.mockResolvedValue({
 			accessToken: "access-1",
 			refreshed: false,
@@ -225,6 +230,30 @@ describe("default quota fetch path", () => {
 		await monitorWith({ notify: vi.fn().mockResolvedValue(true) }).runNow();
 
 		expect(persistUsageQuotaExhaustion).not.toHaveBeenCalled();
+	});
+
+	it("clears recovered quota and invalidates cached routing", async () => {
+		ensureCodexUsageAccessToken.mockResolvedValue({ accessToken: "access-1", persisted: false });
+		fetchCodexUsage.mockResolvedValue({ rate_limit: {
+			primary_window: { used_percent: 10, limit_window_seconds: 18_000 },
+			secondary_window: { used_percent: 20, limit_window_seconds: 604_800 },
+		} });
+		persistUsageQuotaRecovery.mockResolvedValue(true);
+		const onCredentialsPersisted = vi.fn();
+		await monitorWith({ onCredentialsPersisted, notify: vi.fn().mockResolvedValue(true) }).runNow();
+		expect(persistUsageQuotaRecovery).toHaveBeenCalledWith(storage.accounts[0]);
+		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		{},
+		{ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 0 } } },
+		{ rate_limit: { primary_window: { used_percent: 10 }, secondary_window: { used_percent: 100, reset_at: Number.MAX_SAFE_INTEGER } } },
+	])("does not clear quota without recovery evidence", async (payload) => {
+		ensureCodexUsageAccessToken.mockResolvedValue({ accessToken: "access-1", persisted: false });
+		fetchCodexUsage.mockResolvedValue(payload);
+		await monitorWith({ notify: vi.fn().mockResolvedValue(true) }).runNow();
+		expect(persistUsageQuotaRecovery).not.toHaveBeenCalled();
 	});
 
 	it("skips an account whose access token carries no resolvable account id", async () => {

@@ -315,3 +315,147 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 		});
 	});
 });
+const encoder = new TextEncoder();
+
+function sseResponse(chunks: Uint8Array[]): Response {
+	let index = 0;
+	const stream = new ReadableStream<Uint8Array>({
+		pull(controller) {
+			if (index < chunks.length) {
+				controller.enqueue(chunks[index]);
+				index += 1;
+			} else {
+				controller.close();
+			}
+		},
+	});
+	return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+const SAMPLE_STREAM =
+	'data: {"type":"response.started"}\n\n' +
+	'data: {"type":"response.output_text.delta","delta":"héllo 世界 🚀"}\n\n' +
+	'data: {"type":"response.completed","response":{"id":"r1","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}}\n\n' +
+	"data: [DONE]\n\n";
+
+const expectOkJson = async (response: Response): Promise<void> => {
+	expect(response.status).toBe(200);
+	const body = (await response.json()) as { id?: string };
+	expect(body.id).toBe("r1");
+};
+describe("SSE decoder across chunk boundaries", () => {
+	it("recovers the terminal event when the stream is split at every byte offset", async () => {
+		const bytes = encoder.encode(SAMPLE_STREAM);
+		for (let split = 1; split < bytes.length; split++) {
+			const response = await convertSseToJson(
+				sseResponse([bytes.slice(0, split), bytes.slice(split)]),
+				new Headers(),
+			);
+			try {
+				await expectOkJson(response);
+			} catch (error) {
+				throw new Error(`chunk split at byte ${split} lost the terminal event`, {
+					cause: error,
+				});
+			}
+		}
+	});
+
+	it("recovers the terminal event for every 3-way split of a 12-byte window", async () => {
+		const bytes = encoder.encode(SAMPLE_STREAM);
+		for (let a = 1; a < 12; a++) {
+			for (let b = a + 1; b < 13; b++) {
+				const response = await convertSseToJson(
+					sseResponse([bytes.slice(0, a), bytes.slice(a, b), bytes.slice(b)]),
+					new Headers(),
+				);
+				await expectOkJson(response);
+			}
+		}
+	});
+
+	it("handles CRLF line endings", async () => {
+		const text = SAMPLE_STREAM.replace(/\n/g, "\r\n");
+		const response = await convertSseToJson(
+			sseResponse([encoder.encode(text)]),
+			new Headers(),
+		);
+		await expectOkJson(response);
+	});
+
+	it("handles mixed CRLF and LF endings", async () => {
+		const text = SAMPLE_STREAM.replace(/\n\n/g, "\r\n\n");
+		const response = await convertSseToJson(
+			sseResponse([encoder.encode(text)]),
+			new Headers(),
+		);
+		await expectOkJson(response);
+	});
+
+	it("multibyte character split across the final chunk boundary still parses (decoder flush)", async () => {
+		const head = encoder.encode(
+			'data: {"type":"response.completed","response":{"id":"r2","output":"',
+		);
+		const tailText = 'あ"}}';
+		const tailBytes = encoder.encode(tailText);
+		const response = await convertSseToJson(
+			sseResponse([head, tailBytes.slice(0, 1), tailBytes.slice(1)]),
+			new Headers(),
+		);
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { output?: string };
+		expect(body.output).toBe("あ");
+	});
+
+	it("stream truncated mid-multibyte-character surfaces an error, not a fake 200", async () => {
+		const full = encoder.encode(
+			'data: {"type":"response.completed","response":{"id":"r3","output":"あ',
+		);
+		const partial = full.slice(0, full.length - 1);
+		const response = await convertSseToJson(
+			sseResponse([partial]),
+			new Headers(),
+		);
+		expect(response.status).toBe(502);
+	});
+
+	it("stream that is only the [DONE] sentinel surfaces an error", async () => {
+		const response = await convertSseToJson(
+			sseResponse([encoder.encode("data: [DONE]\n\n")]),
+			new Headers(),
+		);
+		expect(response.status).toBe(502);
+	});
+
+	it("empty stream passes through with the original status", async () => {
+		const response = await convertSseToJson(sseResponse([]), new Headers());
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe("");
+	});
+
+	it("multi-line data field (one JSON event split across two data: lines) is recovered per the SSE spec", async () => {
+		const text =
+			'event: response.done\n' +
+			'data: {"type":"response.done",\n' +
+			'data: "response":{"id":"r4","output":"x"}}\n\n';
+		const response = await convertSseToJson(
+			sseResponse([encoder.encode(text)]),
+			new Headers(),
+		);
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { id?: string };
+		expect(body.id).toBe("r4");
+	});
+
+	it("oversized multibyte stream is bounded by the documented byte cap", async () => {
+		const chars = 4_000_000;
+		const bodyText = "あ".repeat(chars);
+		const bytes = encoder.encode(
+			`data: {"type":"response.completed","response":{"id":"r5","output":"${bodyText}"}}\n\n`,
+		);
+		expect(bytes.length).toBeGreaterThan(10 * 1024 * 1024);
+		await expect(
+			convertSseToJson(sseResponse([bytes]), new Headers()),
+		).rejects.toThrow(/exceeds.*bytes limit/);
+	});
+});

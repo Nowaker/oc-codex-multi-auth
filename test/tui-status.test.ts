@@ -659,3 +659,20 @@ describe("formatResetTime day context", () => {
 		expect(out).toBe(`7d 0% resets ${expected}`);
 	});
 });
+
+describe("tui quota status hostile inputs", () => {
+	it("details text never emits NaN or Infinity for any limit field", () => {
+		const status: CompactQuotaStatus = {
+			type: "ready",
+			stale: false,
+			limits: [
+				{ label: "5h limit", leftPercent: Number.NaN, resetAtMs: Number.NaN },
+				{ label: "Weekly limit", leftPercent: -12, resetAtMs: 1e300 },
+			],
+			activeLimit: Number.NaN,
+			fetchedAt: Number.NaN,
+		};
+		const text = formatQuotaDetailsText(status);
+		expect(text).not.toMatch(/NaN|Infinity/);
+	});
+});
