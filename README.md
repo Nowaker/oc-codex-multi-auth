@@ -171,6 +171,7 @@ Plugin settings are re-read per request — most edits need no restart. Boolean 
 | `CODEX_KEYCHAIN=1` | Store accounts in the OS keychain |
 | `CODEX_AUTH_ROTATION_STRATEGY=hybrid\|sticky\|round-robin` | Account selection strategy |
 | `CODEX_AUTH_QUOTA_DISPLAY=free\|used` | Quota percentages as headroom (default) or consumption |
+| `CODEX_AUTH_CLIPBOARD=0` | Stop login from copying the authorization URL to the clipboard |
 | `CODEX_RETRY_ALL_UNBOUNDED=1` | Let "wait as long as the backend asks" apply when every account is rate-limited; otherwise capped at 10 minutes |
 | `ENABLE_PLUGIN_REQUEST_LOGGING=1` | Write request metadata logs |
 | `CODEX_PLUGIN_LOG_BODIES=1` | Also log raw bodies (sensitive) |

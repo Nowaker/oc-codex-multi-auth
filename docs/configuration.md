@@ -574,6 +574,7 @@ process environment. Same `"1"`-only truthy rule for booleans unless noted.
 | `CODEX_AUTH_DISABLE_CODEX_USER_AGENT=1` | keep the host runtime's `User-Agent` instead of the identity's |
 | `CODEX_AUTH_SEND_ORGANIZATION_HEADER=1` | restore legacy `openai-organization` request pinning (off by default; upstream Codex never sends it) |
 | `CODEX_AUTH_PREWARM=0` | disable the startup prewarm that runs when `requestTransformMode` is `legacy` (on by default; native mode does not prewarm) |
+| `CODEX_AUTH_CLIPBOARD=0` | stop login from copying the authorization URL to the clipboard (on by default) |
 | `CODEX_AUTH_SYNC_CODEX_CLI=0` | disable hydrating accounts from Codex CLI `~/.codex` storage (on by default) |
 | `CODEX_KEYCHAIN=1` | opt in to OS-native keychain account storage instead of the JSON accounts file; on Windows, Credential Manager's blob-size cap means an oversized pool is size-checked and stays on the JSON path |
 | `CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL` | legacy boolean env → `unsupportedCodexPolicy` (`1` → `fallback`, anything else → `strict`); evaluated only when neither the policy env nor the config key is set |
