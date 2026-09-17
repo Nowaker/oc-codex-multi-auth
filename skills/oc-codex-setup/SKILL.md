@@ -55,6 +55,16 @@ npx -y oc-codex-multi-auth@latest --legacy
 
 Use this on older OpenCode versions that do not support variant-based model entries. Installs 59 explicit model IDs only.
 
+## When OpenCode already loads a local checkout
+
+Check the existing `plugin` array before installing. An entry pointing at a
+clone of this repository means the user is running their own build on purpose.
+
+Every installer mode keeps that entry as written and adds nothing beside it, so
+running the installer is safe; it registers the published package only when no
+entry resolves to this plugin. Prefer `update` anyway when the goal is just to
+refresh a stale package cache, since it never opens either config file.
+
 ## Other installer flags
 
 - `--dry-run` — show changed config paths without values or writes
@@ -105,7 +115,7 @@ opencode run "Explain this repository" --model=openai/gpt-5.5-medium
 
 ## Troubleshooting
 
-- Confirm `"plugin": ["oc-codex-multi-auth"]` is present in the OpenCode config.
+- Confirm the OpenCode config registers the plugin, as `"plugin": ["oc-codex-multi-auth"]` or as a path to the user's own checkout.
 - Re-run `opencode auth login` if tokens expired or the wrong workspace was selected.
 - Inspect `~/.opencode/logs/codex-plugin/` after a failed request.
 - Set `ENABLE_PLUGIN_REQUEST_LOGGING=1` for deeper request logging.
