@@ -304,6 +304,21 @@ describe("auto-update-checker", () => {
 			await expect(checkAndNotify(showToast)).resolves.toBeUndefined();
 			expect(showToast).not.toHaveBeenCalled();
 		});
+
+		it("offers nothing for a build loaded from a local checkout", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			const showToast = vi.fn().mockResolvedValue(undefined);
+			const scheduleCacheClear = vi.fn(() => true);
+
+			await checkAndNotify(showToast, { localCheckout: true, scheduleCacheClear });
+
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+			expect(showToast).not.toHaveBeenCalled();
+			expect(scheduleCacheClear).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("clearUpdateCache", () => {

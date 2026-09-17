@@ -124,6 +124,7 @@ import {
 } from "./lib/logger.js";
 import { createQuotaMonitor } from "./lib/quota-notifications.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
+import { describePluginOrigin, getPluginOrigin, recordPluginOrigin } from "./lib/plugin-origin.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
 import {
 	AccountManager,
@@ -391,6 +392,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let accountManagerPromise: Promise<AccountManager> | null = null;
 	let loaderMutex: Promise<void> | null = null;
 	let startupPrewarmTriggered = false;
+	let startupOriginRecorded = false;
 	let startupPreflightShown = false;
 	let beginnerSafeModeEnabled = false;
 	const MIN_BACKOFF_MS = 100;
@@ -2153,10 +2155,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					});
 				}
 
+				const underTestRunner =
+					process.env.VITEST === "true" || process.env.NODE_ENV === "test";
 				const prewarmEnabled =
-					process.env.CODEX_AUTH_PREWARM !== "0" &&
-					process.env.VITEST !== "true" &&
-					process.env.NODE_ENV !== "test";
+					process.env.CODEX_AUTH_PREWARM !== "0" && !underTestRunner;
 
 				if (!startupPrewarmTriggered && prewarmEnabled && getRequestTransformMode(pluginConfig) === "legacy") {
 					startupPrewarmTriggered = true;
@@ -2174,9 +2176,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						)
 					: null;
 
+			const pluginOrigin = getPluginOrigin();
+			if (pluginOrigin?.isLocalCheckout) {
+				logInfo(`Running from ${describePluginOrigin(pluginOrigin)}`);
+			}
+			if (pluginOrigin && !startupOriginRecorded && !underTestRunner) {
+				startupOriginRecorded = true;
+				recordPluginOrigin(pluginOrigin).catch((err) => {
+					logDebug(`Failed to record plugin origin: ${err instanceof Error ? err.message : String(err)}`);
+				});
+			}
+
 			checkAndNotify(async (message, variant) => {
 				await showToast(message, variant);
-			}, { autoUpdate: autoUpdateEnabled }).catch((err) => {
+			}, {
+				autoUpdate: autoUpdateEnabled,
+				localCheckout: pluginOrigin?.isLocalCheckout ?? false,
+			}).catch((err) => {
 				logDebug(`Update check failed: ${err instanceof Error ? err.message : String(err)}`);
 			});
 			await runStartupPreflight();
