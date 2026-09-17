@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join } from "node:path";
 
 vi.mock("node:fs", () => ({
 	readFileSync: vi.fn(),
@@ -6,6 +7,7 @@ vi.mock("node:fs", () => ({
 	existsSync: vi.fn(),
 	mkdirSync: vi.fn(),
 	rmSync: vi.fn(),
+	realpathSync: vi.fn(),
 }));
 
 describe("auto-update-checker", () => {
@@ -329,31 +331,82 @@ describe("auto-update-checker", () => {
 	});
 
 	describe("clearManagedOpenCodePluginCache", () => {
+		const cacheRoot = join("/tmp", "opencode-cache");
+		const resolveRealPath = (path: string) => path;
+		const packagesPath = join(cacheRoot, "packages", "oc-codex-multi-auth@latest");
+		const nodeModulesPath = join(cacheRoot, "node_modules", "oc-codex-multi-auth");
+		const checkoutPath = join("/home", "dev", "src", "oc-codex-multi-auth");
+
 		it("removes managed OpenCode package cache paths", () => {
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 
-			const cleared = clearManagedOpenCodePluginCache([
-				"C:\\cache\\packages\\oc-codex-multi-auth@latest",
-				"C:\\cache\\node_modules\\oc-codex-multi-auth",
-			]);
+			const cleared = clearManagedOpenCodePluginCache([packagesPath, nodeModulesPath], {
+				cacheRoot,
+				resolveRealPath,
+			});
 
 			expect(cleared).toBe(true);
-			expect(fs.rmSync).toHaveBeenCalledWith(
-				"C:\\cache\\packages\\oc-codex-multi-auth@latest",
-				{ recursive: true, force: true },
-			);
-			expect(fs.rmSync).toHaveBeenCalledWith(
-				"C:\\cache\\node_modules\\oc-codex-multi-auth",
-				{ recursive: true, force: true },
-			);
+			expect(fs.rmSync).toHaveBeenCalledWith(packagesPath, { recursive: true, force: true });
+			expect(fs.rmSync).toHaveBeenCalledWith(nodeModulesPath, { recursive: true, force: true });
 		});
 
 		it("returns false when no managed cache paths exist", () => {
 			vi.mocked(fs.existsSync).mockReturnValue(false);
 
-			const cleared = clearManagedOpenCodePluginCache([
-				"C:\\cache\\packages\\oc-codex-multi-auth@latest",
-			]);
+			const cleared = clearManagedOpenCodePluginCache([packagesPath], {
+				cacheRoot,
+				resolveRealPath,
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses a cache entry that resolves onto a linked working checkout", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+
+			const cleared = clearManagedOpenCodePluginCache([nodeModulesPath], {
+				cacheRoot,
+				resolveRealPath: (path) => (path === nodeModulesPath ? checkoutPath : path),
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses a path outside the OpenCode cache directory", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+
+			const cleared = clearManagedOpenCodePluginCache([checkoutPath], {
+				cacheRoot,
+				resolveRealPath,
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses the cache directory itself", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+
+			const cleared = clearManagedOpenCodePluginCache([cacheRoot], {
+				cacheRoot,
+				resolveRealPath,
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses every path when the cache directory cannot be resolved", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+
+			const cleared = clearManagedOpenCodePluginCache([packagesPath], {
+				cacheRoot,
+				resolveRealPath: () => {
+					throw new Error("ENOENT");
+				},
+			});
 
 			expect(cleared).toBe(false);
 			expect(fs.rmSync).not.toHaveBeenCalled();
