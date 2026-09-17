@@ -97,6 +97,8 @@ tui.ts
 | OpenCode plugin entry | `index.ts` | auth loader, runtime wiring, custom fetch pipeline, account manager lifecycle, `ToolContext`, OpenCode plugin export |
 | TUI plugin entry | `tui.ts`, `lib/tui-status.ts`, `lib/tui-quota-cache.ts`, `lib/codex-usage.ts` | prompt quota status, account-aware quota snapshots, usage refresh, details rendering |
 | Quota percentage wording | `lib/quota-display.ts` | `quotaDisplay` free/used rendering shared by the TUI, `codex-limits`, the standalone CLI, and notifications; a leaf module so the status line and the usage surfaces can both depend on it |
+| Pool-wide status line | `lib/quota-overview.ts`, `lib/tui-quota-overview.ts` | `quotaStatus.mode=overview`; the first is a pure formatter (weighted total, width ladder), the second gathers and caches every account's usage and merges the request path's live reading of the serving account |
+| Plan allotments | `lib/plan-allotment.ts` | `plan_type` to weight/multiplier/price; another leaf, so the render path weights the pool total without pulling in JWT decoding |
 | Auth flow | `lib/auth/auth.ts`, `lib/auth/loopback-flow.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts`, `lib/auth/scopes.ts` | PKCE OAuth, callback server, default-browser and open-URL-manually listener flows, device code, manual URL paste, workspace/account selection, scope validation |
 | Account manager | `lib/accounts.ts`, `lib/accounts/` | account state facade, persistence, rotation, recovery, rate-limit tracking, workspace identity preservation, warm |
 | Storage | `lib/storage.ts`, `lib/storage/` | V3 JSON storage, atomic writes, migrations, per-project paths, backups, import/export, keychain opt-in, flagged accounts |
@@ -273,6 +275,15 @@ Recovered classes: `tool_result_missing`, `thinking_block_order`, `thinking_disa
 The request path also writes quota snapshots from response headers, so the TUI can reflect the account/workspace used by the latest request.
 
 The shared cache file resolves in this order. `tui.ts` passes the OpenCode state path (`api.state.path.state`) to `getTuiQuotaCachePath`. That function falls back to `$OPENCODE_STATE_DIR`, then to `~/.local/state/opencode/oc-codex-multi-auth-tui-quota.json`. There is no `~/.opencode/` fallback.
+
+With `quotaStatus.mode` set to `overview`, `tui.ts` registers a different prompt-status component that describes the whole pool instead of the serving account:
+
+1. Read the pool snapshot from `oc-codex-multi-auth-tui-quota-overview.json` in that same directory.
+2. Re-query `/wham/usage` for every deduplicated enabled account when that snapshot has aged past the refresh interval, and write it back.
+3. Merge the single-account snapshot above when it is newer, so the account currently serving requests shows header-fresh numbers rather than poll-aged ones.
+4. Render through `formatQuotaOverviewCandidates`, taking the first candidate that fits the terminal width.
+
+The two caches stay separate files on purpose: the request path rewrites the single-account one after every response, and folding them together would make each request rewrite a document describing accounts that request never touched.
 
 ---
 

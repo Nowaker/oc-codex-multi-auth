@@ -6,9 +6,20 @@ import {
 	getCodexTuiMaskEmail,
 	getCodexTuiMaskEmailInQuotaDetails,
 	getQuotaDisplay,
+	getQuotaStatus,
 	loadPluginConfig,
+	type QuotaStatusConfig,
 } from "./lib/config.js";
 import type { QuotaDisplayMode } from "./lib/quota-display.js";
+import type {
+	QuotaOverviewAccount,
+	QuotaOverviewOptions,
+} from "./lib/quota-overview.js";
+import {
+	fetchTuiQuotaOverview,
+	mergeOverviewWithLatestAccount,
+	toQuotaOverviewAccounts,
+} from "./lib/tui-quota-overview.js";
 import {
 	createUsageAccountFingerprint,
 	ensureCodexUsageAccessToken,
@@ -23,6 +34,8 @@ import {
 import {
 	formatPromptStatusText,
 	formatQuotaDetailsText,
+	formatQuotaOverviewStatusText,
+	resolveQuotaOverviewTone,
 	resolveQuotaPromptTone,
 	type CompactQuotaLimit,
 	type CompactQuotaStatus,
@@ -30,6 +43,7 @@ import {
 import {
 	createTuiQuotaSnapshot,
 	getTuiQuotaCachePath,
+	getTuiQuotaOverviewCachePath,
 	isFreshTuiQuotaSnapshot,
 	isTuiQuotaSnapshot,
 	readTuiQuotaSnapshot,
@@ -52,6 +66,58 @@ type SolidRuntime = Pick<
 	Pick<typeof import("solid-js"), "createSignal" | "onCleanup">;
 
 let inFlightRefresh: Promise<CompactQuotaStatus> | undefined;
+
+type QuotaOverviewState =
+	| { type: "loading" }
+	| { type: "unavailable" }
+	| { type: "ready"; accounts: readonly QuotaOverviewAccount[]; stale: boolean };
+
+let inFlightOverview: Promise<QuotaOverviewState> | undefined;
+
+async function refreshQuotaOverviewInner(
+	api: TuiPluginApi,
+): Promise<QuotaOverviewState> {
+	try {
+		const now = Date.now();
+		const snapshot = await fetchTuiQuotaOverview({
+			cachePath: getTuiQuotaOverviewCachePath(api.state.path.state),
+			now,
+		});
+		if (!snapshot || snapshot.accounts.length === 0) {
+			return { type: "unavailable" };
+		}
+		const merged = mergeOverviewWithLatestAccount(
+			snapshot,
+			await readSharedQuotaStatus(api),
+		);
+		return {
+			type: "ready",
+			accounts: toQuotaOverviewAccounts(merged),
+			// Judged on the poll, not on the merged account: one account read a
+			// moment ago does not make a five-minute-old reading of the other six
+			// current.
+			stale: !isFreshTuiQuotaSnapshot(merged, now),
+		};
+	} catch {
+		return { type: "unavailable" };
+	}
+}
+
+/**
+ * Coalesce concurrent refreshes.
+ *
+ * Every session event that can move a quota schedules one of these, and
+ * without this guard a burst of tool completions would start several passes
+ * over the whole pool at once. The pass itself is already cheap while the
+ * cache is fresh - it reads one file - so the events can stay wired to it.
+ */
+function refreshQuotaOverview(api: TuiPluginApi): Promise<QuotaOverviewState> {
+	if (inFlightOverview) return inFlightOverview;
+	inFlightOverview = refreshQuotaOverviewInner(api).finally(() => {
+		inFlightOverview = undefined;
+	});
+	return inFlightOverview;
+}
 
 function isStoredQuotaStatus(value: unknown): value is StoredQuotaStatus {
 	return isTuiQuotaSnapshot(value);
@@ -309,7 +375,123 @@ type PromptStatusOptions = {
 	maskEmail: boolean;
 	maskEmailInQuotaDetails: boolean;
 	quotaDisplay: QuotaDisplayMode;
+	quotaStatus: QuotaStatusConfig;
 };
+
+function toQuotaOverviewOptions(
+	options: PromptStatusOptions,
+	now: number,
+): QuotaOverviewOptions {
+	// Spelled out rather than spread: `QuotaStatusConfig.mode` selects the
+	// status line's shape while `QuotaOverviewOptions.mode` is the free/used
+	// wording, and spreading one over the other silently renders every
+	// percentage as headroom.
+	return {
+		mode: options.quotaDisplay,
+		accounts: options.quotaStatus.accounts,
+		multipliers: options.quotaStatus.multipliers,
+		resetTimes: options.quotaStatus.resetTimes,
+		resetCredits: options.quotaStatus.resetCredits,
+		recovery: options.quotaStatus.recovery,
+		now,
+	};
+}
+
+/**
+ * The pool-wide status line.
+ *
+ * Kept apart from the active-account line rather than branching inside it:
+ * that one maintains a serving-account fingerprint, a snapshot revision and a
+ * one-second identity poll, all of which exist to answer "which account is
+ * this" - the question this mode is built to stop asking.
+ */
+function createOverviewPromptStatus(
+	api: TuiPluginApi,
+	solid: SolidRuntime,
+	options: PromptStatusOptions,
+): JSX.Element {
+	const [state, setState] = solid.createSignal<QuotaOverviewState>({
+		type: "loading",
+	});
+	const refresh = (): void => {
+		void refreshQuotaOverview(api).then(setState, () => {
+			setState({ type: "unavailable" });
+		});
+	};
+	let refreshTimeout: ReturnType<typeof setTimeout> | undefined;
+	const scheduleRefresh = (): void => {
+		if (refreshTimeout) clearTimeout(refreshTimeout);
+		refreshTimeout = setTimeout(() => {
+			refreshTimeout = undefined;
+			refresh();
+		}, EVENT_REFRESH_DEBOUNCE_MS);
+	};
+
+	refresh();
+	const interval = setInterval(refresh, REFRESH_INTERVAL_MS);
+	const disposers = [
+		api.event.on("message.updated", (event) => {
+			if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
+		}),
+		api.event.on("message.part.updated", (event) => {
+			if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
+		}),
+		api.event.on("session.idle", (event) => {
+			if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
+		}),
+		api.event.on("session.status", (event) => {
+			if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
+		}),
+		api.event.on("session.error", (event) => {
+			if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
+		}),
+	];
+	solid.onCleanup(() => {
+		clearInterval(interval);
+		if (refreshTimeout) clearTimeout(refreshTimeout);
+		for (const dispose of disposers) dispose();
+	});
+
+	const node = solid.createElement("text");
+	solid.spread(
+		node,
+		{
+			get content() {
+				const current = state();
+				if (current.type !== "ready") {
+					// Blank while the first pass runs; a placeholder swapped out a
+					// moment later is exactly the flicker this mode removes.
+					return current.type === "loading" ? "" : "limits ?";
+				}
+				return formatQuotaOverviewStatusText({
+					accounts: current.accounts,
+					options: toQuotaOverviewOptions(options, Date.now()),
+					width: api.renderer.width,
+				});
+			},
+			get fg() {
+				const current = state();
+				const tone =
+					current.type === "ready"
+						? resolveQuotaOverviewTone(current.accounts, current.stale)
+						: current.type === "loading"
+							? "unknown"
+							: "warning";
+				if (tone === "danger") return api.theme.current.error;
+				if (tone === "warning" || tone === "stale") {
+					return api.theme.current.warning;
+				}
+				if (tone === "normal") return api.theme.current.success;
+				return api.theme.current.textMuted;
+			},
+			selectable: false,
+			truncate: true,
+			wrapMode: "none",
+		},
+		false,
+	);
+	return node;
+}
 
 function createPromptStatus(
 	api: TuiPluginApi,
@@ -476,6 +658,7 @@ const module: TuiPluginModule = {
 			maskEmail: getCodexTuiMaskEmail(pluginConfig),
 			maskEmailInQuotaDetails: getCodexTuiMaskEmailInQuotaDetails(pluginConfig),
 			quotaDisplay: getQuotaDisplay(pluginConfig),
+			quotaStatus: getQuotaStatus(pluginConfig),
 		};
 		const [{ createElement, spread }, { createSignal, onCleanup }] =
 			await Promise.all([import("@opentui/solid"), import("solid-js")]);
@@ -488,7 +671,10 @@ const module: TuiPluginModule = {
 
 		api.slots.register({
 			slots: {
-				session_prompt_right: () => createPromptStatus(api, solid, promptOptions),
+				session_prompt_right: () =>
+					promptOptions.quotaStatus.mode === "overview"
+						? createOverviewPromptStatus(api, solid, promptOptions)
+						: createPromptStatus(api, solid, promptOptions),
 			},
 		});
 		const disposeCommand = api.command.register(() => [

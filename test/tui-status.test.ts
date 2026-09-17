@@ -3,12 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	formatPromptStatusText,
 	formatQuotaDetailsText,
+	formatQuotaOverviewStatusText,
 	resolvePromptReasoningVariant,
+	resolveQuotaOverviewTone,
 	resolveQuotaPromptTone,
 	type CompactQuotaStatus,
 	type PromptStatusConfig,
 	type PromptStatusMessage,
 } from "../lib/tui-status.js";
+import type {
+	QuotaOverviewAccount,
+	QuotaOverviewOptions,
+} from "../lib/quota-overview.js";
 
 const sep = ` ${String.fromCharCode(183)} `;
 const quota: CompactQuotaStatus = {
@@ -674,5 +680,127 @@ describe("tui quota status hostile inputs", () => {
 		};
 		const text = formatQuotaDetailsText(status);
 		expect(text).not.toMatch(/NaN|Infinity/);
+	});
+});
+
+describe("pool-wide prompt status", () => {
+	const NOW = Date.UTC(2026, 8, 17, 12, 0, 0);
+	const DAY = 24 * 60 * 60 * 1000;
+	const pool: QuotaOverviewAccount[] = [
+		{
+			index: 1,
+			planType: "self_serve_business_prolite",
+			windows: [{ leftPercent: 87 }],
+		},
+		{
+			index: 2,
+			planType: "pro",
+			resetCredits: 1,
+			windows: [{ leftPercent: 0, resetAtMs: NOW + 3 * DAY }],
+		},
+		{ index: 3, planType: "plus", windows: [{ leftPercent: 88 }] },
+	];
+	const options: QuotaOverviewOptions = {
+		mode: "used",
+		accounts: true,
+		multipliers: true,
+		resetTimes: true,
+		resetCredits: true,
+		recovery: false,
+		now: NOW,
+	};
+
+	it("shows every account when the terminal has room", () => {
+		expect(
+			formatQuotaOverviewStatusText({ accounts: pool, options, width: 200 }),
+		).toBe("80%: #1 5x 13%, #2 20x 100% 3d 1r, #3 1x 12%");
+	});
+
+	it("keeps the breakdown on a terminal the tiered budget would have given up on", () => {
+		// 120 columns caps the single-account budget at 64 characters; the pool
+		// line is 44 and must survive.
+		expect(
+			formatQuotaOverviewStatusText({ accounts: pool, options, width: 120 }),
+		).toContain("#3");
+	});
+
+	it("degrades to the count rather than overflowing a narrow terminal", () => {
+		const text = formatQuotaOverviewStatusText({
+			accounts: pool,
+			options,
+			width: 60,
+		});
+		expect(text).toBe("80%: 3 accounts");
+		expect(text.length).toBeLessThanOrEqual(24);
+	});
+
+	it("leaves the model label its room on an 80-column terminal", () => {
+		// Measured against the real TUI: this slot shares its row with the
+		// model label ("Build - Big Pickle OpenCode Zen", 31 characters) inside
+		// the prompt border. A 48-character line was ellipsized through its
+		// middle AND wrapped the label onto a second row, so 80 columns must
+		// buy no more than 40.
+		const crowded: QuotaOverviewAccount[] = [
+			{ index: 1, planType: "pro", windows: [{ leftPercent: 8, resetAtMs: NOW + 6 * DAY }] },
+			{ index: 2, planType: "self_serve_business_prolite", windows: [{ leftPercent: 0, resetAtMs: NOW + 3 * DAY }] },
+			{ index: 3, planType: "team", windows: [{ leftPercent: 62 }] },
+			{ index: 4, planType: "plus", windows: [{ leftPercent: 100 }] },
+			{ index: 5, planType: "pro", windows: [{ leftPercent: 45 }] },
+		];
+		const text = formatQuotaOverviewStatusText({
+			accounts: crowded,
+			options: { ...options, mode: "free" },
+			width: 80,
+		});
+		expect(text.length).toBeLessThanOrEqual(40);
+		expect(text).not.toContain("...");
+	});
+
+	it("falls back to the bare total when nothing else fits", () => {
+		const text = formatQuotaOverviewStatusText({
+			accounts: pool,
+			options,
+			width: 20,
+		});
+		expect(text).toBe("80%");
+	});
+
+	it("stays conservative when the width is unknown", () => {
+		const text = formatQuotaOverviewStatusText({ accounts: pool, options });
+		expect(text.length).toBeLessThanOrEqual(32);
+	});
+
+	it("renders nothing for a pool with no readable quota", () => {
+		expect(
+			formatQuotaOverviewStatusText({ accounts: [], options, width: 200 }),
+		).toBe("");
+	});
+});
+
+describe("resolveQuotaOverviewTone", () => {
+	const account = (leftPercent: number): QuotaOverviewAccount => ({
+		index: 1,
+		planType: "plus",
+		windows: [{ leftPercent }],
+	});
+
+	it("stays normal while one account still has room", () => {
+		expect(resolveQuotaOverviewTone([account(0), account(80)])).toBe("normal");
+	});
+
+	it("warns only once the whole pool is low", () => {
+		expect(resolveQuotaOverviewTone([account(0), account(20)])).toBe("warning");
+	});
+
+	it("turns red once nothing in the pool has room", () => {
+		expect(resolveQuotaOverviewTone([account(0), account(5)])).toBe("danger");
+	});
+
+	it("reports a stale reading as stale whatever the numbers say", () => {
+		expect(resolveQuotaOverviewTone([account(90)], true)).toBe("stale");
+	});
+
+	it("reports an unreadable pool as unknown", () => {
+		expect(resolveQuotaOverviewTone([])).toBe("unknown");
 	});
 });

@@ -73,6 +73,14 @@ export const PluginConfigSchema = z.object({
 		notifyEveryCheck: z.boolean().optional(),
 		thresholds: z.array(z.number().min(0).max(100)).optional(),
 	}).optional(),
+	quotaStatus: z.object({
+		mode: z.enum(["active", "overview"]).optional(),
+		accounts: z.boolean().optional(),
+		multipliers: z.boolean().optional(),
+		resetTimes: z.boolean().optional(),
+		resetCredits: z.boolean().optional(),
+		recovery: z.boolean().optional(),
+	}).optional(),
 });
 
 export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;

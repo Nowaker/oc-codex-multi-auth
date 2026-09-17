@@ -3,6 +3,12 @@ import { maskEmailForDisplay } from "./account-display.js";
 import { getEffortSuffix } from "./request/helpers/effort-suffix.js";
 import { formatPlanType } from "./auth/plan-tier.js";
 import {
+	formatQuotaOverviewCandidates,
+	resolveQuotaOverviewTonePercent,
+	type QuotaOverviewAccount,
+	type QuotaOverviewOptions,
+} from "./quota-overview.js";
+import {
 	DEFAULT_QUOTA_DISPLAY_MODE,
 	formatNamedQuotaPercent,
 	formatQuotaPercent,
@@ -450,12 +456,87 @@ export function formatPromptStatusText(params: {
 	return candidates.find((candidate) => candidate.length <= maxChars) ?? "";
 }
 
+/**
+ * Columns this line may not spend, because something else on the row owns
+ * them: the prompt border and padding, and the model label sitting to the
+ * left of this slot ("Build - Big Pickle OpenCode Zen" is 31 characters).
+ */
+const OVERVIEW_STATUS_RESERVED_CHARS = 40;
+
+/**
+ * Character budget for the pool-wide line.
+ *
+ * Two bounds, whichever is tighter. The share cap keeps a wide terminal from
+ * handing the whole row to this line; the reserve keeps a narrow one from
+ * overrunning the model label beside it. The reserve is what binds at ordinary
+ * widths, and it has to: unlike the single-account line above - which is short
+ * enough that its budget is never the thing that stops it - this line grows
+ * with the size of the pool and reaches its budget on every render.
+ *
+ * Overflow is NOT absorbed by the renderer's truncation. At 80 columns a
+ * 48-character line was ellipsized through its middle, destroying account
+ * numbers and reset times either side of the cut, AND pushed the model label
+ * into a second row. The reserve is sized so that does not happen: 40 at 80
+ * columns, which is what measurably fits beside a 31-character label.
+ */
+function maxOverviewStatusChars(width: number | undefined): number {
+	if (!width || !Number.isFinite(width)) return 32;
+	return Math.max(
+		Math.min(12, width),
+		Math.min(
+			Math.floor(width * 0.6),
+			width - OVERVIEW_STATUS_RESERVED_CHARS,
+		),
+	);
+}
+
+/**
+ * Render the whole account pool, degrading through
+ * {@link formatQuotaOverviewCandidates} until one form fits.
+ */
+export function formatQuotaOverviewStatusText(params: {
+	accounts: readonly QuotaOverviewAccount[];
+	options: QuotaOverviewOptions;
+	width?: number;
+}): string {
+	const candidates = formatQuotaOverviewCandidates(
+		params.accounts,
+		params.options,
+	);
+	const maxChars = maxOverviewStatusChars(params.width);
+	return (
+		candidates.find((candidate) => candidate.length <= maxChars) ??
+		candidates.at(-1) ??
+		""
+	);
+}
+
 export type QuotaPromptTone =
 	| "normal"
 	| "warning"
 	| "danger"
 	| "stale"
 	| "unknown";
+
+/**
+ * Colour the pool by its healthiest account.
+ *
+ * A pool is only in trouble when nothing in it has room left, so the account
+ * with the most headroom decides the colour: keying on the worst account would
+ * paint the line red for a spent seat that rotation has already stopped
+ * selecting while six healthy ones serve every request.
+ */
+export function resolveQuotaOverviewTone(
+	accounts: readonly QuotaOverviewAccount[],
+	stale = false,
+): QuotaPromptTone {
+	if (stale) return "stale";
+	const best = resolveQuotaOverviewTonePercent(accounts);
+	if (best === undefined) return "unknown";
+	if (best <= DANGER_LIMIT_LEFT_PERCENT) return "danger";
+	if (best <= WARNING_LIMIT_LEFT_PERCENT) return "warning";
+	return "normal";
+}
 
 export function resolveQuotaPromptTone(
 	quota: CompactQuotaStatus,
