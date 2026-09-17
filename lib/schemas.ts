@@ -55,6 +55,8 @@ export const PluginConfigSchema = z.object({
 	toastDurationMs: z.number().min(1000).optional(),
 	accountToasts: z.boolean().optional(),
 	perProjectAccounts: z.boolean().optional(),
+	credentialSnapshots: z.boolean().optional(),
+	credentialSnapshotsMaxCount: z.number().int().min(0).optional(),
 	sessionRecovery: z.boolean().optional(),
 	autoResume: z.boolean().optional(),
 	autoUpdate: z.boolean().optional(),
