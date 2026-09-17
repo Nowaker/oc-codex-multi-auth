@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,6 +44,8 @@ describe("plugin-origin", () => {
 	let tempRoot: string | null = null;
 
 	afterEach(async () => {
+		vi.doUnmock("proper-lockfile");
+		vi.resetModules();
 		if (tempRoot) {
 			await rm(tempRoot, { recursive: true, force: true });
 			tempRoot = null;
@@ -278,5 +280,33 @@ describe("plugin-origin", () => {
 			(sighting) => sighting.root,
 		);
 		expect(new Set(recorded)).toEqual(new Set(origins.map((origin) => origin.root)));
+	});
+
+	it("gives up the write when the lease is reclaimed, rather than ending the process", async () => {
+		tempRoot = await createTempRoot();
+		const historyPath = join(tempRoot, ".opencode", "oc-codex-multi-auth-origin.json");
+		let leaseOptions: { onCompromised?: (error: Error) => void } | undefined;
+
+		vi.resetModules();
+		vi.doMock("proper-lockfile", () => ({
+			lock: async (_target: string, options: { onCompromised?: (error: Error) => void }) => {
+				leaseOptions = options;
+				options.onCompromised?.(new Error("lock file was removed"));
+				return async () => {
+					throw new Error("Lock is already released");
+				};
+			},
+		}));
+		const origin = localCheckout(join(tempRoot, "checkout"));
+		const module = await import("../lib/plugin-origin.js");
+
+		await expect(module.recordPluginOrigin(origin, historyPath)).resolves.toEqual(historyOf());
+		expect(module.readPluginOriginHistory(historyPath).sightings).toEqual([]);
+		// Supplying a handler at all is the fix: proper-lockfile's own default is
+		// `(err) => { throw err }`, raised from the timer that refreshes the lease
+		// and therefore reachable by no caller and fatal to the host process.
+		const onCompromised = leaseOptions?.onCompromised;
+		expect(typeof onCompromised).toBe("function");
+		expect(() => onCompromised?.(new Error("reclaimed again"))).not.toThrow();
 	});
 });
