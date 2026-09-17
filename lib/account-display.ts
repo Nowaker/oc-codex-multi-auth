@@ -54,12 +54,11 @@ const SEAT_SUFFIX_MIN_LENGTH = 6;
 /**
  * Hard ceiling on a rendered seat, independent of how long the member id is.
  *
- * Without it the search below returns whatever length separates the ids, and
- * for a real ChatGPT member id - `<one distinguishing character>__<the 36-char
- * workspace uuid>` - that is the whole 39-character string, because the one
- * character that names the seat sits at the head and no tail short of the
- * entire id reaches it. Every seat then renders as its own workspace id, which
- * is both unreadable and the field already printed beside it.
+ * A seat sits in a table column beside the account, so its width may not be a
+ * function of how long the backend's ids happen to be. Member ids measured in
+ * a real multi-seat Business pool are 67 characters with no shared tail, so a
+ * search that stops when the ids are separated rather than when it runs out of
+ * room prints most of the id in every row.
  */
 const SEAT_RENDER_MAX_LENGTH = 12;
 /**
@@ -68,6 +67,8 @@ const SEAT_RENDER_MAX_LENGTH = 12;
  * reached with ids a backend hands out.
  */
 const SEAT_HASH_LENGTHS: readonly number[] = [8, 12, 16, 24, 32];
+/** Marks the gap between two excerpts, as `accountId` already elides with `...`. */
+const SEAT_WINDOW_SEPARATOR = "..";
 
 function normalizeSeatIdentity(accountUserId: string | undefined): string | undefined {
 	const trimmed = accountUserId?.trim();
@@ -108,21 +109,67 @@ function commonPrefixLength(values: readonly string[]): number {
 	return shared;
 }
 
+/** First index at which two ids differ, or their shared length if one prefixes the other. */
+function firstDivergence(left: string, right: string): number {
+	const limit = Math.min(left.length, right.length);
+	let index = 0;
+	while (index < limit && left[index] === right[index]) index += 1;
+	return index;
+}
+
+/**
+ * For every pair of ids, the first index at which that pair differs.
+ *
+ * Deliberately not "every index where the ids disagree": across a handful of
+ * random-looking ids that is nearly every index, which localizes nothing. A
+ * pair is told apart by any excerpt covering its first divergence, so an
+ * excerpt covering all of these positions tells every pair apart.
+ */
+function divergenceAnchors(values: readonly string[]): number[] {
+	const anchors = new Set<number>();
+	for (let left = 0; left < values.length; left += 1) {
+		for (let right = left + 1; right < values.length; right += 1) {
+			const leftValue = values[left];
+			const rightValue = values[right];
+			if (leftValue === undefined || rightValue === undefined) continue;
+			anchors.add(firstDivergence(leftValue, rightValue));
+		}
+	}
+	return [...anchors].sort((left, right) => left - right);
+}
+
+/** Starts of `width`-wide windows covering `anchors`, dropping those an earlier window already spans. */
+function anchorWindowStarts(anchors: readonly number[], width: number): number[] {
+	const starts: number[] = [];
+	for (const anchor of anchors) {
+		const last = starts[starts.length - 1];
+		if (last !== undefined && anchor < last + width) continue;
+		starts.push(anchor);
+	}
+	return starts;
+}
+
 /**
  * A renderer that gives every distinct member id in `accountUserIds` a
  * different string, short enough to sit in a column beside the account.
  *
- * Three strategies, each capped, tried in order:
+ * Four strategies, each capped, tried in order:
  *
  *  1. A tail. This is what the surfaces already print for `accountId`, so it
  *     is preferred wherever it works, which is wherever the ids differ near
  *     their end.
- *  2. A window anchored where the ids first diverge. Real member ids carry
- *     their distinguishing character at the HEAD followed by a long shared
- *     tail, so no tail separates them and only an anchored window stays short.
- *  3. A SHA-256 prefix, for ids that no capped window separates - one id being
- *     another with a prefix bolted on, which a backend does not produce but a
- *     fixture can.
+ *  2. One window anchored where the ids first diverge, for ids that share a
+ *     long tail.
+ *  3. Short windows at each position where some pair first differs, joined by
+ *     `..`. Member ids in the one real multi-seat Business pool this was
+ *     measured against diverge in more than one place - clusters 26 characters
+ *     apart - so no single capped window separates them, and joining excerpts
+ *     is what keeps the seat both bounded and readable off the id.
+ *  4. A SHA-256 prefix. This is NOT an unreachable branch kept for tidiness:
+ *     it is what remains when the divergences are too many or too spread out
+ *     for (3) to cover inside the cap. What it prints is opaque - it cannot be
+ *     matched against the id by eye - so any surface documenting the seat has
+ *     to say this outcome exists.
  *
  * Returning the id whole is kept as the final fallback so two distinct ids can
  * never render alike; reaching it needs a 128-bit SHA-256 prefix collision.
@@ -156,6 +203,21 @@ function resolveSeatRenderer(
 		if (separates(render)) return render;
 	}
 
+	const anchors = divergenceAnchors(distinct);
+	for (let width = 2; width <= SEAT_RENDER_MAX_LENGTH; width += 1) {
+		const starts = anchorWindowStarts(anchors, width);
+		const rendered =
+			starts.length * width + (starts.length - 1) * SEAT_WINDOW_SEPARATOR.length;
+		// Wider windows only ever cost more, so once one set overflows the cap
+		// no later width can fit and the search is over.
+		if (rendered > SEAT_RENDER_MAX_LENGTH) break;
+		const render = (accountUserId: string) =>
+			starts
+				.map((windowStart) => accountUserId.slice(windowStart, windowStart + width))
+				.join(SEAT_WINDOW_SEPARATOR);
+		if (separates(render)) return render;
+	}
+
 	for (const length of SEAT_HASH_LENGTHS) {
 		const render = (accountUserId: string) => hashSeatIdentity(accountUserId, length);
 		if (separates(render)) return render;
@@ -184,8 +246,9 @@ function resolveSeatRenderer(
  * ids sharing a six-character tail were observed, which is the same false
  * "these are duplicates" reading this suffix exists to prevent - so pass
  * `peerAccountUserIds` (the other accounts rendered alongside this one) and
- * the rendering widens or moves until it tells them all apart, within
- * {@link SEAT_RENDER_MAX_LENGTH}.
+ * {@link resolveSeatRenderer} picks a rendering that separates them inside
+ * {@link SEAT_RENDER_MAX_LENGTH}: a wider or relocated excerpt of the id
+ * where one fits, and an opaque hash prefix where none does.
  *
  * Returns `undefined` when there is no member id, so a token-only record
  * renders exactly as it did before.

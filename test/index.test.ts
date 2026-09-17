@@ -4074,12 +4074,12 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(output).not.toContain("seat:");
 		});
 
-		// The member ids this backend issues are `<one distinguishing
-		// character>__<the workspace uuid>`, so four seats of one workspace
-		// differ only at index 0 across a 38-character shared tail. A tail-based
-		// seat renders all 39 of those characters, and the column is sized to
-		// what it holds, so the row balloons past 150 characters and spends 38
-		// of them repeating the workspace id that is already in the Label cell.
+		// A SYNTHETIC single-divergence shape - see the measured profile below
+		// for what the backend actually issues. Four seats differing only at
+		// index 0 across a 38-character shared tail: a tail-based seat renders
+		// all 39 of those characters, and the column is sized to what it holds,
+		// so the row balloons past 150 characters and spends 38 of them
+		// repeating the workspace id already in the Label cell.
 		it("codex-list: keeps the seat column narrow for ids that differ only at the head", async () => {
 			await setMaskEmail(false);
 			const workspaceUuid = "05cd9f04-d56a-4256-9934-9cb827989a40";
@@ -4098,6 +4098,47 @@ describe("OpenAIOAuthPlugin", () => {
 			// The seat is an excerpt, not the id repeated into a second column.
 			expect(output).not.toContain(`9__${workspaceUuid}`);
 			// 119 characters with a 6-wide seat column, 152 with a 39-wide one.
+			for (const line of output.split("\n").filter((line) => /^\d+ /.test(line))) {
+				expect(line.length, line).toBeLessThan(130);
+			}
+		});
+
+		// The profile measured structurally against a real nine-seat Business
+		// pool: 67-character ids, five shared leading characters, no shared
+		// tail, and pairwise first divergences in clusters 26 characters apart.
+		// Asserted as distinct and narrow rather than as a particular excerpt -
+		// which strategy reaches it is an implementation detail, and pinning one
+		// is how the fixture above came to encode a wrong reading of the data.
+		it("codex-list: keeps rows distinct and narrow on the measured real-pool id shape", async () => {
+			await setMaskEmail(false);
+			const w1 = "05cd9f04-d56a-4256-9934-9cb827989a40";
+			const w2 = "0ce0db3a-1111-2222-3333-444444ff8839";
+			const w3 = "15aaaaaa-2222-3333-4444-555555aa1111";
+			const w4 = "25bbbbbb-3333-4444-5555-666666bb2222";
+			const w5 = "35cccccc-4444-5555-6666-777777cc3333";
+			const pool: Array<[string, string]> = [
+				["A", w1],
+				["B", w1],
+				["C", w1],
+				["D", w1],
+				["E", w2],
+				["A", w2],
+				["B", w3],
+				["F", w4],
+				["C", w5],
+			];
+			mockStorage.accounts = pool.map(([head, workspace], position) => ({
+				refreshToken: `r${position}`,
+				email: "shared@example.com",
+				accountId: workspace,
+				accountUserId: `user_${head}0123456789abcdefghijklmno${workspace}`,
+			}));
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			const rows = identityRows(output);
+			expect(rows).toHaveLength(9);
+			expect(new Set(rows).size).toBe(9);
 			for (const line of output.split("\n").filter((line) => /^\d+ /.test(line))) {
 				expect(line.length, line).toBeLessThan(130);
 			}

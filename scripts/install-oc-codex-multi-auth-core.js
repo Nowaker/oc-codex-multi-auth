@@ -412,18 +412,19 @@ function accountIdSuffix(accountId, includeSensitive) {
 }
 
 // A member id is what tells two seats of one Business workspace apart, and no
-// fixed-length tail always does it. Real member ids were observed sharing a
-// six-character tail, and the ones this backend issues are
-// `<one distinguishing character>__<the 36-char workspace uuid>` - so the
-// character that names the seat is at the head and NO tail short of the whole
-// 39-character id reaches it. Growing a tail until it separates them therefore
-// prints every seat as its own workspace id, which is the field already beside
-// it. The renderer below mirrors `resolveSeatRenderer` in
-// lib/account-display.ts: a tail, else a window anchored where the ids first
-// diverge, else a hash prefix - each capped - and the id whole only if none of
-// those separate them, which needs a 128-bit SHA-256 collision.
+// fixed-length tail always does it: member ids sharing a six-character tail
+// were observed, and in a real nine-seat pool the ids are 67 characters with
+// no shared tail at all, so growing a tail until it separates them prints most
+// of the id in every row. The renderer below mirrors `resolveSeatRenderer` in
+// lib/account-display.ts - a tail, else one window anchored where the ids first
+// diverge, else short windows at each position where a pair first differs
+// joined by `..`, else a hash prefix, each capped - and the id whole only if
+// none of those separate them, which needs a 128-bit SHA-256 collision. The
+// hash outcome is reachable, and it prints a value that cannot be matched
+// against the id by eye.
 const STANDALONE_SEAT_MAX_LENGTH = 12;
 const STANDALONE_SEAT_HASH_LENGTHS = [8, 12, 16, 24, 32];
+const STANDALONE_SEAT_WINDOW_SEPARATOR = "..";
 
 function seatIsDisclosable(accountUserId, includeSensitive) {
 	if (!accountUserId) return false;
@@ -455,6 +456,36 @@ function seatCommonPrefixLength(values) {
 	return shared;
 }
 
+function seatFirstDivergence(left, right) {
+	const limit = Math.min(left.length, right.length);
+	let index = 0;
+	while (index < limit && left[index] === right[index]) index += 1;
+	return index;
+}
+
+// For every pair, the first index at which that pair differs - not every index
+// where the ids disagree, which across a handful of random-looking ids is
+// nearly all of them and localizes nothing.
+function seatDivergenceAnchors(values) {
+	const anchors = new Set();
+	for (let left = 0; left < values.length; left += 1) {
+		for (let right = left + 1; right < values.length; right += 1) {
+			anchors.add(seatFirstDivergence(values[left], values[right]));
+		}
+	}
+	return [...anchors].sort((left, right) => left - right);
+}
+
+function seatAnchorWindowStarts(anchors, width) {
+	const starts = [];
+	for (const anchor of anchors) {
+		const last = starts[starts.length - 1];
+		if (last !== undefined && anchor < last + width) continue;
+		starts.push(anchor);
+	}
+	return starts;
+}
+
 function resolveStandaloneSeatRenderer(accountUserIds, includeSensitive) {
 	// Starts at the length the mask above allows, so masked output widens only
 	// when leaving it short would print a lie.
@@ -479,6 +510,20 @@ function resolveStandaloneSeatRenderer(accountUserIds, includeSensitive) {
 	const start = seatCommonPrefixLength(distinct);
 	for (let length = base; length <= STANDALONE_SEAT_MAX_LENGTH; length += 1) {
 		const render = (accountUserId) => seatWindow(accountUserId, start, length);
+		if (separates(render)) return render;
+	}
+	const anchors = seatDivergenceAnchors(distinct);
+	for (let width = 2; width <= STANDALONE_SEAT_MAX_LENGTH; width += 1) {
+		const starts = seatAnchorWindowStarts(anchors, width);
+		const rendered =
+			starts.length * width + (starts.length - 1) * STANDALONE_SEAT_WINDOW_SEPARATOR.length;
+		// Wider windows only ever cost more, so once one set overflows the cap
+		// no later width can fit.
+		if (rendered > STANDALONE_SEAT_MAX_LENGTH) break;
+		const render = (accountUserId) =>
+			starts
+				.map((windowStart) => accountUserId.slice(windowStart, windowStart + width))
+				.join(STANDALONE_SEAT_WINDOW_SEPARATOR);
 		if (separates(render)) return render;
 	}
 	for (const length of STANDALONE_SEAT_HASH_LENGTHS) {
