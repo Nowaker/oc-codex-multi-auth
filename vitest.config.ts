@@ -14,10 +14,13 @@ import { join } from 'node:path';
  * `lib/accounts/recovery.ts` and `lib/logger.ts` capture `homedir()` at module
  * scope, so anything later than import time is too late for them.
  */
+const inheritedHome = process.env.OC_CODEX_TEST_HOME;
 const isolatedHome =
-  process.env.OC_CODEX_TEST_HOME ??
-  mkdtempSync(join(tmpdir(), 'oc-codex-multi-auth-test-home-'));
+  inheritedHome ?? mkdtempSync(join(tmpdir(), 'oc-codex-multi-auth-test-home-'));
 process.env.OC_CODEX_TEST_HOME = isolatedHome;
+// Only a home this config minted may be removed once the run ends. One handed
+// in through the environment belongs to whoever set it.
+if (!inheritedHome) process.env.OC_CODEX_TEST_HOME_OWNED = '1';
 
 export default defineConfig({
   test: {
@@ -34,6 +37,7 @@ export default defineConfig({
     // that race times out under full-suite CPU contention, which is flakiness in
     // the harness rather than in any assertion (a warm re-import costs ~400ms).
     testTimeout: 15_000,
+    globalSetup: ['./test/global-setup.ts'],
     include: ['test/**/*.test.ts'],
     exclude: [
       'node_modules/**',
