@@ -208,9 +208,12 @@ function resolveSeatRenderer(
 		const starts = anchorWindowStarts(anchors, width);
 		const rendered =
 			starts.length * width + (starts.length - 1) * SEAT_WINDOW_SEPARATOR.length;
-		// Wider windows only ever cost more, so once one set overflows the cap
-		// no later width can fit and the search is over.
-		if (rendered > SEAT_RENDER_MAX_LENGTH) break;
+		// Skipped, not abandoned: a wider window can span two nearby anchors
+		// that needed one window each, so the cost falls as the window count
+		// does. Anchors at {5,6,7,31,32,33} cost 14 at width 2 (four windows)
+		// and 8 at width 3 (two), so giving up at the first overflow loses a
+		// rendering that fits comfortably.
+		if (rendered > SEAT_RENDER_MAX_LENGTH) continue;
 		const render = (accountUserId: string) =>
 			starts
 				.map((windowStart) => accountUserId.slice(windowStart, windowStart + width))

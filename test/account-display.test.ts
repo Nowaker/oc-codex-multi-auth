@@ -250,6 +250,79 @@ describe("seat suffix", () => {
 		});
 	});
 
+	/**
+	 * Two clusters of three adjacent divergences, 26 apart - the real pool's
+	 * clustering with one more member per cluster. Every id differs from every
+	 * other at exactly one marker position, so an excerpt separates a pair
+	 * only by covering a marker, which is what makes the window arithmetic
+	 * below decide the outcome rather than merely describe it.
+	 */
+	const clusteredAnchorIds = (): string[] => {
+		const base = "user_0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop";
+		const flip = (at: number) => `${base.slice(0, at)}Z${base.slice(at + 1)}`;
+		return [base, ...[5, 6, 7, 31, 32, 33].map(flip)];
+	};
+
+	/** The renderer's own window placement, to measure the fixture rather than trust it. */
+	const windowStarts = (anchors: readonly number[], width: number): number[] => {
+		const starts: number[] = [];
+		for (const anchor of anchors) {
+			const last = starts[starts.length - 1];
+			if (last !== undefined && anchor < last + width) continue;
+			starts.push(anchor);
+		}
+		return starts;
+	};
+
+	const joinedCost = (windows: number, width: number): number =>
+		windows * width + (windows - 1) * "..".length;
+
+	it("carries a divergence structure whose window cost falls as the window widens", () => {
+		const ids = clusteredAnchorIds();
+		const divergences = new Set<number>();
+		for (let left = 0; left < ids.length; left += 1) {
+			for (let right = left + 1; right < ids.length; right += 1) {
+				divergences.add(firstDivergence(ids[left]!, ids[right]!));
+			}
+		}
+		const anchors = [...divergences].sort((left, right) => left - right);
+
+		expect([...new Set(ids.map((id) => id.length))]).toEqual([67]);
+		expect(new Set(ids).size).toBe(7);
+		expect(anchors).toEqual([5, 6, 7, 31, 32, 33]);
+		// Neither earlier strategy can separate these inside the cap.
+		expect(new Set(ids.map((id) => id.slice(-32))).size).toBe(1);
+		expect(new Set(ids.map((id) => id.slice(5, 5 + 12))).size).toBe(4);
+
+		// The non-monotonicity itself: at width 2 the adjacent anchors need a
+		// window each and the join costs 14, over the 12-character cap. At
+		// width 3 each cluster collapses into ONE window and the same join
+		// costs 8. A search that stops at the first overflow never sees it.
+		expect(windowStarts(anchors, 2)).toEqual([5, 7, 31, 33]);
+		expect(joinedCost(4, 2)).toBeGreaterThan(12);
+		expect(windowStarts(anchors, 3)).toEqual([5, 31]);
+		expect(joinedCost(2, 3)).toBeLessThanOrEqual(12);
+	});
+
+	// Distinct and bounded would pass on a hash, which is exactly what this
+	// shape used to produce, so the assertion that matters is DERIVED: every
+	// piece lifted from the id it names.
+	it("excerpts clustered divergences instead of giving up at the first overflow", () => {
+		const ids = clusteredAnchorIds();
+		const rendered = resolveSeatSuffixes(ids);
+
+		expect(new Set(rendered).size).toBe(ids.length);
+		ids.forEach((id, index) => {
+			const seat = rendered[index];
+			expect(seat, id).toBeDefined();
+			expect(String(seat).length, String(seat)).toBeLessThanOrEqual(32);
+			for (const piece of String(seat).split("..")) {
+				expect(piece.length, `"${piece}" of "${seat}"`).toBeGreaterThan(0);
+				expect(id, `"${piece}" of "${seat}"`).toContain(piece);
+			}
+		});
+	});
+
 	// The hash is not a branch kept for tidiness. Divergences too many or too
 	// far apart for joined excerpts to cover inside the cap land here, and what
 	// it prints cannot be matched against the id by eye - which is why the
@@ -289,6 +362,7 @@ describe("seat suffix", () => {
 			// Long enough that returning any of them whole would breach the bound.
 			[`${"A".repeat(50)}X`, `${"A".repeat(50)}Y`, `B${"A".repeat(50)}X`],
 			realPoolProfileIds(),
+			clusteredAnchorIds(),
 			[
 				"A".repeat(60),
 				...[0, 3, 6, 9, 12, 15, 18, 21].map(

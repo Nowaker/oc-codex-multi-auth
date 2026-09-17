@@ -309,6 +309,55 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		});
 	});
 
+	// Two clusters of three adjacent divergences, 26 apart. At a two-character
+	// window each cluster needs a window of its own and the join overflows the
+	// cap; at three characters each cluster collapses into one window and the
+	// join fits. A search that abandons the widths after the first overflow
+	// prints a hash here, so this is where this copy would drift from the lib.
+	it("list: excerpts clustered divergences rather than giving up on them", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const base = "user_0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop";
+		const memberIds = [
+			base,
+			...[5, 6, 7, 31, 32, 33].map((at) => `${base.slice(0, at)}Z${base.slice(at + 1)}`),
+		];
+		await seedPool(
+			tempHome,
+			memberIds.map((accountUserId, position) => ({
+				email: "shared@example.com",
+				accountId: "05cd9f04-d56a-4256-9934-9cb827989a40",
+				accountUserId,
+				accountIdSource: "token",
+				refreshToken: `refresh-${position}`,
+				addedAt: 1000,
+				lastUsed: 2000,
+			})),
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["list", "--include-sensitive"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const seats = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.startsWith("- ["))
+			.map((line) => extractIdentity(line).match(/seat:([^,)]+)/)?.[1]);
+
+		expect(seats).toHaveLength(memberIds.length);
+		expect(new Set(seats).size).toBe(memberIds.length);
+		memberIds.forEach((id, position) => {
+			const seat = String(seats[position]);
+			expect(seat.length, seat).toBeLessThanOrEqual(32);
+			for (const piece of seat.split("..")) {
+				expect(piece.length, `"${piece}" of "${seat}"`).toBeGreaterThan(0);
+				expect(id, `"${piece}" of "${seat}"`).toContain(piece);
+			}
+		});
+	});
+
 	it("list: drops the org-derived label the plugin no longer generates", async () => {
 		// The standalone CLI reads the pool through its own normalizer, so
 		// without a mirror of the drop it keeps printing the wrong
