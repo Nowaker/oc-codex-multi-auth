@@ -1,7 +1,7 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PACKAGE_NAME = "oc-codex-multi-auth";
@@ -200,47 +200,185 @@ function parseUpdateArgs(argv) {
 	};
 }
 
-function normalizePluginEntryForMatch(entry) {
-	const trimmed = entry.trim();
-	let normalized = trimmed.toLowerCase();
+const MANAGED_PACKAGE_ENTRY = "managed-package";
+const LOCAL_CHECKOUT_ENTRY = "local-checkout";
+const UNRELATED_ENTRY = "unrelated";
+const DECLARED_NAME_LOOKUP_DEPTH = 3;
+
+function pluginEntrySpecifier(entry) {
+	if (typeof entry === "string") return entry;
+	// `[specifier, options]` configures a plugin without changing where it loads from.
+	if (Array.isArray(entry) && typeof entry[0] === "string") return entry[0];
+	return null;
+}
+
+/**
+ * Relative paths come back unresolved on purpose: OpenCode resolves them
+ * against the config directory, not the installer's working directory, so
+ * resolving them here would invent a location that was never registered.
+ */
+function pluginEntryPath(specifier) {
+	const trimmed = specifier.trim();
+	if (!trimmed) return null;
+	if (/^file:\/\//i.test(trimmed)) {
+		try {
+			return fileURLToPath(trimmed);
+		} catch {
+			return null;
+		}
+	}
+	if (!trimmed.includes("/") && !trimmed.includes("\\")) return null;
+	return trimmed;
+}
+
+function pluginPathSegments(entryPath) {
+	return entryPath.replaceAll("\\", "/").replace(/\/+$/, "").split("/").filter(Boolean);
+}
+
+function isPackageManagerPath(entryPath) {
+	const segments = pluginPathSegments(entryPath);
+	return segments.some(
+		(segment, index) =>
+			segment === "node_modules" ||
+			// OpenCode's plugin cache spells the version into the directory name.
+			// A `packages/` directory without one is an ordinary monorepo.
+			(segments[index - 1] === "packages" && segment.includes("@")),
+	);
+}
+
+/**
+ * Last-resort identification for a path that is not present on this machine.
+ * Spelling alone never authorizes deleting an entry; it only names the package a
+ * missing path was probably meant to point at.
+ */
+function managedNameFromPathSpelling(entryPath) {
+	const segments = pluginPathSegments(entryPath);
+	const last = segments.at(-1) === "dist" ? segments.at(-2) : segments.at(-1);
+	if (!last) return null;
+	let candidate = last.toLowerCase();
 	try {
-		normalized = decodeURIComponent(normalized);
+		candidate = decodeURIComponent(candidate);
 	} catch {
-		// Keep the raw lowercased value when a malformed URI escape is present.
+		// Keep the raw segment when it carries a malformed escape.
 	}
-	normalized = normalized.replace(/\\/g, "/").replace(/\/+$/g, "");
-	if (normalized.endsWith("/dist")) {
-		normalized = normalized.slice(0, -"/dist".length);
+	const versionSuffix = candidate.indexOf("@");
+	if (versionSuffix > 0) candidate = candidate.slice(0, versionSuffix);
+	return getManagedPackageNames().find((name) => name.toLowerCase() === candidate) ?? null;
+}
+
+function readDeclaredPackageName(directoryPath) {
+	try {
+		const parsed = JSON.parse(readFileSync(join(directoryPath, "package.json"), "utf8"));
+		const name = parsed?.name;
+		return typeof name === "string" && name.trim() ? name.trim() : null;
+	} catch {
+		return null;
 	}
-	return normalized;
 }
 
-function isManagedPluginEntry(entry) {
-	if (typeof entry !== "string") return false;
-	const trimmed = entry.trim().toLowerCase();
-	const normalized = normalizePluginEntryForMatch(entry);
-	return getManagedPackageNames().some((name) => {
-		const lowerName = name.toLowerCase();
-		return trimmed === lowerName ||
-			trimmed.startsWith(`${lowerName}@`) ||
-			normalized.endsWith(`/${lowerName}`) ||
-			normalized.endsWith(`/node_modules/${lowerName}`);
-	});
+/** An entry may point at a build output inside the package, so walk upwards. */
+function resolveDeclaredPackageName(entryPath) {
+	if (!isAbsolute(entryPath)) return null;
+	let current = resolve(entryPath);
+	for (let depth = 0; depth <= DECLARED_NAME_LOOKUP_DEPTH; depth += 1) {
+		const name = readDeclaredPackageName(current);
+		if (name) return name;
+		const parent = dirname(current);
+		if (parent === current) return null;
+		current = parent;
+	}
+	return null;
 }
 
-function normalizePluginList(list) {
-	const entries = Array.isArray(list) ? list.filter(Boolean) : [];
-	const filtered = entries.filter((entry) => !isManagedPluginEntry(entry));
-	return [...filtered, PACKAGE_NAME];
+/**
+ * Decides what a plugin entry is, by identity rather than by spelling.
+ *
+ * The distinction that matters is not which package an entry names but who
+ * chose the location. A bare specifier or a path inside `node_modules` is a
+ * reference the installer itself produced and may retire. Any other path is
+ * somewhere a human deliberately pointed OpenCode - a checkout of this package
+ * being developed on, most often - and is never the installer's to remove.
+ */
+function classifyPluginEntry(entry, resolveDeclaredName = resolveDeclaredPackageName) {
+	const specifier = pluginEntrySpecifier(entry);
+	if (specifier === null) return { kind: UNRELATED_ENTRY, name: null };
+
+	const entryPath = pluginEntryPath(specifier);
+	if (entryPath === null) {
+		const bare = specifier.trim().toLowerCase();
+		const name = getManagedPackageNames().find(
+			(managed) =>
+				bare === managed.toLowerCase() || bare.startsWith(`${managed.toLowerCase()}@`),
+		);
+		return name
+			? { kind: MANAGED_PACKAGE_ENTRY, name }
+			: { kind: UNRELATED_ENTRY, name: null };
+	}
+
+	const declaredName = resolveDeclaredName(entryPath);
+	const managedName = declaredName
+		? getManagedPackageNames().find(
+			(managed) => managed.toLowerCase() === declaredName.toLowerCase(),
+		) ?? null
+		: managedNameFromPathSpelling(entryPath);
+
+	if (!managedName) return { kind: UNRELATED_ENTRY, name: null };
+
+	return isPackageManagerPath(entryPath)
+		? { kind: MANAGED_PACKAGE_ENTRY, name: managedName }
+		: { kind: LOCAL_CHECKOUT_ENTRY, name: managedName, path: entryPath };
 }
 
-function mergeTuiConfig(existingConfig) {
+/**
+ * Ensures this plugin is registered exactly once, without changing how an
+ * existing registration is spelled. Appending the published package name is the
+ * fallback for a config that does not reference the plugin at all, not the
+ * canonical form every config is rewritten into.
+ */
+function normalizePluginList(list, onNotice) {
+	const entries = Array.isArray(list)
+		? list.filter((entry) => entry !== null && entry !== undefined && entry !== "")
+		: [];
+	const kept = [];
+	let registered = false;
+	let keptPublishedName = false;
+
+	for (const entry of entries) {
+		const classification = classifyPluginEntry(entry);
+
+		if (classification.kind === LOCAL_CHECKOUT_ENTRY) {
+			kept.push(entry);
+			registered = true;
+			onNotice?.(
+				`Keeping the local ${classification.name} checkout registered at ${classification.path}`,
+			);
+			continue;
+		}
+
+		if (classification.kind === MANAGED_PACKAGE_ENTRY) {
+			// Retire stale duplicates, version pins, renamed packages, and paths
+			// into package-manager output; keep one published-name entry in place.
+			if (pluginEntrySpecifier(entry) === PACKAGE_NAME && !keptPublishedName) {
+				keptPublishedName = true;
+				registered = true;
+				kept.push(entry);
+			}
+			continue;
+		}
+
+		kept.push(entry);
+	}
+
+	return registered ? kept : [...kept, PACKAGE_NAME];
+}
+
+function mergeTuiConfig(existingConfig, onNotice) {
 	const existing = isPlainObject(existingConfig) ? { ...existingConfig } : {};
 	const next = { ...existing };
 	if (typeof next.$schema !== "string" || !next.$schema.trim()) {
 		next.$schema = "https://opencode.ai/tui.json";
 	}
-	next.plugin = normalizePluginList(existing.plugin);
+	next.plugin = normalizePluginList(existing.plugin, onNotice);
 	return next;
 }
 
@@ -1373,7 +1511,7 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 			}
 			existingConfig = existing;
 			const merged = { ...existing };
-			merged.plugin = normalizePluginList(existing.plugin);
+			merged.plugin = normalizePluginList(existing.plugin, log);
 			if (!pluginOnly) {
 				const provider = (existing.provider && typeof existing.provider === "object")
 					? { ...existing.provider }
@@ -1407,7 +1545,7 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 				throw new Error("TUI config root must be a JSON object");
 			}
 			existingTuiConfig = existing;
-			nextTuiConfig = mergeTuiConfig(existing);
+			nextTuiConfig = mergeTuiConfig(existing, log);
 		} catch (error) {
 			if (pluginOnly) {
 				throw new Error(
@@ -1486,12 +1624,14 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 export const __test = {
 	buildPaths,
 	backupConfig,
+	classifyPluginEntry,
 	copyFileWithWindowsRetry,
 	formatConfigDiff,
 	formatRedactedConfigDiff,
 	mergeFullTemplate,
 	mergeOpenaiProvider,
 	mergeTuiConfig,
+	normalizePluginList,
 	parseCliArgs,
 	removeWithWindowsRetry,
 	runStandaloneCommand,
