@@ -45,6 +45,7 @@ describe("plugin-origin", () => {
 
 	afterEach(async () => {
 		vi.doUnmock("proper-lockfile");
+		vi.doUnmock("node:fs/promises");
 		vi.resetModules();
 		if (tempRoot) {
 			await rm(tempRoot, { recursive: true, force: true });
@@ -308,5 +309,99 @@ describe("plugin-origin", () => {
 		const onCompromised = leaseOptions?.onCompromised;
 		expect(typeof onCompromised).toBe("function");
 		expect(() => onCompromised?.(new Error("reclaimed again"))).not.toThrow();
+	});
+
+	it("leaves newer history alone when the lease is lost while the copy is written", async () => {
+		tempRoot = await createTempRoot();
+		const historyPath = join(tempRoot, ".opencode", "oc-codex-multi-auth-origin.json");
+		const newOwner = {
+			...localCheckout(join(tempRoot, "written-by-the-new-owner")),
+			firstSeen: "2026-01-01T00:00:00.000Z",
+			lastSeen: "2026-01-01T00:00:00.000Z",
+		};
+		await mkdir(join(tempRoot, ".opencode"), { recursive: true });
+		await writeFile(historyPath, JSON.stringify(historyOf(newOwner)), "utf-8");
+
+		let leaseOptions: { onCompromised?: (error: Error) => void } | undefined;
+		vi.resetModules();
+		vi.doMock("proper-lockfile", () => ({
+			lock: async (_target: string, options: { onCompromised?: (error: Error) => void }) => {
+				leaseOptions = options;
+				return async () => {};
+			},
+		}));
+		// Reclaimed precisely inside the window the fix closes: after the merge
+		// has been decided, while the replacement copy is still being written.
+		vi.doMock("node:fs/promises", async () => {
+			const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+			return {
+				...actual,
+				writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+					leaseOptions?.onCompromised?.(new Error("lease reclaimed mid-write"));
+					return actual.writeFile(...args);
+				},
+			};
+		});
+		const module = await import("../lib/plugin-origin.js");
+		const origin = localCheckout(join(tempRoot, "losing-writer"));
+
+		await module.recordPluginOrigin(origin, historyPath);
+
+		const roots = module.readPluginOriginHistory(historyPath).sightings.map((s) => s.root);
+		expect(roots).toEqual([newOwner.root]);
+		expect(roots).not.toContain(origin.root);
+	});
+
+	describe("Windows path casing", () => {
+		it("recognizes package-manager output under any casing, but only on Windows", () => {
+			const cacheRoot = "C:/Users/dev/.cache/opencode/NODE_MODULES/oc-codex-multi-auth";
+
+			expect(isPackageManagerRoot(cacheRoot, "win32")).toBe(true);
+			expect(isPackageManagerRoot(cacheRoot, "linux")).toBe(false);
+			expect(isPackageManagerRoot("/home/dev/src/oc-codex-multi-auth", "win32")).toBe(false);
+		});
+
+		it("keeps one sighting for one directory spelled two ways", () => {
+			const first = withSighting(
+				historyOf(),
+				localCheckout("C:\\Repo\\plugin"),
+				"2026-01-01T00:00:00.000Z",
+				"win32",
+			);
+			const second = withSighting(
+				first,
+				localCheckout("c:\\repo\\plugin"),
+				"2026-02-01T00:00:00.000Z",
+				"win32",
+			);
+
+			expect(second.sightings).toHaveLength(1);
+			expect(second.sightings[0]?.firstSeen).toBe("2026-01-01T00:00:00.000Z");
+			expect(second.sightings[0]?.lastSeen).toBe("2026-02-01T00:00:00.000Z");
+			// Recorded as this run spelled it, so a reader is shown a real path.
+			expect(second.sightings[0]?.root).toBe("c:\\repo\\plugin");
+
+			expect(
+				withSighting(first, localCheckout("c:\\repo\\plugin"), "2026-02-01T00:00:00.000Z", "linux")
+					.sightings,
+			).toHaveLength(2);
+		});
+
+		it("does not call a differently cased spelling of the same root a replacement", () => {
+			const checkout = {
+				...localCheckout("C:\\Repo\\plugin"),
+				firstSeen: "2026-01-01T00:00:00.000Z",
+				lastSeen: "2026-01-01T00:00:00.000Z",
+			};
+			const installed = {
+				...installedPackage("c:\\repo\\plugin"),
+				isLocalCheckout: false,
+			};
+
+			expect(findReplacedLocalCheckout(installed, historyOf(checkout), "win32")).toBeNull();
+			expect(findReplacedLocalCheckout(installed, historyOf(checkout), "linux")?.root).toBe(
+				"C:\\Repo\\plugin",
+			);
+		});
 	});
 });

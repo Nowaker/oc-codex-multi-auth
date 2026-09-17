@@ -8,7 +8,7 @@
  * edits stopped taking effect" into a diagnosable event.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -101,12 +101,28 @@ function pathSegments(path: string): string[] {
 }
 
 /**
+ * How two spellings of a root are told apart. Windows reaches one directory
+ * under several of them, so comparing verbatim there would let `C:\Repo` and
+ * `c:\repo` occupy two slots in a bounded history and evict a genuinely
+ * different origin between them.
+ */
+function rootComparisonKey(root: string, platform: NodeJS.Platform = process.platform): string {
+	const normalized = root.replaceAll("\\", "/").replace(/\/+$/, "");
+	return platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+/**
  * A root a package manager chose, as opposed to one a human did. The version
  * suffix is what separates OpenCode's plugin cache from a monorepo that merely
  * keeps its packages in a `packages/` directory.
  */
-export function isPackageManagerRoot(root: string): boolean {
-	const segments = pathSegments(root);
+export function isPackageManagerRoot(
+	root: string,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	const segments = pathSegments(root).map((segment) =>
+		platform === "win32" ? segment.toLowerCase() : segment,
+	);
 	return segments.some(
 		(segment, index) =>
 			segment === "node_modules" ||
@@ -185,9 +201,15 @@ export function withSighting(
 	history: PluginOriginHistory,
 	origin: PluginOrigin,
 	seenAt: string,
+	platform: NodeJS.Platform = process.platform,
 ): PluginOriginHistory {
-	const previous = history.sightings.find((sighting) => sighting.root === origin.root);
-	const others = history.sightings.filter((sighting) => sighting.root !== origin.root);
+	// Matched on the comparison key, recorded as the origin spells it: a reader
+	// is shown the path they configured, not a folded version of it.
+	const key = rootComparisonKey(origin.root, platform);
+	const sameRoot = (sighting: PluginOriginSighting) =>
+		rootComparisonKey(sighting.root, platform) === key;
+	const previous = history.sightings.find(sameRoot);
+	const others = history.sightings.filter((sighting) => !sameRoot(sighting));
 	const current: PluginOriginSighting = {
 		...origin,
 		firstSeen: previous?.firstSeen ?? seenAt,
@@ -199,14 +221,30 @@ export function withSighting(
 	};
 }
 
-async function writeHistory(historyPath: string, history: PluginOriginHistory): Promise<void> {
+/**
+ * Replaces the history, unless ownership was lost while the new copy was being
+ * written. Only the rename is visible to anybody else, so that is where the
+ * question has to be asked: checking earlier leaves the whole of `writeFile`
+ * as a window in which the lease can be reclaimed and newer history written,
+ * which this rename would then replace with an older snapshot.
+ *
+ * Returns whether the replacement happened.
+ */
+async function writeHistory(
+	historyPath: string,
+	history: PluginOriginHistory,
+	stillOwned: () => boolean,
+): Promise<boolean> {
 	const temporaryPath = `${historyPath}.${process.pid}.tmp`;
 	await writeFile(temporaryPath, `${JSON.stringify(history, null, 2)}\n`, "utf-8");
 	try {
+		if (!stillOwned()) return false;
 		await renameWithWindowsRetry(temporaryPath, historyPath);
-	} catch (error) {
-		await rm(temporaryPath, { force: true }).catch(() => undefined);
-		throw error;
+		return true;
+	} finally {
+		if (existsSync(temporaryPath)) {
+			await rm(temporaryPath, { force: true }).catch(() => undefined);
+		}
 	}
 }
 
@@ -265,12 +303,13 @@ export async function recordPluginOrigin(
 
 	try {
 		const next = withSighting(readPluginOriginHistory(historyPath), origin, now().toISOString());
-		// Checked here rather than before the merge: whoever reclaimed the lease
-		// owns the file now, so writing what we read before they did would drop
-		// their sighting - the clobber the lease exists to prevent.
+		// Whoever reclaimed the lease owns the file now, so writing what we read
+		// before they did would drop their sighting - the clobber the lease
+		// exists to prevent. Asked again at the rename, since the lease can be
+		// lost at any point up to it.
 		if (compromised) return readPluginOriginHistory(historyPath);
-		await writeHistory(historyPath, next);
-		return next;
+		const written = await writeHistory(historyPath, next, () => !compromised);
+		return written ? next : readPluginOriginHistory(historyPath);
 	} finally {
 		await release().catch(() => undefined);
 	}
@@ -284,15 +323,17 @@ export async function recordPluginOrigin(
 export function findReplacedLocalCheckout(
 	origin: PluginOrigin,
 	history: PluginOriginHistory,
+	platform: NodeJS.Platform = process.platform,
 ): PluginOriginSighting | null {
 	if (origin.isLocalCheckout) return null;
+	const currentKey = rootComparisonKey(origin.root, platform);
 	return (
 		history.sightings
 			.filter(
 				(sighting) =>
 					sighting.name === origin.name &&
 					sighting.isLocalCheckout &&
-					sighting.root !== origin.root,
+					rootComparisonKey(sighting.root, platform) !== currentKey,
 			)
 			.sort(byLastSeen)
 			.at(-1) ?? null
