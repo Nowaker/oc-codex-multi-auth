@@ -8,6 +8,7 @@ This documentation set is split by purpose so the main README can stay focused o
 - [Tools and CLI](tools-and-cli.md): complete catalog of 24 `codex-*` tools and standalone bin commands
 - [Architecture Overview](architecture.md): public map of the installer, OpenCode plugin entry, TUI plugin, tool registry, request pipeline, rotation, and storage model
 - [Configuration Reference](configuration.md): config keys, environment variables, fallback behavior, and file locations
+- [Plan Allotments](plan-allotments.md): what each ChatGPT plan is worth relative to a 1x seat, and how the pool-wide quota total is weighted
 - [Troubleshooting](troubleshooting.md): common failure modes and recovery steps
 - [FAQ](faq.md): short answers for common questions
 - [Privacy & Data Handling](privacy.md): what is stored locally, what is sent upstream, and how to delete it
