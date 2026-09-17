@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PACKAGE_NAME = "oc-codex-multi-auth";
 const LEGACY_PACKAGE_NAMES = ["oc-chatgpt-multi-auth"];
+const ORIGIN_HISTORY_FILE_NAME = "oc-codex-multi-auth-origin.json";
 const WINDOWS_RENAME_RETRY_ATTEMPTS = 5;
 const WINDOWS_RENAME_RETRY_BASE_DELAY_MS = 10;
 const STALE_MANAGED_MODEL_KEYS = new Set([
@@ -150,6 +151,7 @@ function buildPaths(homeDir) {
 		]),
 		cacheBunLock: join(cacheDir, "bun.lock"),
 		cachePackageJson: join(cacheDir, "package.json"),
+		originHistoryPath: join(homeDir, ".opencode", ORIGIN_HISTORY_FILE_NAME),
 		modernTemplatePath,
 		legacyTemplatePath,
 	};
@@ -370,6 +372,42 @@ function normalizePluginList(list, onNotice) {
 	}
 
 	return registered ? kept : [...kept, PACKAGE_NAME];
+}
+
+function readLocalCheckoutSightings(historyPath) {
+	try {
+		const parsed = JSON.parse(readFileSync(historyPath, "utf8"));
+		const sightings = parsed?.sightings;
+		if (!Array.isArray(sightings)) return [];
+		return sightings.filter(
+			(sighting) =>
+				sighting &&
+				typeof sighting === "object" &&
+				sighting.isLocalCheckout === true &&
+				typeof sighting.root === "string" &&
+				typeof sighting.lastSeen === "string" &&
+				getManagedPackageNames().includes(sighting.name),
+		);
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * A checkout the plugin has run from that the finished config does not
+ * register. Reported rather than restored: config history is evidence of what
+ * happened, not authority over what the user wants registered now.
+ */
+function findUnregisteredLocalCheckout(pluginList, historyPath) {
+	const entries = Array.isArray(pluginList) ? pluginList : [];
+	if (entries.some((entry) => classifyPluginEntry(entry).kind === LOCAL_CHECKOUT_ENTRY)) {
+		return null;
+	}
+	const latest = readLocalCheckoutSightings(historyPath)
+		.sort((left, right) => (Date.parse(left.lastSeen) || 0) - (Date.parse(right.lastSeen) || 0))
+		.at(-1);
+	if (!latest) return null;
+	return resolveDeclaredPackageName(latest.root) ? latest : null;
 }
 
 function mergeTuiConfig(existingConfig, onNotice) {
@@ -1560,6 +1598,14 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 		log("No existing TUI config found. Creating new global TUI config.");
 	}
 
+	const unregisteredCheckout = findUnregisteredLocalCheckout(nextConfig.plugin, paths.originHistoryPath);
+	if (unregisteredCheckout) {
+		log(
+			`Note: this plugin last loaded from a checkout at ${unregisteredCheckout.root} on ${unregisteredCheckout.lastSeen}, ` +
+			`which ${paths.configPath} does not register. Point the plugin entry back at that path if OpenCode should keep loading your own build.`,
+		);
+	}
+
 	const configChanged = existingConfig === undefined || formatJson(existingConfig) !== formatJson(nextConfig);
 	const tuiConfigChanged = existingTuiConfig === undefined || formatJson(existingTuiConfig) !== formatJson(nextTuiConfig);
 	let wrote = false;
@@ -1626,6 +1672,7 @@ export const __test = {
 	backupConfig,
 	classifyPluginEntry,
 	copyFileWithWindowsRetry,
+	findUnregisteredLocalCheckout,
 	formatConfigDiff,
 	formatRedactedConfigDiff,
 	mergeFullTemplate,
