@@ -5323,10 +5323,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		// The runtime label must be built with masking enabled. If the
 		// `{ maskEmail }` option is dropped from this call site, this fails.
+		// Matched by containment so a later option added alongside it - the
+		// seat-disambiguating `peerAccounts` - does not read as a regression.
 		expect(vi.mocked(accountsModule.formatAccountLabel)).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.any(Number),
-			{ maskEmail: true },
+			expect.objectContaining({ maskEmail: true }),
 		);
 	});
 

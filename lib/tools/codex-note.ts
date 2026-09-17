@@ -104,7 +104,10 @@ export function createCodexNoteTool(ctx: ToolContext): ToolDefinition {
 				accountManagerPromiseRef.current = Promise.resolve(reloadedManager);
 			}
 
-			const accountLabel = formatCommandAccountLabel(persistedAccount, targetIndex, { maskEmail });
+			const accountLabel = formatCommandAccountLabel(persistedAccount, targetIndex, {
+				maskEmail,
+				peerAccounts: storage.accounts,
+			});
 			if (normalizedNote.length === 0) {
 				return `Cleared note for ${accountLabel}`;
 			}

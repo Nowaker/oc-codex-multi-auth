@@ -152,6 +152,7 @@ export function createCodexRemoveTool(ctx: ToolContext): ToolDefinition {
 
 					const label = formatCommandAccountLabel(account, targetIndex, {
 						maskEmail,
+						peerAccounts: accounts,
 					});
 
 					storage.accounts.splice(targetIndex, 1);

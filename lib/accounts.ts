@@ -428,7 +428,10 @@ export function formatAccountLabel(
 		| { email?: string; accountId?: string; accountUserId?: string; accountLabel?: string }
 		| undefined,
 	index: number,
-	options: { maskEmail?: boolean } = {},
+	options: {
+		maskEmail?: boolean;
+		peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
+	} = {},
 ): string {
 	const accountLabel = account?.accountLabel?.trim();
 	const email = resolveDisplayEmail(account?.email, options.maskEmail ?? false);
@@ -441,7 +444,10 @@ export function formatAccountLabel(
 	// `accountId` names the workspace, which every member of a Business
 	// workspace shares. Without the seat, four distinct members printed one
 	// identical `id:` string (see `formatSeatSuffix`).
-	const seatSuffix = formatSeatSuffix(account?.accountUserId);
+	const seatSuffix = formatSeatSuffix(
+		account?.accountUserId,
+		options.peerAccounts?.map((peer) => peer?.accountUserId),
+	);
 
 	const details: string[] = [];
 	if (accountLabel) details.push(accountLabel);

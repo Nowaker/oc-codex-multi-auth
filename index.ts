@@ -479,11 +479,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			account?: {
 				email?: string;
 				accountId?: string;
+				accountUserId?: string;
 				accountLabel?: string;
 				accountTags?: string[];
 				accountNote?: string;
 			};
 			label?: string;
+			peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
 		} = {},
 	): Record<string, unknown> => ({
 		index: index + 1,
@@ -491,7 +493,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		...(options.includeSensitive
 			? {
 					label:
-						options.label ?? formatCommandAccountLabel(options.account, index),
+						options.label ??
+						formatCommandAccountLabel(options.account, index, {
+							peerAccounts: options.peerAccounts,
+						}),
 					email: options.account?.email ?? null,
 					accountId: options.account?.accountId ?? null,
 				}
@@ -1280,12 +1285,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				accountNote?: string;
 			} | undefined,
 			index: number,
-			options: { maskEmail?: boolean } = {},
+			options: {
+				maskEmail?: boolean;
+				peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
+			} = {},
 		): string => {
 			const email = resolveDisplayEmail(account?.email, options.maskEmail ?? false);
 			const workspace = account?.accountLabel?.trim();
 			const accountId = formatAccountIdForDisplay(account?.accountId);
-			const seat = formatSeatSuffix(account?.accountUserId);
+			const seat = formatSeatSuffix(
+				account?.accountUserId,
+				options.peerAccounts?.map((peer) => peer?.accountUserId),
+			);
 			const tags =
 				Array.isArray(account?.accountTags)
 					? account.accountTags
@@ -1339,7 +1350,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const maskEmail = resolveMaskEmail();
 				const selected = await select<number>(
 					storage.accounts.map((account, index) => ({
-						label: formatCommandAccountLabel(account, index, { maskEmail }),
+						label: formatCommandAccountLabel(account, index, {
+							maskEmail,
+							peerAccounts: storage.accounts,
+						}),
 						value: index,
 					})),
 					{
@@ -1364,7 +1378,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		): BeginnerAccountSnapshot[] => {
 			return storage.accounts.map((account, index) => ({
 				index,
-				label: formatCommandAccountLabel(account, index),
+				label: formatCommandAccountLabel(account, index, {
+					peerAccounts: storage.accounts,
+				}),
 				accountLabel: account.accountLabel,
 				enabled: account.enabled !== false,
 				isActive: index === activeIndex,
@@ -2929,6 +2945,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const failures = await accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index, {
 					maskEmail: maskEmailEnabled,
+					peerAccounts: accountManager.getAccountsSnapshot(),
 				});
 				
 				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL) {
@@ -3011,6 +3028,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											) {
 												const accountLabel = formatAccountLabel(account, account.index, {
 													maskEmail: maskEmailEnabled,
+													peerAccounts: accountManager.getAccountsSnapshot(),
 												});
 												await showToast(
 													`Using ${accountLabel} (${account.index + 1}/${accountCount})`,
@@ -3271,6 +3289,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				if (workspaceDeactivated) {
 					const accountLabel = formatAccountLabel(account, account.index, {
 						maskEmail: maskEmailEnabled,
+						peerAccounts: accountManager.getAccountsSnapshot(),
 					});
 					accountManager.refundToken(account, modelFamily, model);
 					accountManager.recordFailure(account, modelFamily, model);
@@ -3586,6 +3605,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																													if (isInvalidatedAuthTokenError(errorBody, response.status)) {
 																														const accountLabel = formatAccountLabel(account, account.index, {
 																															maskEmail: maskEmailEnabled,
+																															peerAccounts: accountManager.getAccountsSnapshot(),
 																														});
 																														accountManager.refundToken(account, modelFamily, model);
 																														accountManager.recordFailure(account, modelFamily, model);

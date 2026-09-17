@@ -94,8 +94,13 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 				const account = storage.accounts[i];
 				if (!input || !account) continue;
 
-				const label = formatCommandAccountLabel(account, i);
-				const displayLabel = formatCommandAccountLabel(account, i, { maskEmail });
+				const label = formatCommandAccountLabel(account, i, {
+					peerAccounts: storage.accounts,
+				});
+				const displayLabel = formatCommandAccountLabel(account, i, {
+					maskEmail,
+					peerAccounts: storage.accounts,
+				});
 				const outcome = await refreshAndPersistAccount(input);
 
 				if (outcome.status === "refreshed") {

@@ -179,6 +179,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 							...buildJsonAccountIdentity(index, {
 								includeSensitive: includeSensitiveOutput,
 								account,
+								peerAccounts: storage.accounts,
 							}),
 							enabled: account.enabled !== false,
 							isActive: index === activeIndex,
@@ -210,7 +211,10 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 				];
 
 				filteredEntries.forEach(({ account, index }) => {
-					const label = formatCommandAccountLabel(account, index, { maskEmail });
+					const label = formatCommandAccountLabel(account, index, {
+						maskEmail,
+						peerAccounts: storage.accounts,
+					});
 					const badges: string[] = [];
 					if (index === activeIndex)
 						badges.push(formatUiBadge(ui, "current", "accent"));
@@ -307,7 +311,10 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 			];
 
 			filteredEntries.forEach(({ account, index }) => {
-				const label = formatCommandAccountLabel(account, index, { maskEmail });
+				const label = formatCommandAccountLabel(account, index, {
+					maskEmail,
+					peerAccounts: storage.accounts,
+				});
 				const statuses: string[] = [];
 				const rateLimit = formatRateLimitEntry(account, now);
 				const quotaExhausted = formatQuotaExhaustionEntry(account, now);
