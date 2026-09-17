@@ -228,6 +228,12 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `maskEmail` | `false` | `CODEX_TUI_MASK_EMAIL` | Mask account emails on display surfaces |
 | `maskEmailInQuotaDetails` | `false` | `CODEX_TUI_MASK_EMAIL_DETAILS` | Also mask email in quota details |
 | `quotaDisplay` | `free` | `CODEX_AUTH_QUOTA_DISPLAY` | Word quota percentages as `free` headroom or `used` consumption; presentation only |
+| `quotaStatus.mode` | `active` | `CODEX_AUTH_QUOTA_STATUS` | `active` shows the serving account; `overview` shows the whole pool on one line |
+| `quotaStatus.accounts` | `true` | `CODEX_AUTH_QUOTA_STATUS_ACCOUNTS` | Per-account breakdown in `overview`, versus a bare `3 accounts` |
+| `quotaStatus.multipliers` | `false` | `CODEX_AUTH_QUOTA_STATUS_MULTIPLIERS` | `5x` / `20x` plan allotment badges |
+| `quotaStatus.resetTimes` | `true` | `CODEX_AUTH_QUOTA_STATUS_RESET_TIMES` | `3d` beside an account at or below 25% headroom |
+| `quotaStatus.resetCredits` | `false` | `CODEX_AUTH_QUOTA_STATUS_RESET_CREDITS` | `1r` for banked rate-limit resets redeemable now |
+| `quotaStatus.recovery` | `false` | `CODEX_AUTH_QUOTA_STATUS_RECOVERY` | `+12% in 3d`: how far the pool total moves at the next reset |
 | `beginnerSafeMode` | `false` | `CODEX_AUTH_BEGINNER_SAFE_MODE` | Conservative retries and recovery |
 | `fastSession` | `false` | `CODEX_AUTH_FAST_SESSION` | Force low-latency reasoning/verbosity |
 | `fastSessionStrategy` | `hybrid` | `CODEX_AUTH_FAST_SESSION_STRATEGY` | `hybrid` or `always` |

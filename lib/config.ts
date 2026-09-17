@@ -36,6 +36,7 @@ const REQUEST_TRANSFORM_MODES = new Set(["native", "legacy"]);
 const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const RETRY_PROFILES = new Set(["conservative", "balanced", "aggressive"]);
 const QUOTA_DISPLAY_MODE_SET: ReadonlySet<string> = new Set(QUOTA_DISPLAY_MODES);
+const QUOTA_STATUS_MODE_SET: ReadonlySet<string> = new Set(["active", "overview"]);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -1156,5 +1157,76 @@ export function getQuotaNotifications(
 		intervalMs,
 		notifyEveryCheck: config?.notifyEveryCheck ?? false,
 		thresholds,
+	};
+}
+
+export type QuotaStatusMode = "active" | "overview";
+
+export interface QuotaStatusConfig {
+	/**
+	 * `active` names the account serving requests, which is how the status
+	 * line has always worked. `overview` describes the whole pool instead.
+	 */
+	mode: QuotaStatusMode;
+	/** Per-account breakdown, versus a bare `3 accounts`. */
+	accounts: boolean;
+	/** `5x` / `20x` plan allotment badges. */
+	multipliers: boolean;
+	/** `3d` beside an account close to exhaustion. */
+	resetTimes: boolean;
+	/** `1r` for banked rate-limit resets redeemable now. */
+	resetCredits: boolean;
+	/** `+12% in 3d`: how far the pool total moves at the next reset. */
+	recovery: boolean;
+}
+
+/**
+ * How the prompt status line describes the account pool.
+ *
+ * `active` is the default because it is the behaviour every existing install
+ * already has, and because on a single account the two modes say the same
+ * thing at different lengths. The switches below only apply in `overview`;
+ * they are resolved unconditionally anyway so a reader of this config sees
+ * what `overview` would render without having to enable it first.
+ */
+export function getQuotaStatus(pluginConfig: PluginConfig): QuotaStatusConfig {
+	const config = pluginConfig.quotaStatus;
+	return {
+		mode: resolveStringSetting<QuotaStatusMode>(
+			"CODEX_AUTH_QUOTA_STATUS",
+			config?.mode,
+			"active",
+			QUOTA_STATUS_MODE_SET,
+		),
+		// On by default: someone switching to `overview` is asking where each
+		// account stands, and the count alone is the one form that does not
+		// answer that.
+		accounts: resolveBooleanSetting(
+			"CODEX_AUTH_QUOTA_STATUS_ACCOUNTS",
+			config?.accounts,
+			true,
+		),
+		multipliers: resolveBooleanSetting(
+			"CODEX_AUTH_QUOTA_STATUS_MULTIPLIERS",
+			config?.multipliers,
+			false,
+		),
+		// On by default: a spent account is the one an account list is read to
+		// find, and "when does it come back" is the next question every time.
+		resetTimes: resolveBooleanSetting(
+			"CODEX_AUTH_QUOTA_STATUS_RESET_TIMES",
+			config?.resetTimes,
+			true,
+		),
+		resetCredits: resolveBooleanSetting(
+			"CODEX_AUTH_QUOTA_STATUS_RESET_CREDITS",
+			config?.resetCredits,
+			false,
+		),
+		recovery: resolveBooleanSetting(
+			"CODEX_AUTH_QUOTA_STATUS_RECOVERY",
+			config?.recovery,
+			false,
+		),
 	};
 }
