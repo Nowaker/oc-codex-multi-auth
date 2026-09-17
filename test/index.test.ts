@@ -105,6 +105,17 @@ vi.mock("../lib/auth/browser.js", () => ({
 	openBrowserUrl: vi.fn(() => true),
 }));
 
+// Mocked for the same reason `openBrowserUrl` is: a test run must not reach out
+// and touch the developer's desktop. The real module shells out to xclip/pbcopy,
+// so an unmocked `authorize()` below would overwrite whatever they had copied.
+vi.mock("../lib/auth/clipboard.js", () => ({
+	copyTextToClipboard: vi.fn(() => ({
+		copied: true,
+		scopes: ["host"],
+		message: "URL copied to the clipboard.",
+	})),
+}));
+
 vi.mock("../lib/auth/server.js", () => ({
 	startLocalOAuthServer: vi.fn(async () => ({
 		ready: true,
@@ -822,6 +833,26 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(plugin.auth.methods[1].label).toBe("Codex OAuth (Open URL Manually)");
 			expect(plugin.auth.methods[2].label).toBe("Codex OAuth (Device Code)");
 			expect(plugin.auth.methods[3].label).toBe("Codex OAuth (Manual URL Paste)");
+		});
+
+		it("every method that hands over a URL copies that URL and says so", async () => {
+			const { copyTextToClipboard } = await import("../lib/auth/clipboard.js");
+			const copied = vi.mocked(copyTextToClipboard);
+
+			// Method 0 is excluded deliberately, not forgotten: it opens its own
+			// browser and OpenCode shows it no instructions, so it reports the
+			// same outcome through the log instead.
+			for (const index of [1, 2, 3]) {
+				const method = plugin.auth.methods[index] as unknown as {
+					authorize: () => Promise<{ url: string; instructions: string }>;
+				};
+
+				copied.mockClear();
+				const flow = await method.authorize();
+
+				expect(copied).toHaveBeenCalledWith(flow.url);
+				expect(flow.instructions).toContain("URL copied to the clipboard.");
+			}
 		});
 
 		it("noBrowser input returns the paste flow instead of launching a browser", async () => {
