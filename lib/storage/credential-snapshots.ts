@@ -33,7 +33,11 @@ import {
   writeBackupFileContent,
 } from "./backup.js";
 import { StorageError } from "./errors.js";
-import { assertTestRunNeverTouchesRealHome } from "./test-home-guard.js";
+import { isKeychainOptInEnabled } from "./keychain.js";
+import {
+  assertTestRunNeverTouchesRealHome,
+  TEST_HOME_ESCAPE_CODE,
+} from "./test-home-guard.js";
 import type { AccountStorageV3 } from "./migrations.js";
 
 const log = createLogger("credential-snapshots");
@@ -253,6 +257,17 @@ export async function snapshotCredentialStoreBeforeWrite(
   const config = loadPluginConfig();
   if (!getCredentialSnapshots(config)) return;
 
+  // Scoped to the JSON backend, enforced here rather than at each call site.
+  // Under the keychain opt-in the authoritative pool lives in the OS keychain,
+  // and whatever JSON remains at `storagePath` is a pre-migration or
+  // write-fallback artefact. Copying it into `backups/` would put the whole
+  // token set in a plaintext file that a user who opted into the keychain
+  // asked us not to create, and it would archive a document that is already
+  // stale. Every write path - ordinary save, the JSON fallback after a failed
+  // keychain write, and `clearAccounts` - goes through here, so one check
+  // covers all of them.
+  if (isKeychainOptInEnabled()) return;
+
   const backupDirectory = getBackupDirectory(storagePath);
   assertTestRunNeverTouchesRealHome(backupDirectory);
 
@@ -301,7 +316,7 @@ export async function trySnapshotCredentialStoreBeforeWrite(
   try {
     await snapshotCredentialStoreBeforeWrite(storagePath, next);
   } catch (error) {
-    if (error instanceof StorageError && error.code === "TEST_HOME_ESCAPE") throw error;
+    if (error instanceof StorageError && error.code === TEST_HOME_ESCAPE_CODE) throw error;
     log.warn("Credential snapshot failed; continuing with the write", {
       path: storagePath,
       error: String(error),

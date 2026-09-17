@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
+import {
+	_resetBackendForTests,
+	_setBackendForTests,
+	type KeychainBackend,
+} from "../lib/storage/keychain.js";
+import { TEST_HOME_ESCAPE_CODE } from "../lib/storage/test-home-guard.js";
 import {
 	clearAccounts,
 	saveAccounts,
@@ -417,5 +423,107 @@ describe("credential snapshots: safety", () => {
 		await clearAccounts();
 
 		expect(await exists(backupsDir)).toBe(false);
+	});
+
+	it("propagates a clear refused by the test-home guard instead of reporting success", async () => {
+		// A path under the real home that does not exist and is not a storage
+		// location, so a regression in the guard still cannot unlink a real
+		// account store. The guard runs before any filesystem call, so nothing
+		// here is created either.
+		const escaped = resolve(
+			userInfo().homedir,
+			".oc-codex-credential-snapshot-guard-probe",
+			"oc-codex-multi-auth-accounts.json",
+		);
+		setStoragePathDirect(escaped);
+
+		await expect(clearAccounts()).rejects.toMatchObject({
+			code: TEST_HOME_ESCAPE_CODE,
+		});
+		expect(await exists(escaped)).toBe(false);
+	});
+});
+
+describe("credential snapshots: keychain opt-in", () => {
+	function createMockKeychain(): KeychainBackend & { failWrites: boolean } {
+		const store = new Map<string, string>();
+		const backend = {
+			failWrites: false,
+			async get(service: string, account: string) {
+				return store.get(`${service}::${account}`) ?? null;
+			},
+			async set(service: string, account: string, secret: string) {
+				if (backend.failWrites) throw new Error("simulated keychain failure");
+				store.set(`${service}::${account}`, secret);
+			},
+			async delete(service: string, account: string) {
+				return store.delete(`${service}::${account}`);
+			},
+			async isAvailable() {
+				return true;
+			},
+		};
+		return backend;
+	}
+
+	afterEach(() => {
+		_resetBackendForTests();
+	});
+
+	it("writes no snapshot when clearing a keychain-backed store", async () => {
+		await saveAccounts(makeStorage());
+		const before = await fs.readFile(storagePath, "utf-8");
+		vi.stubEnv("CODEX_KEYCHAIN", "1");
+		_setBackendForTests(createMockKeychain());
+
+		await clearAccounts();
+
+		expect(await listSnapshotNames()).toEqual([]);
+		expect(await exists(storagePath)).toBe(false);
+		// The store really did hold a plaintext pool, so a snapshot here would
+		// have copied live tokens into backups/ rather than been a no-op.
+		expect(before).toContain("rt-1");
+	});
+
+	it("writes no snapshot when a failed keychain write falls back to JSON", async () => {
+		const base = makeStorage();
+		await saveAccounts(base);
+		vi.stubEnv("CODEX_KEYCHAIN", "1");
+		const backend = createMockKeychain();
+		backend.failWrites = true;
+		_setBackendForTests(backend);
+
+		await saveAccounts(withAccount(base, 0, (a) => ({ ...a, refreshToken: "rt-rotated" })));
+
+		// The fallback wrote the pool to JSON, which is the path that snapshots.
+		expect((await readLiveStore()).accounts[0].refreshToken).toBe("rt-rotated");
+		expect(await listSnapshotNames()).toEqual([]);
+	});
+});
+
+describe("credential snapshots: token rotation semantics", () => {
+	it("keeps the superseded token for the refreshed account and live tokens for the rest", async () => {
+		const base = makeStorage();
+		await saveAccounts(base);
+
+		await saveAccounts(
+			withAccount(base, 0, (a) => ({
+				...a,
+				refreshToken: "rt-1-rotated",
+				accessToken: "at-1-rotated",
+				tokenRotatedAt: 1_800_000_000_000,
+			})),
+		);
+
+		const [snapshot] = await readSnapshotContents();
+		const snapshotDoc = JSON.parse(snapshot) as AccountStorageV3;
+		// A refresh consumes one account's token, so that one account's
+		// snapshotted token is the superseded one...
+		expect(snapshotDoc.accounts[0].refreshToken).toBe("rt-1");
+		// ...while every other account in the pool is snapshotted with the
+		// token that is still live on disk. That bounds the staleness of a
+		// snapshot to the accounts a single write actually rotated.
+		expect(snapshotDoc.accounts[1].refreshToken).toBe("rt-2");
+		expect((await readLiveStore()).accounts[1].refreshToken).toBe("rt-2");
 	});
 });

@@ -26,7 +26,10 @@ import { renameWithWindowsRetry } from "./atomic-write.js";
 import { formatStorageErrorHint, StorageError } from "./errors.js";
 import { normalizeAccountStorage } from "./normalize.js";
 import { getConfigDir } from "./paths.js";
-import { assertTestRunNeverTouchesRealHome } from "./test-home-guard.js";
+import {
+  assertTestRunNeverTouchesRealHome,
+  TEST_HOME_ESCAPE_CODE,
+} from "./test-home-guard.js";
 import { trySnapshotCredentialStoreBeforeWrite } from "./credential-snapshots.js";
 import {
   getCurrentLegacyProjectStoragePath,
@@ -685,14 +688,12 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   await checkWorktreeLockForCurrentStorage("save");
 
   if (isKeychainOptInEnabled()) {
-    // Credential snapshots are deliberately scoped to the JSON backend and do
-    // not cover this branch. Snapshotting here would mean writing the account
-    // pool, refresh tokens and all, into a plaintext file in `backups/` — the
-    // exact thing a user opting into the OS keychain asked us not to do. The
-    // on-disk JSON that remains is a rollback artefact, not the live store, so
-    // snapshotting it instead would archive a document that is already stale.
-    // Keychain users' recovery path stays `codex-export` plus the keychain's
-    // own backing store.
+    // Credential snapshots are scoped to the JSON backend and do not cover
+    // keychain mode. That is enforced inside the snapshotter itself rather
+    // than by the absence of a call here, so neither the JSON fallback below
+    // nor `clearAccounts` can reintroduce a plaintext copy of the token set -
+    // see `snapshotCredentialStoreBeforeWrite`. Keychain users' recovery path
+    // stays `codex-export` plus the keychain's own backing store.
     //
     // Normalize before serializing so the keychain receives the same shape
     // the JSON backend would have written. Using the same JSON format keeps
@@ -775,6 +776,10 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * keychain delete and log at `error`. Both copies remain in sync so the
  * caller can retry safely. The operation is still best-effort (never
  * throws) to preserve the existing contract above the storage layer.
+ *
+ * @throws StorageError (code `TEST_HOME_ESCAPE`) - the single exception to
+ *   best-effort, and inert outside vitest. The guard refuses the deletion, so
+ *   absorbing it would return success for a clear that never happened.
  */
 export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
@@ -782,12 +787,23 @@ export async function clearAccounts(): Promise<void> {
     try {
       const path = getStoragePath();
       assertTestRunNeverTouchesRealHome(path);
-      // Deleting the store outright is the most significant event there is, so
-      // this snapshot is unconditional; `null` says there is no successor
-      // document to compare against.
+      // Deleting the store outright needs no significance test - `null` says
+      // there is no successor document to compare against. The snapshotter
+      // still applies its own config and keychain gates.
       await trySnapshotCredentialStoreBeforeWrite(path, null);
       await fs.unlink(path);
     } catch (error) {
+      // The test-home guard is not a storage failure to absorb. It fires only
+      // under vitest, and it exists to fail a run that escaped its sandbox; it
+      // throws before the unlink, so swallowing it here would report a
+      // successful clear for a deletion that deliberately did not happen -
+      // fail-closed downgraded to fail-open on the one path that destroys the
+      // store. The same re-throw covers the snapshotter, which surfaces this
+      // code through `trySnapshotCredentialStoreBeforeWrite` for the same
+      // reason.
+      if (error instanceof StorageError && error.code === TEST_HOME_ESCAPE_CODE) {
+        throw error;
+      }
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
         jsonCleared = false;
