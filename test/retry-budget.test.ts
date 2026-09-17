@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
 	RetryBudgetTracker,
 	resolveRetryBudgetLimits,
+	RETRY_WAIT_BUDGET_UNIT_MS,
 	type RetryBudgetLimits,
 } from "../lib/request/retry-budget.js";
 
@@ -70,6 +71,84 @@ describe("retry-budget", () => {
 		// Token refresh attempts consume authRefresh
 		expect(tracker.consume("authRefresh")).toBe(true);
 		expect(tracker.getUsage().authRefresh).toBe(1);
+	});
+
+	describe("consumeWait", () => {
+		const balanced = () => new RetryBudgetTracker(resolveRetryBudgetLimits("balanced"));
+
+		it("does not charge the budget for a burst of sub-second waits", () => {
+			const tracker = balanced();
+
+			// The production regression: three consecutive 400ms waits spent the
+			// whole default budget and hard-failed the request.
+			for (let i = 0; i < 3; i++) {
+				expect(tracker.consumeWait("rateLimitGlobal", 400)).toBe(true);
+			}
+			expect(tracker.getUsage().rateLimitGlobal).toBe(0);
+			expect(tracker.getRemaining("rateLimitGlobal")).toBe(3);
+
+			for (let i = 0; i < 27; i++) {
+				expect(tracker.consumeWait("rateLimitGlobal", 400)).toBe(true);
+			}
+		});
+
+		it("charges a full unit for a wait at or above the unit length", () => {
+			const tracker = balanced();
+
+			expect(tracker.consumeWait("rateLimitGlobal", RETRY_WAIT_BUDGET_UNIT_MS)).toBe(true);
+			expect(tracker.getUsage().rateLimitGlobal).toBe(1);
+
+			expect(tracker.consumeWait("rateLimitGlobal", 6 * 60 * 60 * 1000)).toBe(true);
+			expect(tracker.consumeWait("rateLimitGlobal", 6 * 60 * 60 * 1000)).toBe(true);
+			expect(tracker.getUsage().rateLimitGlobal).toBe(3);
+
+			// A long wait stays governed: the fourth exceeds the balanced budget.
+			expect(tracker.consumeWait("rateLimitGlobal", 6 * 60 * 60 * 1000)).toBe(false);
+		});
+
+		it("accumulates short waits into whole units", () => {
+			const tracker = balanced();
+			const waitMs = RETRY_WAIT_BUDGET_UNIT_MS / 10;
+
+			for (let i = 0; i < 10; i++) {
+				expect(tracker.consumeWait("rateLimitGlobal", waitMs)).toBe(true);
+			}
+			expect(tracker.getUsage().rateLimitGlobal).toBe(1);
+		});
+
+		it("refuses free short waits once the bucket is exhausted", () => {
+			const tracker = balanced();
+
+			for (let i = 0; i < 3; i++) {
+				expect(tracker.consumeWait("rateLimitGlobal", RETRY_WAIT_BUDGET_UNIT_MS)).toBe(true);
+			}
+
+			// Without this the carry would grant sub-unit waits forever and the
+			// retry loop could never terminate.
+			expect(tracker.consumeWait("rateLimitGlobal", 1)).toBe(false);
+			expect(tracker.consumeWait("rateLimitGlobal", 0)).toBe(false);
+		});
+
+		it("keeps per-bucket carries independent", () => {
+			const tracker = balanced();
+			const waitMs = RETRY_WAIT_BUDGET_UNIT_MS / 2;
+
+			expect(tracker.consumeWait("rateLimitGlobal", waitMs)).toBe(true);
+			expect(tracker.consumeWait("rateLimitShort", waitMs)).toBe(true);
+			expect(tracker.getUsage().rateLimitGlobal).toBe(0);
+			expect(tracker.getUsage().rateLimitShort).toBe(0);
+
+			expect(tracker.consumeWait("rateLimitGlobal", waitMs)).toBe(true);
+			expect(tracker.getUsage().rateLimitGlobal).toBe(1);
+			expect(tracker.getUsage().rateLimitShort).toBe(0);
+		});
+
+		it("treats a zero-limit bucket as immediately exhausted", () => {
+			const tracker = new RetryBudgetTracker(
+				resolveRetryBudgetLimits("balanced", { rateLimitGlobal: 0 }),
+			);
+			expect(tracker.consumeWait("rateLimitGlobal", 1)).toBe(false);
+		});
 	});
 
 	it("clones constructor limits to avoid external mutation", () => {

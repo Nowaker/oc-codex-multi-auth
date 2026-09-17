@@ -2433,9 +2433,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							const consumeRetryBudget = (
 								bucket: RetryBudgetClass,
 								reason: string,
+								waitMs?: number,
 							): boolean => {
-								if (retryBudget.consume(bucket)) {
-									runtimeMetrics.retryBudgetUsage[bucket] += 1;
+								// Pass the wait so the charge scales with how long the retry
+								// blocks. Metrics follow the tracker's own counter rather than
+								// assuming one unit, or a free sub-second wait would report
+								// budget it never spent.
+								const usedBefore = retryBudget.getUsage()[bucket];
+								const granted =
+									waitMs === undefined
+										? retryBudget.consume(bucket)
+										: retryBudget.consumeWait(bucket, waitMs);
+								if (granted) {
+									runtimeMetrics.retryBudgetUsage[bucket] +=
+										retryBudget.getUsage()[bucket] - usedBefore;
 									return true;
 								}
 								runtimeMetrics.retryBudgetExhaustions += 1;
@@ -3832,6 +3843,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									consumeRetryBudget(
 										"rateLimitGlobal",
 										`All accounts rate-limited wait ${waitMs}ms`,
+										waitMs,
 									)
 								) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
