@@ -199,6 +199,45 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		expect(identities[1]).toBe("(dup@....com, id:bbbb)");
 	});
 
+	// This CLI keeps its own copy of the seat renderer, so it can drift from
+	// `lib/account-display.ts` silently. The ids here are the shape the backend
+	// issues - one distinguishing character, then the workspace uuid - which a
+	// tail-based renderer cannot separate with fewer than all 39 characters.
+	it("list: keeps the seat short for member ids that differ only at the head", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const workspaceUuid = "05cd9f04-d56a-4256-9934-9cb827989a40";
+		await seedPool(
+			tempHome,
+			["9", "X"].map((seat, position) => ({
+				email: "shared@example.com",
+				accountId: workspaceUuid,
+				accountUserId: `${seat}__${workspaceUuid}`,
+				accountIdSource: "token",
+				refreshToken: `refresh-${position}`,
+				addedAt: 1000,
+				lastUsed: 2000,
+			})),
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["list", "--include-sensitive"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const identities = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.startsWith("- ["))
+			.map(extractIdentity);
+
+		expect(identities).toHaveLength(2);
+		// Matched exactly, not by prefix: the whole 39-character id starts with
+		// the short rendering, so `toContain` would pass on the defect.
+		const seats = identities.map((identity) => identity.match(/seat:([^,)]+)/)?.[1]);
+		expect(seats).toEqual(["9__05c", "X__05c"]);
+	});
+
 	it("list: drops the org-derived label the plugin no longer generates", async () => {
 		// The standalone CLI reads the pool through its own normalizer, so
 		// without a mirror of the drop it keeps printing the wrong

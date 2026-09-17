@@ -144,4 +144,56 @@ describe("seat suffix", () => {
 	it("counts the rendered id itself even when the peer list omits it", () => {
 		expect(formatSeatSuffix("member-000001", ["other-000001"])).toBe("ber-000001");
 	});
+
+	// The shape this backend actually issues: one distinguishing character,
+	// then the workspace uuid repeated verbatim. The ids are 39 characters and
+	// differ ONLY at index 0, so no tail shorter than the whole string reaches
+	// the character that names the seat. A tail search therefore returns all 39
+	// for every account - unreadable, and 38 of those characters are the
+	// workspace id already printed beside it.
+	it("stays short for ids that differ only at their first character", () => {
+		const workspace = "05cd9f04-d56a-4256-9934-9cb827989a40";
+		const ids = ["9", "X", "E", "W"].map((seat) => `${seat}__${workspace}`);
+
+		expect(resolveSeatSuffixes(ids)).toEqual([
+			"9__05c",
+			"X__05c",
+			"E__05c",
+			"W__05c",
+		]);
+		expect(formatSeatSuffix(`9__${workspace}`, ids)).toBe("9__05c");
+	});
+
+	// A rendered seat sits in a table column, so its width may not be a
+	// function of how long the member id happens to be. 32 is the contract:
+	// the longest hash prefix the last-resort renderer can reach.
+	it("bounds every rendering regardless of id length", () => {
+		const workspace = "05cd9f04-d56a-4256-9934-9cb827989a40";
+		const otherWorkspace = "0ce0db3a-1111-2222-3333-444444ff8839";
+		const cases: string[][] = [
+			["9", "X", "E", "W"].map((seat) => `${seat}__${workspace}`),
+			[
+				...["9", "X"].map((seat) => `${seat}__${workspace}`),
+				...["Q", "R"].map((seat) => `${seat}__${otherWorkspace}`),
+			],
+			["member-000001", "other-000001"],
+			["a".repeat(200), `b${"a".repeat(199)}`],
+			// No capped window separates these - one id is another with a
+			// character bolted on the front - so they reach the hash. Long
+			// enough that returning them whole would breach the bound.
+			[`${"A".repeat(50)}X`, `${"A".repeat(50)}Y`, `B${"A".repeat(50)}X`],
+		];
+
+		for (const ids of cases) {
+			const rendered = resolveSeatSuffixes(ids).filter(
+				(seat): seat is string => seat !== undefined,
+			);
+			expect(new Set(rendered).size, `rendering ${ids.join(" / ")}`).toBe(
+				new Set(ids).size,
+			);
+			for (const seat of rendered) {
+				expect(seat.length, `"${seat}" from ${ids.join(" / ")}`).toBeLessThanOrEqual(32);
+			}
+		}
+	});
 });
