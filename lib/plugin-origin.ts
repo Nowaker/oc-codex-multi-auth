@@ -13,12 +13,35 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { lock } from "proper-lockfile";
+import { createLogger } from "./logger.js";
 import { renameWithWindowsRetry } from "./storage/atomic-write.js";
 
-const HISTORY_FILE_NAME = "oc-codex-multi-auth-origin.json";
+const log = createLogger("plugin-origin");
+
+/**
+ * The origin history file name, shared with the installer.
+ *
+ * The installer is plain JS that must run before anything is built, so it
+ * cannot import this module and declares the same name itself. A test pins the
+ * two together, because a silent disagreement would leave each side reporting
+ * confidently about a file the other never writes.
+ */
+export const HISTORY_FILE_NAME = "oc-codex-multi-auth-origin.json";
 const HISTORY_VERSION = 1;
 const MAX_SIGHTINGS = 10;
 const PACKAGE_ROOT_LOOKUP_DEPTH = 3;
+
+/** The lease covers one small read and one small write, so it is short. */
+const HISTORY_LOCK_STALE_MS = 10_000;
+const HISTORY_LOCK_UPDATE_MS = 2_000;
+const HISTORY_LOCK_RETRIES = {
+	retries: 6,
+	factor: 1.6,
+	minTimeout: 25,
+	maxTimeout: 400,
+	randomize: true,
+} as const;
 
 export interface PluginOrigin {
 	name: string;
@@ -176,24 +199,63 @@ export function withSighting(
 	};
 }
 
-export async function recordPluginOrigin(
-	origin: PluginOrigin,
-	historyPath: string = getPluginOriginHistoryPath(),
-	now: () => Date = () => new Date(),
-): Promise<PluginOriginHistory> {
-	const next = withSighting(readPluginOriginHistory(historyPath), origin, now().toISOString());
+async function writeHistory(historyPath: string, history: PluginOriginHistory): Promise<void> {
 	const temporaryPath = `${historyPath}.${process.pid}.tmp`;
-
-	await mkdir(dirname(historyPath), { recursive: true });
-	await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+	await writeFile(temporaryPath, `${JSON.stringify(history, null, 2)}\n`, "utf-8");
 	try {
 		await renameWithWindowsRetry(temporaryPath, historyPath);
 	} catch (error) {
 		await rm(temporaryPath, { force: true }).catch(() => undefined);
 		throw error;
 	}
+}
 
-	return next;
+/**
+ * Records this origin without dropping anybody else's.
+ *
+ * Every OpenCode process records at startup, and a machine running many of
+ * them starts several at once, so read-modify-write on a shared file is a real
+ * race rather than a theoretical one. The reader that matters here asks which
+ * origins have been seen, so a lost sighting is a lost answer: the very
+ * handover this file exists to report - a checkout replaced by the installed
+ * package - is two different origins written at close to the same time.
+ *
+ * The history is therefore re-read INSIDE the lease, so each writer merges
+ * into what is actually on disk. A writer that cannot take the lease records
+ * nothing rather than overwriting blind; it is about to be started again, and
+ * a missing sighting costs a later startup while a clobbered one costs the
+ * only evidence there was.
+ */
+export async function recordPluginOrigin(
+	origin: PluginOrigin,
+	historyPath: string = getPluginOriginHistoryPath(),
+	now: () => Date = () => new Date(),
+): Promise<PluginOriginHistory> {
+	await mkdir(dirname(historyPath), { recursive: true });
+
+	let release: (() => Promise<void>) | null = null;
+	try {
+		release = await lock(historyPath, {
+			realpath: false,
+			lockfilePath: `${historyPath}.lock`,
+			stale: HISTORY_LOCK_STALE_MS,
+			update: HISTORY_LOCK_UPDATE_MS,
+			retries: HISTORY_LOCK_RETRIES,
+		});
+	} catch (error) {
+		log.debug("Skipped recording the plugin origin; another process holds the history", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return readPluginOriginHistory(historyPath);
+	}
+
+	try {
+		const next = withSighting(readPluginOriginHistory(historyPath), origin, now().toISOString());
+		await writeHistory(historyPath, next);
+		return next;
+	} finally {
+		await release().catch(() => undefined);
+	}
 }
 
 /**

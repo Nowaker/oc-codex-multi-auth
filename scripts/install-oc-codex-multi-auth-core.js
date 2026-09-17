@@ -425,9 +425,9 @@ function readLocalCheckoutSightings(historyPath) {
  * register. Reported rather than restored: config history is evidence of what
  * happened, not authority over what the user wants registered now.
  */
-function findUnregisteredLocalCheckout(pluginList, historyPath) {
+function findUnregisteredLocalCheckout(pluginList, historyPath, options = {}) {
 	const entries = Array.isArray(pluginList) ? pluginList : [];
-	if (entries.some((entry) => classifyPluginEntry(entry).kind === LOCAL_CHECKOUT_ENTRY)) {
+	if (entries.some((entry) => classifyPluginEntry(entry, options).kind === LOCAL_CHECKOUT_ENTRY)) {
 		return null;
 	}
 	const latest = readLocalCheckoutSightings(historyPath)
@@ -1642,7 +1642,9 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 		log("No existing TUI config found. Creating new global TUI config.");
 	}
 
-	const unregisteredCheckout = findUnregisteredLocalCheckout(nextConfig.plugin, paths.originHistoryPath);
+	const unregisteredCheckout = findUnregisteredLocalCheckout(nextConfig.plugin, paths.originHistoryPath, {
+		baseDirectory: paths.configDir,
+	});
 	if (unregisteredCheckout) {
 		log(
 			`Note: this plugin last loaded from a checkout at ${unregisteredCheckout.root} on ${unregisteredCheckout.lastSeen}, ` +
@@ -1712,6 +1714,7 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 }
 
 export const __test = {
+	ORIGIN_HISTORY_FILE_NAME,
 	buildPaths,
 	backupConfig,
 	classifyPluginEntry,

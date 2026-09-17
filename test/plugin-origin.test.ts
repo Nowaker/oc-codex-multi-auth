@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+	HISTORY_FILE_NAME,
 	describePluginOrigin,
 	findReplacedLocalCheckout,
 	getPluginOriginHistoryPath,
@@ -250,5 +251,32 @@ describe("plugin-origin", () => {
 		expect(getPluginOriginHistoryPath("/home/dev")).toBe(
 			join("/home", "dev", ".opencode", "oc-codex-multi-auth-origin.json"),
 		);
+	});
+
+	// The installer runs before anything is built and so cannot import this
+	// module; it spells the same file name itself. Each side would otherwise go
+	// on reporting confidently about a file the other never writes.
+	it("agrees with the installer about where the history lives", async () => {
+		const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		expect(__test.ORIGIN_HISTORY_FILE_NAME).toBe(HISTORY_FILE_NAME);
+		expect(__test.buildPaths("/home/dev").originHistoryPath).toBe(
+			getPluginOriginHistoryPath("/home/dev"),
+		);
+	});
+
+	it("keeps every concurrently recorded origin", async () => {
+		tempRoot = await createTempRoot();
+		const historyPath = join(tempRoot, ".opencode", "oc-codex-multi-auth-origin.json");
+		const origins = Array.from({ length: 8 }, (_unused, index) =>
+			localCheckout(join(tempRoot ?? "", `checkout-${index}`)),
+		);
+
+		await Promise.all(origins.map((origin) => recordPluginOrigin(origin, historyPath)));
+
+		const recorded = readPluginOriginHistory(historyPath).sightings.map(
+			(sighting) => sighting.root,
+		);
+		expect(new Set(recorded)).toEqual(new Set(origins.map((origin) => origin.root)));
 	});
 });
