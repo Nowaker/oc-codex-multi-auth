@@ -464,7 +464,15 @@ function findUnregisteredLocalCheckout(pluginList, historyPath, options = {}) {
 		.sort((left, right) => (Date.parse(left.lastSeen) || 0) - (Date.parse(right.lastSeen) || 0))
 		.at(-1);
 	if (!latest) return null;
-	return resolveDeclaredPackageName(latest.root) ? latest : null;
+	// The directory has to still hold the package that was recorded there. A
+	// path gets reused - a checkout deleted and something else cloned into its
+	// place - and a recorded path that now declares another project would
+	// otherwise be offered as somewhere to point OpenCode back at.
+	const declaredName = resolveDeclaredPackageName(latest.root);
+	if (!declaredName || declaredName.toLowerCase() !== String(latest.name).toLowerCase()) {
+		return null;
+	}
+	return latest;
 }
 
 function mergeTuiConfig(existingConfig, onNotice, options = {}) {
@@ -1660,6 +1668,7 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 
 	const unregisteredCheckout = findUnregisteredLocalCheckout(nextConfig.plugin, paths.originHistoryPath, {
 		baseDirectory: paths.configDir,
+		cacheDirectory: paths.cacheDir,
 	});
 	if (unregisteredCheckout) {
 		log(
