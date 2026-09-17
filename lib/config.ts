@@ -99,6 +99,8 @@ const DEFAULT_CONFIG: PluginConfig = {
 	toastDurationMs: 5_000,
 	accountToasts: true,
 	perProjectAccounts: true,
+	credentialSnapshots: true,
+	credentialSnapshotsMaxCount: 10,
 	sessionRecovery: true,
 	autoResume: true,
 	autoUpdate: true,
@@ -1035,6 +1037,34 @@ export function getPerProjectAccounts(pluginConfig: PluginConfig): boolean {
 		"CODEX_AUTH_PER_PROJECT_ACCOUNTS",
 		pluginConfig.perProjectAccounts,
 		true,
+	);
+}
+
+/**
+ * Whether the credential store is snapshotted before a significant write.
+ *
+ * On by default: the snapshots are the only recourse if the accounts file is
+ * ever replaced wholesale, and they are worth little unless they are recent
+ * enough to hold refresh tokens that still work.
+ */
+export function getCredentialSnapshots(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_CREDENTIAL_SNAPSHOTS",
+		pluginConfig.credentialSnapshots,
+		true,
+	);
+}
+
+/**
+ * How many credential snapshots to keep. `0` keeps every snapshot; turning the
+ * feature off is {@link getCredentialSnapshots}' job, not a magic zero.
+ */
+export function getCredentialSnapshotsMaxCount(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT",
+		pluginConfig.credentialSnapshotsMaxCount,
+		10,
+		{ min: 0 },
 	);
 }
 
