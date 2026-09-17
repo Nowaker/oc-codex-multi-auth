@@ -1166,6 +1166,29 @@ describe("install-oc-codex-multi-auth script", () => {
 			).toBeNull();
 		});
 
+		it("stays silent when the recorded directory now holds a different package", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const reusedRoot = await createCheckout(tempHome, "oc-codex-multi-auth", "reused-root");
+			const historyPath = await writeOriginHistory(tempHome, [sightingFor(reusedRoot)]);
+
+			expect(
+				__test.findUnregisteredLocalCheckout(["oc-codex-multi-auth"], historyPath)?.root,
+			).toBe(reusedRoot);
+
+			// Same path, cloned over with something else since it was recorded.
+			await writeFile(
+				join(reusedRoot, "package.json"),
+				JSON.stringify({ name: "some-unrelated-project", version: "1.0.0" }),
+				"utf-8",
+			);
+
+			expect(
+				__test.findUnregisteredLocalCheckout(["oc-codex-multi-auth"], historyPath),
+			).toBeNull();
+		});
+
 		it("names the replaced checkout without restoring it to the config", async () => {
 			vi.resetModules();
 			tempHome = await createTempHome();
