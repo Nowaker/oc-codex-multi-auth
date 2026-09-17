@@ -53,7 +53,10 @@ export function createCodexRefreshTool(ctx: ToolContext): ToolDefinition {
 				const input = inputs[i];
 				const account = storage.accounts[i];
 				if (!input || !account) continue;
-				const label = formatCommandAccountLabel(account, i, { maskEmail });
+				const label = formatCommandAccountLabel(account, i, {
+					maskEmail,
+					peerAccounts: storage.accounts,
+				});
 				const outcome = await refreshAndPersistAccount(input);
 
 				if (outcome.status === "refreshed") {

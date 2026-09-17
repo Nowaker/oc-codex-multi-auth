@@ -613,22 +613,68 @@ function accountIdSuffix(accountId, includeSensitive) {
 	return accountId.slice(-4);
 }
 
+// A member id is what tells two seats of one Business workspace apart, and a
+// fixed-length tail does not always do it: real member ids were observed
+// sharing a six-character tail, which prints two different seats as one - the
+// exact misreading the seat exists to prevent. So the length grows until every
+// seat printed in this run is distinct, mirroring `resolveSeatSuffixes` in
+// lib/account-display.ts. It starts at the length the mask above allows, so
+// masked output lengthens only when leaving it short would print a lie.
+function seatSuffixAtLength(accountUserId, includeSensitive, length) {
+	if (!accountUserId) return undefined;
+	if (!includeSensitive && accountUserId.length < MASK_MIN_LENGTH) return undefined;
+	return accountUserId.length > length ? accountUserId.slice(-length) : accountUserId;
+}
+
+function resolveStandaloneSeatLength(accountUserIds, includeSensitive) {
+	const base = includeSensitive ? 6 : 4;
+	const distinct = new Set(
+		accountUserIds.filter(
+			(accountUserId) =>
+				seatSuffixAtLength(accountUserId, includeSensitive, base) !== undefined,
+		),
+	);
+	if (distinct.size <= 1) return base;
+
+	let longest = base;
+	for (const accountUserId of distinct) {
+		longest = Math.max(longest, accountUserId.length);
+	}
+	for (let length = base; length < longest; length += 1) {
+		const rendered = new Set(
+			[...distinct].map((accountUserId) =>
+				seatSuffixAtLength(accountUserId, includeSensitive, length),
+			),
+		);
+		if (rendered.size === distinct.size) return length;
+	}
+	return longest;
+}
+
 function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
 	const normalizedTag = typeof tag === "string" ? tag.trim().toLowerCase() : "";
-	return accounts
+	const entries = accounts
 		.map((account, index) => ({ account, index }))
 		.filter(({ account }) => !normalizedTag ||
 			(Array.isArray(account?.accountTags) &&
-				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)))
+				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)));
+	const seatLength = resolveStandaloneSeatLength(
+		entries.map(({ account }) =>
+			(typeof account?.accountUserId === "string" ? account.accountUserId.trim() : "") || undefined,
+		),
+		includeSensitive,
+	);
+	return entries
 		.map(({ account, index }) => {
 			const trimmedId =
 				typeof account?.accountId === "string" ? account.accountId.trim() : "";
 			const accountId = trimmedId || undefined;
 			// Members of one Business workspace share `accountId`, so the seat is
 			// what tells them apart. It is carried masked next to its suffix for
-			// the same reason `accountId` is: so the printed `seat:` never
-			// discloses more than the field beside it.
+			// the same reason `accountId` is: so the printed `seat:` discloses no
+			// more of an id than the field beside it unless telling two seats
+			// apart requires it.
 			const trimmedUserId =
 				typeof account?.accountUserId === "string" ? account.accountUserId.trim() : "";
 			const accountUserId = trimmedUserId || undefined;
@@ -639,7 +685,7 @@ function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 				accountId: maskValue(accountId, includeSensitive),
 				idSuffix: accountIdSuffix(accountId, includeSensitive),
 				accountUserId: maskValue(accountUserId, includeSensitive),
-				seatSuffix: accountIdSuffix(accountUserId, includeSensitive),
+				seatSuffix: seatSuffixAtLength(accountUserId, includeSensitive, seatLength),
 				accountIdSource: account?.accountIdSource,
 				enabled: account?.enabled !== false,
 				hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,

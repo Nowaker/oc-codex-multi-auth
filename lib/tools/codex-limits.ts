@@ -176,11 +176,12 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 				const label = formatCommandAccountLabel(
 					effectiveDisplayAccount,
 					displayIndex,
+					{ peerAccounts: storage.accounts },
 				);
 				const displayLabel = formatCommandAccountLabel(
 					effectiveDisplayAccount,
 					displayIndex,
-					{ maskEmail },
+					{ maskEmail, peerAccounts: storage.accounts },
 				);
 				const isActive = i === activeIndex || sharesActiveCredential;
 				const activeSuffix = isActive

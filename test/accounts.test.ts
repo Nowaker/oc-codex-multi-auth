@@ -842,6 +842,28 @@ describe("AccountManager", () => {
     expect(second).toBe("Account 7 (shared@example.com, id:989a40, seat:222222)");
   });
 
+  // Same index on both sides again, and now the member ids end identically:
+  // six characters renders both seats `000001`, so the label is only distinct
+  // if the suffix grows. `peerAccounts` is what tells the formatter which
+  // other accounts it has to stay distinguishable from.
+  it("renders distinct labels for two seats whose member ids share a six-character tail", () => {
+    const workspace = {
+      email: "shared@example.com",
+      accountId: "05cd9f040000000000989a40",
+    };
+    const peerAccounts = [
+      { ...workspace, accountUserId: "member-000001" },
+      { ...workspace, accountUserId: "other-000001" },
+    ];
+
+    const first = formatAccountLabel(peerAccounts[0], 6, { peerAccounts });
+    const second = formatAccountLabel(peerAccounts[1], 6, { peerAccounts });
+
+    expect(first).not.toBe(second);
+    expect(first).toBe("Account 7 (shared@example.com, id:989a40, seat:ber-000001)");
+    expect(second).toBe("Account 7 (shared@example.com, id:989a40, seat:her-000001)");
+  });
+
   it("renders an account with no accountUserId exactly as before", () => {
     expect(
       formatAccountLabel({ email: "user@example.com", accountId: "abcdef123456" }, 0),

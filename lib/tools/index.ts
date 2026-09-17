@@ -109,13 +109,17 @@ export interface ToolContext {
 			| {
 					email?: string;
 					accountId?: string;
+					accountUserId?: string;
 					accountLabel?: string;
 					accountTags?: string[];
 					accountNote?: string;
 			  }
 			| undefined,
 		index: number,
-		options?: { maskEmail?: boolean },
+		options?: {
+			maskEmail?: boolean;
+			peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
+		},
 	) => string;
 	resolveMaskEmail: () => boolean;
 	normalizeAccountTags: (raw: string) => string[];
@@ -154,11 +158,13 @@ export interface ToolContext {
 			account?: {
 				email?: string;
 				accountId?: string;
+				accountUserId?: string;
 				accountLabel?: string;
 				accountTags?: string[];
 				accountNote?: string;
 			};
 			label?: string;
+			peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
 		},
 	) => Record<string, unknown>;
 	buildRoutingVisibilitySnapshot: (overrides?: {
