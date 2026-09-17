@@ -214,9 +214,11 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 	});
 
 	// This CLI keeps its own copy of the seat renderer, so it can drift from
-	// `lib/account-display.ts` silently. The ids here are the shape the backend
-	// issues - one distinguishing character, then the workspace uuid - which a
-	// tail-based renderer cannot separate with fewer than all 39 characters.
+	// `lib/account-display.ts` silently. The ids here are a SYNTHETIC
+	// single-divergence shape - one distinguishing character, then the
+	// workspace uuid - not what the backend issues; see the measured profile
+	// below. No tail reaches a difference at the head, so a tail-based renderer
+	// cannot separate them with fewer than all 39 characters.
 	it("list: keeps the seat short for member ids that differ only at the head", async () => {
 		vi.resetModules();
 		tempHome = await createTempHome();
@@ -250,6 +252,75 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		// the short rendering, so `toContain` would pass on the defect.
 		const seats = identities.map((identity) => identity.match(/seat:([^,)]+)/)?.[1]);
 		expect(seats).toEqual(["9__05c", "X__05c"]);
+	});
+
+	// The profile measured structurally against a real nine-seat Business pool:
+	// 67-character ids, five shared leading characters, no shared tail, and
+	// pairwise first divergences in clusters 26 characters apart. Asserted as
+	// distinct and bounded rather than as a particular excerpt - which strategy
+	// reaches it is an implementation detail, and pinning one is how the
+	// fixture above came to encode a wrong reading of the data.
+	it("list: keeps the seat distinct and bounded on the measured real-pool id shape", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const workspaces = [
+			"05cd9f04-d56a-4256-9934-9cb827989a40",
+			"0ce0db3a-1111-2222-3333-444444ff8839",
+			"15aaaaaa-2222-3333-4444-555555aa1111",
+			"25bbbbbb-3333-4444-5555-666666bb2222",
+			"35cccccc-4444-5555-6666-777777cc3333",
+		];
+		const pool: Array<[string, number]> = [
+			["A", 0],
+			["B", 0],
+			["C", 0],
+			["D", 0],
+			["E", 1],
+			["A", 1],
+			["B", 2],
+			["F", 3],
+			["C", 4],
+		];
+		await seedPool(
+			tempHome,
+			pool.map(([head, workspaceIndex], position) => ({
+				email: "shared@example.com",
+				accountId: workspaces[workspaceIndex],
+				accountUserId: `user_${head}0123456789abcdefghijklmno${workspaces[workspaceIndex]}`,
+				accountIdSource: "token",
+				refreshToken: `refresh-${position}`,
+				addedAt: 1000,
+				lastUsed: 2000,
+			})),
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await expect(runInstaller(["list", "--include-sensitive"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		})).resolves.toMatchObject({ exitCode: 0 });
+
+		const seats = logSpy.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.startsWith("- ["))
+			.map((line) => extractIdentity(line).match(/seat:([^,)]+)/)?.[1]);
+
+		expect(seats).toHaveLength(9);
+		expect(new Set(seats).size).toBe(9);
+		for (const seat of seats) {
+			expect(seat, String(seat)).toBeDefined();
+			expect(String(seat).length, String(seat)).toBeLessThanOrEqual(32);
+		}
+		// Distinct and bounded is satisfied by a hash too, so it alone would not
+		// notice this copy losing the joined-excerpt strategy the lib has. Every
+		// piece has to be lifted from the id it names.
+		pool.forEach(([head, workspaceIndex], position) => {
+			const id = `user_${head}0123456789abcdefghijklmno${workspaces[workspaceIndex]}`;
+			for (const piece of String(seats[position]).split("..")) {
+				expect(piece.length, `"${piece}" of "${seats[position]}"`).toBeGreaterThan(0);
+				expect(id, `"${piece}" of "${seats[position]}"`).toContain(piece);
+			}
+		});
 	});
 
 	it("list: drops the org-derived label the plugin no longer generates", async () => {
