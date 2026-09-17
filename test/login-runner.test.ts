@@ -14,6 +14,7 @@ import {
 } from "../lib/auth/login-runner.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
 import { loadAccounts, setStoragePathDirect } from "../lib/storage.js";
+import * as loggerModule from "../lib/logger.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
 
 function createTokenResult(
@@ -609,6 +610,81 @@ describe("login-runner account and quota identities", () => {
 			"refresh-owner-new",
 			"refresh-invited",
 		]);
+	});
+
+	const loginAs = async (
+		workspaceId: string,
+		memberId: string,
+		email: string,
+		refresh: string,
+	): Promise<void> => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: businessAccessTokenFor(workspaceId, memberId, email),
+					refresh,
+					expires: Date.now() + 60_000,
+				},
+			],
+			false,
+		);
+	};
+
+	it("reports a re-login of a stored seat as an in-place update", async () => {
+		const infoSpy = vi.spyOn(loggerModule, "logInfo");
+		await loginAs("workspace-a", "member-a", "a@example.com", "refresh-a");
+		infoSpy.mockClear();
+
+		await loginAs("workspace-a", "member-a", "a@example.com", "refresh-a-new");
+
+		expect(await loadAccounts().then((stored) => stored?.accounts)).toHaveLength(1);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Login updated Account 1"),
+		);
+		expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("in place"));
+		expect(infoSpy).not.toHaveBeenCalledWith(
+			expect.stringContaining("as a NEW account"),
+		);
+	});
+
+	it("reports a new seat in a stored workspace as an addition, naming the slot it did not repair", async () => {
+		const infoSpy = vi.spyOn(loggerModule, "logInfo");
+		await loginAs("workspace-a", "member-a", "first@example.com", "refresh-a");
+		infoSpy.mockClear();
+
+		await loginAs("workspace-a", "member-b", "second@example.com", "refresh-b");
+
+		expect(await loadAccounts().then((stored) => stored?.accounts)).toHaveLength(2);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Login added Account 2"),
+		);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("as a NEW account"),
+		);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Same workspace id as Account 1."),
+		);
+		// Only slots are named. An email on this line would be the one identity
+		// surface that ignores `maskEmail`.
+		const messages = infoSpy.mock.calls.map(([message]) => String(message));
+		expect(messages.join("\n")).not.toContain("example.com");
+	});
+
+	it("names the slot sharing an email when a new seat is added under a different workspace", async () => {
+		const infoSpy = vi.spyOn(loggerModule, "logInfo");
+		await loginAs("workspace-a", "member-a", "shared@example.com", "refresh-a");
+		infoSpy.mockClear();
+
+		await loginAs("workspace-b", "member-b", "shared@example.com", "refresh-b");
+
+		expect(await loadAccounts().then((stored) => stored?.accounts)).toHaveLength(2);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Same email as Account 1."),
+		);
+		expect(infoSpy).not.toHaveBeenCalledWith(
+			expect.stringContaining("Same workspace id as"),
+		);
 	});
 
 	/** An access token that names one ChatGPT account, the unit the backend meters. */

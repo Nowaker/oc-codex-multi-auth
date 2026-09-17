@@ -433,6 +433,12 @@ export async function resolveAndPersistAccountSelection(
 	return persistResolvedAccountSelection(selection, options);
 }
 
+function formatIdentitySuffix(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	if (!trimmed) return undefined;
+	return trimmed.length > 6 ? trimmed.slice(-6) : trimmed;
+}
+
 /**
  * Persists login results through the shared storage transaction so overlapping
  * login retries serialize their read-modify-write cycle instead of racing stale
@@ -743,6 +749,13 @@ export async function persistAccountPool(
 
 		let identityIndexes = buildIdentityIndexes();
 
+		// Whether a login landed on an existing record or appended a new one is
+		// only knowable here, but the slot it ends up in is only final after the
+		// prune below, so the decision is recorded now and reported there. Keyed
+		// by refresh token: the login just wrote it, and a merge keeps the newest
+		// record's token, so the key still finds the row that survived.
+		const loginOutcomes: { refreshToken: string; added: boolean }[] = [];
+
 		for (const result of results) {
 			const accountId = result.accountIdOverride ?? extractAccountId(result.access);
 			const normalizedAccountId = accountId?.trim() || undefined;
@@ -855,6 +868,7 @@ export async function persistAccountPool(
 					addedAt: now,
 					lastUsed: now,
 				});
+				loginOutcomes.push({ refreshToken: result.refresh, added: true });
 				identityIndexes = buildIdentityIndexes();
 				continue;
 			}
@@ -902,6 +916,7 @@ export async function persistAccountPool(
 				oauthScope: normalizedScope ?? existing.oauthScope,
 				lastUsed: now,
 			};
+			loginOutcomes.push({ refreshToken: result.refresh, added: false });
 			identityIndexes = buildIdentityIndexes();
 		}
 
@@ -1000,6 +1015,63 @@ export async function persistAccountPool(
 		pruneRefreshTokenCollisions();
 
 		if (accounts.length === 0) return;
+
+		// A login that lands on a seat the store never held is indistinguishable
+		// from one that repaired an existing seat unless it says which it did.
+		// The workspace/email neighbours are named because that is the line that
+		// distinguishes "this replaced your exhausted account" from "this added a
+		// ninth account beside it". Slots only - an email is never printed here,
+		// matching every other identity surface.
+		const describeSlots = (indexes: number[]): string =>
+			indexes.map((slot) => `Account ${slot + 1}`).join(", ");
+
+		for (const outcome of loginOutcomes) {
+			const index = accounts.findIndex(
+				(account) => account?.refreshToken === outcome.refreshToken,
+			);
+			if (index < 0) continue;
+			const account = accounts[index];
+			if (!account) continue;
+
+			const identityParts: string[] = [];
+			const idSuffix = formatIdentitySuffix(account.accountId);
+			const seatSuffix = formatIdentitySuffix(account.accountUserId);
+			if (idSuffix) identityParts.push(`id:${idSuffix}`);
+			if (seatSuffix) identityParts.push(`seat:${seatSuffix}`);
+			const identity = identityParts.length > 0 ? ` (${identityParts.join(", ")})` : "";
+
+			if (!outcome.added) {
+				logInfo(
+					`Login updated Account ${index + 1}${identity} in place - an account already in the store.`,
+				);
+				continue;
+			}
+
+			const workspaceId = account.accountId?.trim();
+			const email = sanitizeEmail(account.email);
+			const sameWorkspace: number[] = [];
+			const sameEmail: number[] = [];
+			for (let i = 0; i < accounts.length; i += 1) {
+				if (i === index) continue;
+				const other = accounts[i];
+				if (!other) continue;
+				if (workspaceId && other.accountId?.trim() === workspaceId) sameWorkspace.push(i);
+				if (email && sanitizeEmail(other.email) === email) sameEmail.push(i);
+			}
+
+			const notes: string[] = [];
+			if (sameWorkspace.length > 0) {
+				notes.push(`Same workspace id as ${describeSlots(sameWorkspace)}.`);
+			}
+			if (sameEmail.length > 0) {
+				notes.push(`Same email as ${describeSlots(sameEmail)}.`);
+			}
+			logInfo(
+				`Login added Account ${index + 1}${identity} as a NEW account - it was not in the store, so it repaired no existing account.${
+					notes.length > 0 ? ` ${notes.join(" ")}` : ""
+				}`,
+			);
+		}
 
 		const resolveIndexByIdentityKeys = (identityKeys: string[] | undefined): number | undefined => {
 			if (!identityKeys || identityKeys.length === 0) return undefined;
