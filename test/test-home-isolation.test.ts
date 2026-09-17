@@ -4,7 +4,7 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { LOG_DIR } from "../lib/logger.js";
 import { ACCOUNTS_FILE_NAME } from "../lib/constants.js";
-import { saveAccounts } from "../lib/storage/load-save.js";
+import { loadAccounts, saveAccounts } from "../lib/storage/load-save.js";
 import { getConfigDir } from "../lib/storage/paths.js";
 import {
 	getStoragePath,
@@ -17,37 +17,83 @@ function realUserHome(): string {
 	return userInfo().homedir;
 }
 
+/**
+ * The real account pool lives in `~/.opencode`, not across the whole home tree.
+ *
+ * Isolation cannot be expressed as "outside the real home": on Windows
+ * `tmpdir()` sits under the user profile, so the sandbox is legitimately a
+ * descendant of it and that assertion would fail while isolation was working
+ * perfectly. Containment in the sandbox, and separation from the real store,
+ * hold on every platform.
+ */
+function realStoreDir(): string {
+	return resolve(realUserHome(), ".opencode");
+}
+
+function sandboxHome(): string {
+	const home = process.env.OC_CODEX_TEST_HOME;
+	if (!home) {
+		throw new Error("OC_CODEX_TEST_HOME is unset; vitest.config.ts must mint a sandbox home");
+	}
+	return home;
+}
+
 function isUnder(baseDir: string, targetPath: string): boolean {
 	const rel = relative(resolve(baseDir), resolve(targetPath));
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+function expectSandboxed(path: string): void {
+	expect(isUnder(sandboxHome(), path)).toBe(true);
+	expect(isUnder(realStoreDir(), path)).toBe(false);
+}
+
 describe("test home isolation", () => {
-	it("redirects homedir() away from the real user home", () => {
-		expect(process.env.OC_CODEX_TEST_HOME).toBeTruthy();
-		expect(homedir()).toBe(process.env.OC_CODEX_TEST_HOME);
-		expect(isUnder(realUserHome(), homedir())).toBe(false);
+	it("redirects homedir() into the sandbox", () => {
+		expect(homedir()).toBe(sandboxHome());
+		expect(resolve(homedir())).not.toBe(resolve(realUserHome()));
 	});
 
-	it("keeps every resolved account storage path out of the real user home", () => {
-		const real = realUserHome();
-
+	it("keeps every resolved account storage path inside the sandbox", () => {
 		setStoragePath(null);
-		expect(isUnder(real, getStoragePath())).toBe(false);
+		expectSandboxed(getStoragePath());
 
+		// Per-project storage is namespaced under `getConfigDir()` rather than
+		// under the project itself, so this follows the redirected home even
+		// when the checkout sits inside the real one, as it does on CI.
 		setStoragePath(process.cwd());
-		expect(isUnder(real, getStoragePath())).toBe(false);
+		expectSandboxed(getStoragePath());
 
 		setStoragePath(null);
-		expect(isUnder(real, getConfigDir())).toBe(false);
+		expectSandboxed(getConfigDir());
 	});
 
 	// LOG_DIR is captured at module scope from homedir(), so it only lands in
 	// the sandbox if the override beat the import. That is the property a
 	// setupFiles entry cannot provide and this whole mechanism exists for.
 	it("beats module-scope homedir() capture", () => {
-		expect(isUnder(realUserHome(), LOG_DIR)).toBe(false);
-		expect(isUnder(process.env.OC_CODEX_TEST_HOME as string, LOG_DIR)).toBe(true);
+		expectSandboxed(LOG_DIR);
+	});
+
+	// Where the sandbox is a descendant of the real home, a guard keyed on the
+	// home tree alone would refuse this and redden the whole Windows job.
+	it("still allows account writes inside the sandbox", async () => {
+		// A private path, not the sandbox's own global store: every test file
+		// shares this HOME, so writing the real one would hand another file an
+		// empty pool mid-run.
+		const probeDir = join(sandboxHome(), "sandbox-write-probe");
+		const probe = join(probeDir, ACCOUNTS_FILE_NAME);
+		setStoragePathDirect(probe);
+		try {
+			expectSandboxed(probe);
+			await expect(
+				saveAccounts({ version: 3, accounts: [], activeIndex: 0 }),
+			).resolves.toBeUndefined();
+			expect(existsSync(probe)).toBe(true);
+		} finally {
+			setStoragePathDirect(null);
+			rmSync(probeDir, { recursive: true, force: true });
+		}
 	});
 
 	it("refuses to write account storage that escapes into the real home", async () => {
@@ -59,6 +105,38 @@ describe("test home isolation", () => {
 			).rejects.toMatchObject({ code: "TEST_HOME_ESCAPE" });
 		} finally {
 			setStoragePathDirect(null);
+		}
+	});
+
+	// Guarding writes is not sufficient. A missing project store sends the
+	// loader to the GLOBAL one, whose path is re-resolved from `homedir()` at
+	// that moment, so a test that restores the real HOME reads the live pool
+	// through a path the current-storage check already waved through.
+	it("refuses to read the global fallback out of the real home", async () => {
+		const projectRoot = join(sandboxHome(), "fallback-probe-project");
+		mkdirSync(join(projectRoot, ".opencode"), { recursive: true });
+		setStoragePath(projectRoot);
+		expectSandboxed(getStoragePath());
+
+		// A directory that does not exist, never the real store: should this
+		// guard ever regress, the test has to fail rather than read credentials.
+		const restoredHome = join(realUserHome(), `.oc-codex-guard-probe-${process.pid}`);
+		const previousHome = process.env.HOME;
+		const previousProfile = process.env.USERPROFILE;
+		process.env.HOME = restoredHome;
+		process.env.USERPROFILE = restoredHome;
+		try {
+			expect(isUnder(realUserHome(), getConfigDir())).toBe(true);
+			await expect(loadAccounts()).rejects.toMatchObject({
+				code: "TEST_HOME_ESCAPE",
+			});
+		} finally {
+			if (previousHome === undefined) delete process.env.HOME;
+			else process.env.HOME = previousHome;
+			if (previousProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = previousProfile;
+			setStoragePath(null);
+			rmSync(projectRoot, { recursive: true, force: true });
 		}
 	});
 });
@@ -115,6 +193,23 @@ describe("test home teardown", () => {
 			expect(existsSync(home)).toBe(true);
 		} finally {
 			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	// The case above only holds while nothing sets the flag for an inherited
+	// home. A caller exporting both variables would otherwise have its own
+	// directory recursively deleted, so the config must clear what it inherits.
+	it("clears an inherited ownership flag rather than trusting it", async () => {
+		const previousOwned = process.env.OC_CODEX_TEST_HOME_OWNED;
+		process.env.OC_CODEX_TEST_HOME_OWNED = "1";
+		try {
+			// Re-runs the config's env setup. OC_CODEX_TEST_HOME is already set,
+			// so it takes the inherited branch and mints no directory.
+			await import("../vitest.config.js");
+			expect(process.env.OC_CODEX_TEST_HOME_OWNED).toBeUndefined();
+		} finally {
+			if (previousOwned === undefined) delete process.env.OC_CODEX_TEST_HOME_OWNED;
+			else process.env.OC_CODEX_TEST_HOME_OWNED = previousOwned;
 		}
 	});
 

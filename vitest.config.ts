@@ -21,6 +21,7 @@ process.env.OC_CODEX_TEST_HOME = isolatedHome;
 // Only a home this config minted may be removed once the run ends. One handed
 // in through the environment belongs to whoever set it.
 if (!inheritedHome) process.env.OC_CODEX_TEST_HOME_OWNED = '1';
+else delete process.env.OC_CODEX_TEST_HOME_OWNED;
 
 export default defineConfig({
   test: {
@@ -30,6 +31,10 @@ export default defineConfig({
       HOME: isolatedHome,
       USERPROFILE: isolatedHome,
       OC_CODEX_TEST_HOME: isolatedHome,
+      // The OS credential store is the one place the HOME redirect cannot
+      // reach. An inherited opt-in would route fixture writes into the
+      // developer's real keychain; tests that need the backend opt in per test.
+      CODEX_KEYCHAIN: '0',
     },
     // Four suites import the real `index.ts`, and the first one scheduled pays
     // the transform of a 4900-line entry plus its dependency graph: measured at
