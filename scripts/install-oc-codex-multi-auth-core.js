@@ -212,11 +212,7 @@ function pluginEntrySpecifier(entry) {
 	return null;
 }
 
-/**
- * Relative paths come back unresolved on purpose: OpenCode resolves them
- * against the config directory, not the installer's working directory, so
- * resolving them here would invent a location that was never registered.
- */
+/** The path an entry names, exactly as the config spells it. */
 function pluginEntryPath(specifier) {
 	const trimmed = specifier.trim();
 	if (!trimmed) return null;
@@ -235,8 +231,13 @@ function pluginPathSegments(entryPath) {
 	return entryPath.replaceAll("\\", "/").replace(/\/+$/, "").split("/").filter(Boolean);
 }
 
-function isPackageManagerPath(entryPath) {
-	const segments = pluginPathSegments(entryPath);
+function isPackageManagerPath(entryPath, platform = process.platform) {
+	// Windows reaches one directory under many spellings, so `NODE_MODULES`
+	// there is the same package-manager output as `node_modules`. Elsewhere the
+	// two are different directories and must stay so.
+	const segments = pluginPathSegments(entryPath).map((segment) =>
+		platform === "win32" ? segment.toLowerCase() : segment,
+	);
 	return segments.some(
 		(segment, index) =>
 			segment === "node_modules" ||
@@ -244,6 +245,18 @@ function isPackageManagerPath(entryPath) {
 			// A `packages/` directory without one is an ordinary monorepo.
 			(segments[index - 1] === "packages" && segment.includes("@")),
 	);
+}
+
+/**
+ * Where an entry points, for reading metadata about it only. OpenCode resolves
+ * a relative entry against the config file that declares it, so that directory
+ * is what makes such a path mean anything; the installer's working directory
+ * would name somewhere else entirely. Null when a relative entry arrives with
+ * no declaring directory to resolve it against.
+ */
+function resolveInspectionPath(entryPath, baseDirectory) {
+	if (isAbsolute(entryPath)) return entryPath;
+	return baseDirectory ? resolve(baseDirectory, entryPath) : null;
 }
 
 /**
@@ -299,7 +312,12 @@ function resolveDeclaredPackageName(entryPath) {
  * somewhere a human deliberately pointed OpenCode - a checkout of this package
  * being developed on, most often - and is never the installer's to remove.
  */
-function classifyPluginEntry(entry, resolveDeclaredName = resolveDeclaredPackageName) {
+function classifyPluginEntry(entry, options = {}) {
+	const {
+		resolveDeclaredName = resolveDeclaredPackageName,
+		baseDirectory,
+		platform = process.platform,
+	} = options;
 	const specifier = pluginEntrySpecifier(entry);
 	if (specifier === null) return { kind: UNRELATED_ENTRY, name: null };
 
@@ -315,7 +333,8 @@ function classifyPluginEntry(entry, resolveDeclaredName = resolveDeclaredPackage
 			: { kind: UNRELATED_ENTRY, name: null };
 	}
 
-	const declaredName = resolveDeclaredName(entryPath);
+	const inspectionPath = resolveInspectionPath(entryPath, baseDirectory);
+	const declaredName = inspectionPath ? resolveDeclaredName(inspectionPath) : null;
 	const managedName = declaredName
 		? getManagedPackageNames().find(
 			(managed) => managed.toLowerCase() === declaredName.toLowerCase(),
@@ -324,9 +343,9 @@ function classifyPluginEntry(entry, resolveDeclaredName = resolveDeclaredPackage
 
 	if (!managedName) return { kind: UNRELATED_ENTRY, name: null };
 
-	return isPackageManagerPath(entryPath)
+	return isPackageManagerPath(entryPath, platform)
 		? { kind: MANAGED_PACKAGE_ENTRY, name: managedName }
-		: { kind: LOCAL_CHECKOUT_ENTRY, name: managedName, path: entryPath };
+		: { kind: LOCAL_CHECKOUT_ENTRY, name: managedName, path: inspectionPath ?? entryPath };
 }
 
 /**
@@ -335,50 +354,58 @@ function classifyPluginEntry(entry, resolveDeclaredName = resolveDeclaredPackage
  * fallback for a config that does not reference the plugin at all, not the
  * canonical form every config is rewritten into.
  */
-function normalizePluginList(list, onNotice) {
+function normalizePluginList(list, onNotice, options = {}) {
 	const entries = Array.isArray(list)
 		? list.filter((entry) => entry !== null && entry !== undefined && entry !== "")
 		: [];
+	const classifications = entries.map((entry) => classifyPluginEntry(entry, options));
+	// A checkout of this package already IS the registration, so a published
+	// entry beside it is a second copy of the same plugin for OpenCode to load.
+	// Only a checkout of the CURRENT package counts: the former name is valid
+	// for cleanup, never as the registration the installer exists to ensure.
+	const checkoutRegistered = classifications.some(
+		(classification) =>
+			classification.kind === LOCAL_CHECKOUT_ENTRY && classification.name === PACKAGE_NAME,
+	);
 	const kept = [];
-	let registered = false;
 	let keptPublishedName = false;
 
-	for (const entry of entries) {
-		const classification = classifyPluginEntry(entry);
+	entries.forEach((entry, index) => {
+		const classification = classifications[index];
 
 		if (classification.kind === LOCAL_CHECKOUT_ENTRY) {
 			kept.push(entry);
-			registered = true;
 			onNotice?.(
 				`Keeping the local ${classification.name} checkout registered at ${classification.path}`,
 			);
-			continue;
+			return;
 		}
 
 		if (classification.kind === MANAGED_PACKAGE_ENTRY) {
 			// Retire stale duplicates, version pins, renamed packages, and paths
-			// into package-manager output; keep one published-name entry in place.
-			if (pluginEntrySpecifier(entry) === PACKAGE_NAME && !keptPublishedName) {
+			// into package-manager output; keep one published-name entry in place
+			// unless a checkout already covers it.
+			const isPublishedName = pluginEntrySpecifier(entry) === PACKAGE_NAME;
+			if (isPublishedName && !checkoutRegistered && !keptPublishedName) {
 				keptPublishedName = true;
-				registered = true;
 				kept.push(entry);
 			}
-			continue;
+			return;
 		}
 
 		kept.push(entry);
-	}
+	});
 
-	return registered ? kept : [...kept, PACKAGE_NAME];
+	return checkoutRegistered || keptPublishedName ? kept : [...kept, PACKAGE_NAME];
 }
 
-function mergeTuiConfig(existingConfig, onNotice) {
+function mergeTuiConfig(existingConfig, onNotice, options = {}) {
 	const existing = isPlainObject(existingConfig) ? { ...existingConfig } : {};
 	const next = { ...existing };
 	if (typeof next.$schema !== "string" || !next.$schema.trim()) {
 		next.$schema = "https://opencode.ai/tui.json";
 	}
-	next.plugin = normalizePluginList(existing.plugin, onNotice);
+	next.plugin = normalizePluginList(existing.plugin, onNotice, options);
 	return next;
 }
 
@@ -1508,7 +1535,9 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 			}
 			existingConfig = existing;
 			const merged = { ...existing };
-			merged.plugin = normalizePluginList(existing.plugin, log);
+			merged.plugin = normalizePluginList(existing.plugin, log, {
+				baseDirectory: paths.configDir,
+			});
 			if (!pluginOnly) {
 				const provider = (existing.provider && typeof existing.provider === "object")
 					? { ...existing.provider }
@@ -1542,7 +1571,9 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 				throw new Error("TUI config root must be a JSON object");
 			}
 			existingTuiConfig = existing;
-			nextTuiConfig = mergeTuiConfig(existing, log);
+			nextTuiConfig = mergeTuiConfig(existing, log, {
+				baseDirectory: paths.configDir,
+			});
 		} catch (error) {
 			if (pluginOnly) {
 				throw new Error(
