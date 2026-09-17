@@ -56,6 +56,61 @@ describe("auth-menu", () => {
 		expect(accountRows[1]?.label).toContain("id:org-cccc...dd3333");
 	});
 
+	it("renders distinct rows for two seats sharing one workspace accountId", async () => {
+		vi.mocked(select).mockResolvedValueOnce({ type: "cancel" });
+
+		const workspaceId = "org-aaaa1111bbbb2222";
+		const accounts: AccountInfo[] = [
+			{
+				index: 0,
+				email: "shared@example.com",
+				accountId: workspaceId,
+				accountUserId: "user_aaaaaa111111",
+			},
+			{
+				index: 1,
+				email: "shared@example.com",
+				accountId: workspaceId,
+				accountUserId: "user_bbbbbb222222",
+			},
+		];
+
+		await showAuthMenu(accounts);
+
+		const items = vi.mocked(select).mock.calls[0]?.[0] as Array<{
+			label: string;
+			value?: { type?: string };
+		}>;
+		const accountRows = items.filter((item) => item.value?.type === "select-account");
+		expect(accountRows).toHaveLength(2);
+		expect(accountRows[0]?.label).toContain("seat:111111");
+		expect(accountRows[1]?.label).toContain("seat:222222");
+		// The rows carry the same email and the same workspace id, so dropping
+		// the seat collapses them into one indistinguishable string.
+		expect(accountRows[0]?.label.replace(/^1\. /, "")).not.toBe(
+			accountRows[1]?.label.replace(/^2\. /, ""),
+		);
+	});
+
+	it("omits the seat for an account with no accountUserId", async () => {
+		vi.mocked(select).mockResolvedValueOnce({ type: "cancel" });
+
+		await showAuthMenu([
+			{
+				index: 0,
+				email: "solo@example.com",
+				accountId: "org-aaaa1111bbbb2222",
+			},
+		]);
+
+		const items = vi.mocked(select).mock.calls[0]?.[0] as Array<{
+			label: string;
+			value?: { type?: string };
+		}>;
+		const row = items.find((item) => item.value?.type === "select-account");
+		expect(row?.label).toBe("1. solo@example.com | id:org-aaaa...bb2222");
+	});
+
 	it("uses detailed account title in delete confirmation", async () => {
 		vi.mocked(select).mockResolvedValueOnce("delete");
 		vi.mocked(confirm).mockResolvedValueOnce(true);

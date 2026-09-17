@@ -422,12 +422,21 @@ function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 			const trimmedId =
 				typeof account?.accountId === "string" ? account.accountId.trim() : "";
 			const accountId = trimmedId || undefined;
+			// Members of one Business workspace share `accountId`, so the seat is
+			// what tells them apart. It is carried masked next to its suffix for
+			// the same reason `accountId` is: so the printed `seat:` never
+			// discloses more than the field beside it.
+			const trimmedUserId =
+				typeof account?.accountUserId === "string" ? account.accountUserId.trim() : "";
+			const accountUserId = trimmedUserId || undefined;
 			return {
 				index,
 				label: account?.accountLabel ?? `Account ${index + 1}`,
 				email: maskValue(account?.email, includeSensitive),
 				accountId: maskValue(accountId, includeSensitive),
 				idSuffix: accountIdSuffix(accountId, includeSensitive),
+				accountUserId: maskValue(accountUserId, includeSensitive),
+				seatSuffix: accountIdSuffix(accountUserId, includeSensitive),
 				accountIdSource: account?.accountIdSource,
 				enabled: account?.enabled !== false,
 				hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
@@ -453,7 +462,11 @@ function printStandaloneResult(command, payload, json) {
 	console.log(`Accounts: ${payload.totalAccounts}`);
 	if (Array.isArray(payload.accounts)) {
 		for (const account of payload.accounts) {
-			const identity = [account.email, account.idSuffix ? `id:${account.idSuffix}` : undefined]
+			const identity = [
+				account.email,
+				account.idSuffix ? `id:${account.idSuffix}` : undefined,
+				account.seatSuffix ? `seat:${account.seatSuffix}` : undefined,
+			]
 				.filter(Boolean)
 				.join(", ");
 			const name = identity ? `${account.label} (${identity})` : account.label;

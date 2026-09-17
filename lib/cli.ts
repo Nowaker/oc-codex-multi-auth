@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import type { AccountIdSource } from "./types.js";
-import { resolveDisplayEmail } from "./account-display.js";
+import { formatSeatSuffix, resolveDisplayEmail } from "./account-display.js";
 import {
 	showAuthMenu,
 	showAccountDetails,
@@ -51,6 +51,7 @@ export type LoginMode =
 
 export interface ExistingAccountInfo {
 	accountId?: string;
+	accountUserId?: string;
 	accountLabel?: string;
 	email?: string;
 	index: number;
@@ -87,10 +88,12 @@ function formatAccountLabel(
 		accountId && accountId.length > 14
 			? `${accountId.slice(0, 8)}...${accountId.slice(-6)}`
 			: accountId;
+	const seatSuffix = formatSeatSuffix(account.accountUserId);
 	const details: string[] = [];
 	if (email) details.push(email);
 	if (label) details.push(`workspace:${label}`);
 	if (accountIdDisplay) details.push(`id:${accountIdDisplay}`);
+	if (seatSuffix) details.push(`seat:${seatSuffix}`);
 	if (details.length > 0) {
 		return `${num}. ${details.join(" | ")}`;
 	}

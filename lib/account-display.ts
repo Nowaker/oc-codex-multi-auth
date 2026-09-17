@@ -47,3 +47,28 @@ export function resolveDisplayEmail(
 	if (!trimmed) return undefined;
 	return maskEmail ? maskEmailForDisplay(trimmed) : trimmed;
 }
+
+/**
+ * Render the short seat suffix that separates two accounts sharing one
+ * workspace `accountId`.
+ *
+ * A ChatGPT Business workspace is a single `accountId` shared by every member
+ * of it; `accountUserId` is that member's own id and the only stored field
+ * that tells their seats apart. Upstream meters each seat separately - its own
+ * quota, its own weekly reset - so seats sharing a workspace are distinct
+ * accounts, not copies of one.
+ *
+ * Every display surface used to render `accountId` alone, so four members of
+ * one Business workspace printed an identical `id:` string and read as the
+ * same account duplicated four times. Appending this suffix is what makes the
+ * rendered rows match the accounts they describe.
+ *
+ * Six characters, matching what the surfaces already print for `accountId`.
+ * Returns `undefined` when there is no member id, so a token-only record
+ * renders exactly as it did before.
+ */
+export function formatSeatSuffix(accountUserId: string | undefined): string | undefined {
+	const trimmed = accountUserId?.trim();
+	if (!trimmed) return undefined;
+	return trimmed.length > 6 ? trimmed.slice(-6) : trimmed;
+}

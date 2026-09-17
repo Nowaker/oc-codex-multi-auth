@@ -31,7 +31,7 @@ import {
 import { formatWaitTime, type RateLimitReason } from "./accounts/rate-limits.js";
 import { nowMs } from "./utils.js";
 import { logWarn } from "./logger.js";
-import { resolveDisplayEmail } from "./account-display.js";
+import { formatSeatSuffix, resolveDisplayEmail } from "./account-display.js";
 
 export type { AccountSelectionExplainability, ManagedAccount } from "./accounts/state.js";
 
@@ -424,7 +424,9 @@ export class AccountManager {
 }
 
 export function formatAccountLabel(
-	account: { email?: string; accountId?: string; accountLabel?: string } | undefined,
+	account:
+		| { email?: string; accountId?: string; accountUserId?: string; accountLabel?: string }
+		| undefined,
 	index: number,
 	options: { maskEmail?: boolean } = {},
 ): string {
@@ -436,17 +438,25 @@ export function formatAccountLabel(
 			? accountId.slice(-6)
 			: accountId
 		: null;
+	// `accountId` names the workspace, which every member of a Business
+	// workspace shares. Without the seat, four distinct members printed one
+	// identical `id:` string (see `formatSeatSuffix`).
+	const seatSuffix = formatSeatSuffix(account?.accountUserId);
 
-	if (accountLabel && email && idSuffix) {
-		return `Account ${index + 1} (${accountLabel}, ${email}, id:${idSuffix})`;
+	const details: string[] = [];
+	if (accountLabel) details.push(accountLabel);
+	if (email) details.push(email);
+	if (idSuffix) {
+		// The id has always rendered bare when it is the only thing known about
+		// an account. Once a seat sits beside it, an unprefixed pair of suffixes
+		// would not say which is which, so the prefix goes back on.
+		const idIsOnlyDetail = !accountLabel && !email && !seatSuffix;
+		details.push(idIsOnlyDetail ? idSuffix : `id:${idSuffix}`);
 	}
-	if (accountLabel && email) return `Account ${index + 1} (${accountLabel}, ${email})`;
-	if (accountLabel && idSuffix) return `Account ${index + 1} (${accountLabel}, id:${idSuffix})`;
-	if (accountLabel) return `Account ${index + 1} (${accountLabel})`;
-	if (email && idSuffix) return `Account ${index + 1} (${email}, id:${idSuffix})`;
-	if (email) return `Account ${index + 1} (${email})`;
-	if (idSuffix) return `Account ${index + 1} (${idSuffix})`;
-	return `Account ${index + 1}`;
+	if (seatSuffix) details.push(`seat:${seatSuffix}`);
+
+	if (details.length === 0) return `Account ${index + 1}`;
+	return `Account ${index + 1} (${details.join(", ")})`;
 }
 
 export function formatCooldown(
