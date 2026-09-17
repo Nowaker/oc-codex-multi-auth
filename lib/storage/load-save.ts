@@ -25,7 +25,9 @@ import { AnyAccountStorageSchema, getValidationErrors } from "../schemas.js";
 import { renameWithWindowsRetry } from "./atomic-write.js";
 import { formatStorageErrorHint, StorageError } from "./errors.js";
 import { normalizeAccountStorage } from "./normalize.js";
-import { getConfigDir, isWithinDirectory } from "./paths.js";
+import { getConfigDir } from "./paths.js";
+import { assertTestRunNeverTouchesRealHome } from "./test-home-guard.js";
+import { trySnapshotCredentialStoreBeforeWrite } from "./credential-snapshots.js";
 import {
   getCurrentLegacyProjectStoragePath,
   getCurrentProjectRoot,
@@ -173,36 +175,6 @@ async function checkWorktreeLockForCurrentStorage(
       error: String(error),
     });
   }
-}
-
-/**
- * Refuse to mutate account storage inside the developer's real home while the
- * test suite is running.
- *
- * `vitest.config.ts` redirects HOME to a sandbox before any module loads, but a
- * test that restores the captured real HOME, or a future regression in that
- * config, would otherwise write fixtures straight over live ChatGPT
- * credentials. `os.userInfo()` reads the passwd entry instead of `$HOME`, so it
- * still names the real home after the redirect and gives the check something
- * the sandbox cannot spoof. Inert outside vitest.
- */
-function assertTestRunNeverTouchesRealHome(path: string): void {
-  if (!process.env.VITEST) return;
-
-  let realHome: string;
-  try {
-    realHome = os.userInfo().homedir;
-  } catch {
-    return;
-  }
-  if (!realHome || !isWithinDirectory(realHome, path)) return;
-
-  throw new StorageError(
-    `Refusing to write account storage inside the real home directory during a test run: ${path}`,
-    "TEST_HOME_ESCAPE",
-    path,
-    "A test resolved account storage against the developer's real home. Point HOME at a temp directory for the whole vitest process (see vitest.config.ts) instead of overriding it per test.",
-  );
 }
 
 async function ensureGitignore(storagePath: string): Promise<void> {
@@ -582,6 +554,12 @@ async function writeAccountsToPathUnlocked(path: string, storage: AccountStorage
     // Normalize before persisting so every write path enforces dedup semantics
     // (exact identity dedupe plus legacy email dedupe for identity-less records).
     const normalizedStorage = normalizeAccountStorage(storage) ?? storage;
+    // Preserve what is on disk now, before it is replaced. Compared against
+    // the normalized payload rather than the caller's, so a difference
+    // normalization erases never costs a snapshot. We are already inside
+    // `withStorageLock`, so the captured state is exactly the state this write
+    // supersedes.
+    await trySnapshotCredentialStoreBeforeWrite(path, normalizedStorage);
     const content = JSON.stringify(normalizedStorage, null, 2);
     await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 
@@ -707,6 +685,15 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   await checkWorktreeLockForCurrentStorage("save");
 
   if (isKeychainOptInEnabled()) {
+    // Credential snapshots are deliberately scoped to the JSON backend and do
+    // not cover this branch. Snapshotting here would mean writing the account
+    // pool, refresh tokens and all, into a plaintext file in `backups/` — the
+    // exact thing a user opting into the OS keychain asked us not to do. The
+    // on-disk JSON that remains is a rollback artefact, not the live store, so
+    // snapshotting it instead would archive a document that is already stale.
+    // Keychain users' recovery path stays `codex-export` plus the keychain's
+    // own backing store.
+    //
     // Normalize before serializing so the keychain receives the same shape
     // the JSON backend would have written. Using the same JSON format keeps
     // migration and rollback symmetric: a rolled-back JSON file is valid
@@ -795,6 +782,10 @@ export async function clearAccounts(): Promise<void> {
     try {
       const path = getStoragePath();
       assertTestRunNeverTouchesRealHome(path);
+      // Deleting the store outright is the most significant event there is, so
+      // this snapshot is unconditional; `null` says there is no successor
+      // document to compare against.
+      await trySnapshotCredentialStoreBeforeWrite(path, null);
       await fs.unlink(path);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
