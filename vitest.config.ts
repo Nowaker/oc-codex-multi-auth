@@ -1,9 +1,33 @@
 import { defineConfig } from 'vitest/config';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+/**
+ * Per-run throwaway home. The suite writes real account storage, so without
+ * this a `npm test` resolves `~/.opencode/oc-codex-multi-auth-accounts.json`
+ * against the developer's actual home and overwrites live ChatGPT credentials
+ * with fixtures.
+ *
+ * This must be `test.env`, not a `setupFiles` entry: vitest applies `test.env`
+ * before the worker imports any test module, and `lib/config.ts`,
+ * `lib/accounts/recovery.ts` and `lib/logger.ts` capture `homedir()` at module
+ * scope, so anything later than import time is too late for them.
+ */
+const isolatedHome =
+  process.env.OC_CODEX_TEST_HOME ??
+  mkdtempSync(join(tmpdir(), 'oc-codex-multi-auth-test-home-'));
+process.env.OC_CODEX_TEST_HOME = isolatedHome;
 
 export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    env: {
+      HOME: isolatedHome,
+      USERPROFILE: isolatedHome,
+      OC_CODEX_TEST_HOME: isolatedHome,
+    },
     include: ['test/**/*.test.ts'],
     exclude: [
       'node_modules/**',
