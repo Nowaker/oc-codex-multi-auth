@@ -21,6 +21,7 @@ import {
 	formatUiSection,
 } from "../ui/format.js";
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
+import { describePluginOrigin, getPluginOrigin } from "../plugin-origin.js";
 import { formatPlanType } from "../auth/plan-tier.js";
 import type { ToolContext } from "./index.js";
 
@@ -130,6 +131,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 			if (outputFormat === "json") {
 				return renderJsonOutput({
 					totalAccounts: storage.accounts.length,
+					pluginOrigin: getPluginOrigin(),
 					selectionView: {
 						modelFamily: explainabilityFamily,
 						effectiveModel: explainabilityModel ?? null,
@@ -194,6 +196,12 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 				const lines: string[] = [
 					...formatUiHeader(ui, "Account status"),
 					formatUiKeyValue(ui, "Total", String(storage.accounts.length)),
+					formatUiKeyValue(
+						ui,
+						"Running from",
+						describePluginOrigin(getPluginOrigin()),
+						"muted",
+					),
 					formatUiKeyValue(
 						ui,
 						"Selection view",
@@ -314,6 +322,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 
 			const lines: string[] = [
 				`Account Status (${storage.accounts.length} total):`,
+				`Running from: ${describePluginOrigin(getPluginOrigin())}`,
 				"",
 				...buildTableHeader(statusTableOptions),
 			];
