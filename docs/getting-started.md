@@ -121,6 +121,13 @@ If you are on SSH, WSL, or another environment where the browser callback flow i
   2. choose `Codex OAuth (Device Code)` and follow the verification link and one-time code
   3. if device code is unavailable, fall back to `Codex OAuth (Manual URL Paste)` and paste the full callback URL, including its `state` parameter
 
+Every login method copies its authorization URL to the clipboard and reports in one line where it landed. Two transports are tried, because on a remote host they reach different machines:
+
+- a clipboard tool on the host itself (`pbcopy` on macOS; `wl-copy`, `xclip`, or `xsel` on Linux). Over SSH this is the remote machine's clipboard, not the one your browser is on, so the message says so.
+- an OSC 52 escape sequence written to the controlling terminal, which forwards the URL to the clipboard of whichever machine your terminal emulator runs on. This is the one that reaches your laptop from an SSH session. Support is up to the terminal: most modern ones implement it, and inside tmux it also needs `set -g allow-passthrough on`. A terminal that does not support it ignores the sequence.
+
+Neither is required to finish a login - the URL is still printed - so a host with no clipboard tooling just reports that it could not copy. Set `CODEX_AUTH_CLIPBOARD=0` to turn copying off entirely.
+
 ## Add the Plugin to OpenCode
 
 If you are not using the installer, edit `~/.config/opencode/opencode.json` manually:

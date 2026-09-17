@@ -43,6 +43,7 @@ import {
         REDIRECT_URI,
 } from "./lib/auth/auth.js";
 import { formatPlanType } from "./lib/auth/plan-tier.js";
+import { copyTextToClipboard } from "./lib/auth/clipboard.js";
 import {
 	startLoopbackFlow,
 	type LoopbackFlowUnavailable,
@@ -673,6 +674,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		};
 
 		/**
+		 * The notice rides on `instructions` rather than the log because that is
+		 * the surface a user in an auth flow is reading, and a clipboard write
+		 * nobody was told about reads as a clipboard silently clobbered.
+		 *
+		 * An empty message means `CODEX_AUTH_CLIPBOARD=0` turned copying off.
+		 */
+		const withClipboardNotice = (url: string, instructions: string): string => {
+			const { message } = copyTextToClipboard(url);
+			return message ? `${instructions}\n\n${message}` : instructions;
+		};
+
+		/**
 		 * Every accepted paste must carry this attempt's `state`, a raw code
 		 * included.
 		 *
@@ -720,7 +733,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		) => ({
 			url,
 			method: "code" as const,
-			instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
+			instructions: withClipboardNotice(url, AUTH_LABELS.INSTRUCTIONS_MANUAL),
 			validate: (input: string): string | undefined =>
 				manualInputRejection(parseAuthorizationInput(input), expectedState),
 			callback: async (input: string) => {
@@ -768,6 +781,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				};
 			}
 			logInfo(`OAuth URL: ${session.url}`);
+			// This flow has no instructions channel — OpenCode never shows one
+			// for a login that opens its own browser — so the clipboard outcome
+			// goes to the log next to the URL it describes.
+			const clipboardNotice = copyTextToClipboard(session.url).message;
+			if (clipboardNotice) {
+				logInfo(clipboardNotice);
+			}
 			// Printed first, so the recovery instruction points at a URL the
 			// user can already see. The session stays open either way.
 			if (!session.browserOpened) {
@@ -4781,7 +4801,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							return {
 								url: session.url,
-								instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL_BROWSER,
+								instructions: withClipboardNotice(
+									session.url,
+									AUTH_LABELS.INSTRUCTIONS_MANUAL_BROWSER,
+								),
 								method: "auto" as const,
 								callback: async () => {
 									const result = await session.waitAndExchange();
@@ -4825,7 +4848,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							return {
 								url: started.session.verificationUrl,
-								instructions: buildDeviceCodeInstructions(started.session),
+								// The URL, not the user code: the code is displayed short
+								// precisely so it can be retyped.
+								instructions: withClipboardNotice(
+									started.session.verificationUrl,
+									buildDeviceCodeInstructions(started.session),
+								),
 								method: "auto" as const,
 								callback: async () => {
 									const result = await completeDeviceCodeSession(started.session);

@@ -420,6 +420,7 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_GLYPHS=ascii\|unicode\|auto` | Force terminal glyph style |
 | `CODEX_TUI_MASK_EMAIL=0/1` | Mask account emails across account-display surfaces (list/status/limits/health/dashboard/menus + TUI quota status) |
 | `CODEX_TUI_MASK_EMAIL_DETAILS=0/1` | Also hide account email in quota details when prompt masking is enabled |
+| `CODEX_AUTH_CLIPBOARD=0` | Stop login from copying the authorization URL to the clipboard |
 | `CODEX_AUTH_PER_PROJECT_ACCOUNTS=0/1` | Disable/enable per-project account pools |
 | `CODEX_AUTH_AUTO_UPDATE=0/1` | Disable/enable daily npm update check and cache refresh |
 | `CODEX_AUTH_ROTATION_STRATEGY=hybrid\|sticky\|round-robin` | Account selection strategy |
