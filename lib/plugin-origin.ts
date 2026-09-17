@@ -224,7 +224,8 @@ async function writeHistory(historyPath: string, history: PluginOriginHistory): 
  * into what is actually on disk. A writer that cannot take the lease records
  * nothing rather than overwriting blind; it is about to be started again, and
  * a missing sighting costs a later startup while a clobbered one costs the
- * only evidence there was.
+ * only evidence there was. A lease reclaimed mid-write is the same situation
+ * arriving later, and is answered the same way.
  */
 export async function recordPluginOrigin(
 	origin: PluginOrigin,
@@ -233,6 +234,7 @@ export async function recordPluginOrigin(
 ): Promise<PluginOriginHistory> {
 	await mkdir(dirname(historyPath), { recursive: true });
 
+	let compromised: Error | undefined;
 	let release: (() => Promise<void>) | null = null;
 	try {
 		release = await lock(historyPath, {
@@ -241,6 +243,18 @@ export async function recordPluginOrigin(
 			stale: HISTORY_LOCK_STALE_MS,
 			update: HISTORY_LOCK_UPDATE_MS,
 			retries: HISTORY_LOCK_RETRIES,
+			// proper-lockfile's default rethrows from the timer that refreshes the
+			// lease, so it lands outside every promise chain and ends the process
+			// hosting this plugin. A stalled event loop is enough to trigger it.
+			// Nothing here is worth an editor closing, so the loss is recorded and
+			// the write is abandoned instead.
+			onCompromised: (error: Error) => {
+				compromised = error;
+				log.warn("The plugin origin history lease was reclaimed", {
+					path: `${historyPath}.lock`,
+					error: error.message,
+				});
+			},
 		});
 	} catch (error) {
 		log.debug("Skipped recording the plugin origin; another process holds the history", {
@@ -251,6 +265,10 @@ export async function recordPluginOrigin(
 
 	try {
 		const next = withSighting(readPluginOriginHistory(historyPath), origin, now().toISOString());
+		// Checked here rather than before the merge: whoever reclaimed the lease
+		// owns the file now, so writing what we read before they did would drop
+		// their sighting - the clobber the lease exists to prevent.
+		if (compromised) return readPluginOriginHistory(historyPath);
 		await writeHistory(historyPath, next);
 		return next;
 	} finally {
