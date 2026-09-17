@@ -112,6 +112,7 @@ oc-codex-multi-auth doctor
 - Per-project accounts: `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json`.
 - Global accounts: `~/.opencode/oc-codex-multi-auth-accounts.json`.
 - Flagged accounts: `oc-codex-multi-auth-flagged-accounts.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
+- Credential snapshots: `backups/codex-credential-snapshot-*.json`, written beside the active accounts file. Holds the previous store content, captured before a significant write; retention prunes strictly by that prefix so it never deletes another backup kind.
 - Quota notification state: `oc-codex-multi-auth-quota-notifications.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
 - Request logs: `~/.opencode/logs/codex-plugin/` when logging is enabled.
 - Model catalog: 13 modern bases / 59 variants; legacy 59 explicit.

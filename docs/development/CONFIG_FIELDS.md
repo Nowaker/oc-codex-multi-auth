@@ -248,6 +248,8 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `toastDurationMs` | `5000` | `CODEX_AUTH_TOAST_DURATION_MS` | Toast visibility duration |
 | `accountToasts` | `true` | `CODEX_AUTH_ACCOUNT_TOASTS` | Gates only the informational "Using \<account\> (N/N)" selection toast; warning/error toasts are unaffected |
 | `perProjectAccounts` | `true` | `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | Project-scoped account pools |
+| `credentialSnapshots` | `true` | `CODEX_AUTH_CREDENTIAL_SNAPSHOTS` | Copy the previous account store into `backups/` before a significant change |
+| `credentialSnapshotsMaxCount` | `10` | `CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT` | Snapshots kept; `0` keeps all of them, and disabling is `credentialSnapshots`' job |
 | `sessionRecovery` | `true` | `CODEX_AUTH_SESSION_RECOVERY` | Auto-recover common API errors |
 | `autoResume` | `true` | `CODEX_AUTH_AUTO_RESUME` | Auto-resume after thinking-block recovery |
 | `autoUpdate` | `true` | `CODEX_AUTH_AUTO_UPDATE` | Daily npm update check + cache refresh |
@@ -277,6 +279,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `streamStallTimeoutMs` | at least 1000 | 1000 |
 | `quotaNotifications.intervalMs` | at least 30000 | clamped up to 30000 |
 | `retryBudgetOverrides.*` | integer, at least 0 | (file only) |
+| `credentialSnapshotsMaxCount` | integer, at least 0 | 0, no ceiling |
 
 So `parallelProbingMaxConcurrency: 9` in the file falls back to the default `2`, while `CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY=9` is accepted with no ceiling.
 

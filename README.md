@@ -421,6 +421,8 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_MASK_EMAIL=0/1` | Mask account emails across account-display surfaces (list/status/limits/health/dashboard/menus + TUI quota status) |
 | `CODEX_TUI_MASK_EMAIL_DETAILS=0/1` | Also hide account email in quota details when prompt masking is enabled |
 | `CODEX_AUTH_PER_PROJECT_ACCOUNTS=0/1` | Disable/enable per-project account pools |
+| `CODEX_AUTH_CREDENTIAL_SNAPSHOTS=0/1` | Disable/enable pre-write snapshots of the credential store (default on) |
+| `CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT=<n>` | How many credential snapshots to keep (`0` keeps all of them) |
 | `CODEX_AUTH_AUTO_UPDATE=0/1` | Disable/enable daily npm update check and cache refresh |
 | `CODEX_AUTH_ROTATION_STRATEGY=hybrid\|sticky\|round-robin` | Account selection strategy |
 | `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=strict\|fallback` | Control unsupported-model retry behavior |
@@ -455,6 +457,8 @@ Modern OpenCode versions use [config/opencode-modern.json](config/opencode-moder
 By default, account pools are stored locally as V3 JSON files. File permissions are restricted where the platform supports them.
 
 Use JSON storage when you want predictable, inspectable local files and easy backup/export behavior.
+
+Before the store is changed in a way that matters, the plugin copies the previous version of the file into `backups/` as `codex-credential-snapshot-*.json`, mode `0600` in a `0700` directory. The snapshot holds the state being replaced, not the state replacing it, which is what makes it useful if the file is ever overwritten wholesale. Token refreshes count as significant, so the newest snapshot holds refresh tokens that still work; a snapshot old enough to predate the last few refreshes restores accounts that can no longer authenticate. Rotation bookkeeping - `lastUsed`, rate-limit and cooldown state, quota stamps, and the rotation cursor - never triggers one on its own, so the kept snapshots are not churned away by ordinary traffic. The plugin keeps the 10 most recent and prunes strictly by that filename prefix, so nothing else in `backups/` is touched. Set `credentialSnapshots: false` to turn it off, or `credentialSnapshotsMaxCount` to keep a different number (`0` keeps all of them).
 
 </details>
 
