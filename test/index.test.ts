@@ -4194,6 +4194,35 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(output).toContain("solo@example.com");
 			expect(output).not.toContain("seat:");
 		});
+
+		// The member ids this backend issues are `<one distinguishing
+		// character>__<the workspace uuid>`, so four seats of one workspace
+		// differ only at index 0 across a 38-character shared tail. A tail-based
+		// seat renders all 39 of those characters, and the column is sized to
+		// what it holds, so the row balloons past 150 characters and spends 38
+		// of them repeating the workspace id that is already in the Label cell.
+		it("codex-list: keeps the seat column narrow for ids that differ only at the head", async () => {
+			await setMaskEmail(false);
+			const workspaceUuid = "05cd9f04-d56a-4256-9934-9cb827989a40";
+			mockStorage.accounts = ["9", "X", "E", "W"].map((seat, position) => ({
+				refreshToken: `r${position}`,
+				email: "shared@example.com",
+				accountId: workspaceUuid,
+				accountUserId: `${seat}__${workspaceUuid}`,
+			}));
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			const rows = identityRows(output);
+			expect(rows).toHaveLength(4);
+			expect(new Set(rows).size).toBe(4);
+			// The seat is an excerpt, not the id repeated into a second column.
+			expect(output).not.toContain(`9__${workspaceUuid}`);
+			// 119 characters with a 6-wide seat column, 152 with a 39-wide one.
+			for (const line of output.split("\n").filter((line) => /^\d+ /.test(line))) {
+				expect(line.length, line).toBeLessThan(130);
+			}
+		});
 	});
 });
 

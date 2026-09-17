@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -613,42 +614,81 @@ function accountIdSuffix(accountId, includeSensitive) {
 	return accountId.slice(-4);
 }
 
-// A member id is what tells two seats of one Business workspace apart, and a
-// fixed-length tail does not always do it: real member ids were observed
-// sharing a six-character tail, which prints two different seats as one - the
-// exact misreading the seat exists to prevent. So the length grows until every
-// seat printed in this run is distinct, mirroring `resolveSeatSuffixes` in
-// lib/account-display.ts. It starts at the length the mask above allows, so
-// masked output lengthens only when leaving it short would print a lie.
-function seatSuffixAtLength(accountUserId, includeSensitive, length) {
-	if (!accountUserId) return undefined;
-	if (!includeSensitive && accountUserId.length < MASK_MIN_LENGTH) return undefined;
+// A member id is what tells two seats of one Business workspace apart, and no
+// fixed-length tail always does it. Real member ids were observed sharing a
+// six-character tail, and the ones this backend issues are
+// `<one distinguishing character>__<the 36-char workspace uuid>` - so the
+// character that names the seat is at the head and NO tail short of the whole
+// 39-character id reaches it. Growing a tail until it separates them therefore
+// prints every seat as its own workspace id, which is the field already beside
+// it. The renderer below mirrors `resolveSeatRenderer` in
+// lib/account-display.ts: a tail, else a window anchored where the ids first
+// diverge, else a hash prefix - each capped - and the id whole only if none of
+// those separate them, which needs a 128-bit SHA-256 collision.
+const STANDALONE_SEAT_MAX_LENGTH = 12;
+const STANDALONE_SEAT_HASH_LENGTHS = [8, 12, 16, 24, 32];
+
+function seatIsDisclosable(accountUserId, includeSensitive) {
+	if (!accountUserId) return false;
+	return includeSensitive || accountUserId.length >= MASK_MIN_LENGTH;
+}
+
+function seatTail(accountUserId, length) {
 	return accountUserId.length > length ? accountUserId.slice(-length) : accountUserId;
 }
 
-function resolveStandaloneSeatLength(accountUserIds, includeSensitive) {
-	const base = includeSensitive ? 6 : 4;
-	const distinct = new Set(
-		accountUserIds.filter(
-			(accountUserId) =>
-				seatSuffixAtLength(accountUserId, includeSensitive, base) !== undefined,
-		),
-	);
-	if (distinct.size <= 1) return base;
+function seatWindow(accountUserId, start, length) {
+	if (accountUserId.length <= length) return accountUserId;
+	const begin = Math.max(0, Math.min(start, accountUserId.length - length));
+	return accountUserId.slice(begin, begin + length);
+}
 
-	let longest = base;
-	for (const accountUserId of distinct) {
-		longest = Math.max(longest, accountUserId.length);
+function seatCommonPrefixLength(values) {
+	const [first] = values;
+	if (first === undefined) return 0;
+	let shared = first.length;
+	for (const value of values) {
+		let index = 0;
+		while (index < shared && index < value.length && first[index] === value[index]) {
+			index += 1;
+		}
+		shared = index;
+		if (shared === 0) break;
 	}
-	for (let length = base; length < longest; length += 1) {
-		const rendered = new Set(
-			[...distinct].map((accountUserId) =>
-				seatSuffixAtLength(accountUserId, includeSensitive, length),
-			),
-		);
-		if (rendered.size === distinct.size) return length;
+	return shared;
+}
+
+function resolveStandaloneSeatRenderer(accountUserIds, includeSensitive) {
+	// Starts at the length the mask above allows, so masked output widens only
+	// when leaving it short would print a lie.
+	const base = includeSensitive ? 6 : 4;
+	const distinct = [];
+	const seen = new Set();
+	for (const accountUserId of accountUserIds) {
+		if (!seatIsDisclosable(accountUserId, includeSensitive)) continue;
+		if (seen.has(accountUserId)) continue;
+		seen.add(accountUserId);
+		distinct.push(accountUserId);
 	}
-	return longest;
+	const atBase = (accountUserId) => seatTail(accountUserId, base);
+	if (distinct.length <= 1) return atBase;
+
+	const separates = (render) => new Set(distinct.map(render)).size === distinct.length;
+
+	for (let length = base; length <= STANDALONE_SEAT_MAX_LENGTH; length += 1) {
+		const render = (accountUserId) => seatTail(accountUserId, length);
+		if (separates(render)) return render;
+	}
+	const start = seatCommonPrefixLength(distinct);
+	for (let length = base; length <= STANDALONE_SEAT_MAX_LENGTH; length += 1) {
+		const render = (accountUserId) => seatWindow(accountUserId, start, length);
+		if (separates(render)) return render;
+	}
+	for (const length of STANDALONE_SEAT_HASH_LENGTHS) {
+		const render = (accountUserId) => createHash("sha256").update(accountUserId).digest("hex").slice(0, length);
+		if (separates(render)) return render;
+	}
+	return (accountUserId) => accountUserId;
 }
 
 function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
@@ -659,7 +699,7 @@ function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 		.filter(({ account }) => !normalizedTag ||
 			(Array.isArray(account?.accountTags) &&
 				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)));
-	const seatLength = resolveStandaloneSeatLength(
+	const renderSeat = resolveStandaloneSeatRenderer(
 		entries.map(({ account }) =>
 			(typeof account?.accountUserId === "string" ? account.accountUserId.trim() : "") || undefined,
 		),
@@ -685,7 +725,9 @@ function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 				accountId: maskValue(accountId, includeSensitive),
 				idSuffix: accountIdSuffix(accountId, includeSensitive),
 				accountUserId: maskValue(accountUserId, includeSensitive),
-				seatSuffix: seatSuffixAtLength(accountUserId, includeSensitive, seatLength),
+				seatSuffix: seatIsDisclosable(accountUserId, includeSensitive)
+					? renderSeat(accountUserId)
+					: undefined,
 				accountIdSource: account?.accountIdSource,
 				enabled: account?.enabled !== false,
 				hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
