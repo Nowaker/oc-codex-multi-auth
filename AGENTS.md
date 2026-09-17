@@ -75,7 +75,7 @@ Package version: see `package.json` (`version` field).
 - Do not hardcode ports other than OAuth callback port `1455`; use existing constants/helpers.
 - Do not remove `store: false` or `reasoning.encrypted_content` from shipped config templates.
 - Do not treat `oc-chatgpt-multi-auth` as current except in migration/cleanup logic.
-- Do not identify a plugin entry by the spelling of its last path segment. Resolve what it points at; a path outside `node_modules` belongs to whoever wrote it and is never rewritten or removed.
+- Do not identify a plugin entry by the spelling of its last path segment. Resolve what it points at; a path outside package-manager output - `node_modules`, and the versioned directories of the OpenCode package cache - belongs to whoever wrote it and is never rewritten or removed.
 - Do not run the installer to repair a developer machine's config. It writes that machine's real OpenCode config; `update` refreshes the package cache without touching either file.
 - Do not expose account emails, access tokens, refresh tokens, or raw prompt/response bodies in normal diagnostics.
 - Do not silently delete JSON credentials when keychain operations fail.
