@@ -720,9 +720,11 @@ function resolveStandaloneSeatRenderer(accountUserIds, includeSensitive) {
 		const starts = seatAnchorWindowStarts(anchors, width);
 		const rendered =
 			starts.length * width + (starts.length - 1) * STANDALONE_SEAT_WINDOW_SEPARATOR.length;
-		// Wider windows only ever cost more, so once one set overflows the cap
-		// no later width can fit.
-		if (rendered > STANDALONE_SEAT_MAX_LENGTH) break;
+		// Skipped, not abandoned: a wider window can span two nearby anchors
+		// that needed one window each, so the cost falls as the window count
+		// does. Mirrors `resolveSeatRenderer` in lib/account-display.ts, where
+		// the measured counter-example is written out.
+		if (rendered > STANDALONE_SEAT_MAX_LENGTH) continue;
 		const render = (accountUserId) =>
 			starts
 				.map((windowStart) => accountUserId.slice(windowStart, windowStart + width))
