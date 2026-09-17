@@ -6,6 +6,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { getStoragePath, loadAccounts } from "../storage.js";
 import { formatCooldown } from "../accounts.js";
+import { resolveSeatSuffixes } from "../account-display.js";
 import { buildTableHeader, buildTableRow, type TableOptions } from "../table-formatter.js";
 import {
 	formatUiBadge,
@@ -290,15 +291,31 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 				return lines.join("\n");
 			}
 
+			// The seat gets a column of its own, sized to the widest seat actually
+			// rendered. Kept inside the label it sat behind an email and a
+			// workspace label, neither of which has a length bound, so any long
+			// one pushed it past the cell's right edge and two members of one
+			// workspace went back to rendering as the same truncated string. A
+			// column cannot be pushed out of by its neighbours, and one sized to
+			// its own contents never truncates what it holds.
+			const seatSuffixes = resolveSeatSuffixes(
+				storage.accounts.map((entry) => entry.accountUserId),
+			);
+			const seatHeader = "Seat";
+			const seatWidth = filteredEntries.reduce(
+				(widest, { index }) =>
+					Math.max(widest, seatSuffixes[index]?.length ?? 0),
+				seatHeader.length,
+			);
 			const listTableOptions: TableOptions = {
 				columns: [
 					{ header: "#", width: 3 },
-					// Wide enough for a full Business-seat identity - "Account 10
-					// (name@example.com, id:05cd9f04...989a40, seat:989a40)" is 66
-					// characters. At 42 the cell truncated mid-`id:`, so two members
-					// of one workspace rendered as the same cut-off string and the
-					// seat that tells them apart never reached the screen.
+					// Wide enough for "Account 10 (name@example.com,
+					// id:05cd9f04...989a40)" at 57 characters. Longer emails and
+					// labels still truncate here, which is why the seat is no longer
+					// one of them.
 					{ header: "Label", width: 68 },
+					{ header: seatHeader, width: seatWidth },
 					{ header: "Plan", width: 18 },
 					{ header: "Status", width: 20 },
 				],
@@ -314,6 +331,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 				const label = formatCommandAccountLabel(account, index, {
 					maskEmail,
 					peerAccounts: storage.accounts,
+					omitSeat: true,
 				});
 				const statuses: string[] = [];
 				const rateLimit = formatRateLimitEntry(account, now);
@@ -334,6 +352,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 						[
 							String(index + 1),
 							label,
+							seatSuffixes[index] ?? "-",
 							formatPlanType(account.planType) ?? "unknown",
 							statusText,
 						],
