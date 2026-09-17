@@ -25,7 +25,7 @@ import { AnyAccountStorageSchema, getValidationErrors } from "../schemas.js";
 import { renameWithWindowsRetry } from "./atomic-write.js";
 import { formatStorageErrorHint, StorageError } from "./errors.js";
 import { normalizeAccountStorage } from "./normalize.js";
-import { getConfigDir } from "./paths.js";
+import { getConfigDir, isWithinDirectory } from "./paths.js";
 import {
   getCurrentLegacyProjectStoragePath,
   getCurrentProjectRoot,
@@ -142,6 +142,10 @@ async function checkWorktreeLockForCurrentStorage(
     });
     return;
   }
+  // Before the probe, not inside the try: `acquireOrDetectLock` writes a lock
+  // sidecar next to the accounts file, so a leaked HOME would touch the real
+  // store here even on a pure read, and this function's catch would hide it.
+  assertTestRunNeverTouchesRealHome(path);
   try {
     const result = await acquireOrDetectLock(path);
     if (!result.acquired && result.foreign) {
@@ -169,6 +173,36 @@ async function checkWorktreeLockForCurrentStorage(
       error: String(error),
     });
   }
+}
+
+/**
+ * Refuse to mutate account storage inside the developer's real home while the
+ * test suite is running.
+ *
+ * `vitest.config.ts` redirects HOME to a sandbox before any module loads, but a
+ * test that restores the captured real HOME, or a future regression in that
+ * config, would otherwise write fixtures straight over live ChatGPT
+ * credentials. `os.userInfo()` reads the passwd entry instead of `$HOME`, so it
+ * still names the real home after the redirect and gives the check something
+ * the sandbox cannot spoof. Inert outside vitest.
+ */
+function assertTestRunNeverTouchesRealHome(path: string): void {
+  if (!process.env.VITEST) return;
+
+  let realHome: string;
+  try {
+    realHome = os.userInfo().homedir;
+  } catch {
+    return;
+  }
+  if (!realHome || !isWithinDirectory(realHome, path)) return;
+
+  throw new StorageError(
+    `Refusing to write account storage inside the real home directory during a test run: ${path}`,
+    "TEST_HOME_ESCAPE",
+    path,
+    "A test resolved account storage against the developer's real home. Point HOME at a temp directory for the whole vitest process (see vitest.config.ts) instead of overriding it per test.",
+  );
 }
 
 async function ensureGitignore(storagePath: string): Promise<void> {
@@ -537,6 +571,7 @@ async function loadAccountsInternal(
  * Callers must already be inside withStorageLock when using this helper directly.
  */
 async function writeAccountsToPathUnlocked(path: string, storage: AccountStorageV3): Promise<void> {
+  assertTestRunNeverTouchesRealHome(path);
   const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   const tempPath = `${path}.${uniqueSuffix}.tmp`;
 
@@ -759,6 +794,7 @@ export async function clearAccounts(): Promise<void> {
     let jsonCleared = true;
     try {
       const path = getStoragePath();
+      assertTestRunNeverTouchesRealHome(path);
       await fs.unlink(path);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
