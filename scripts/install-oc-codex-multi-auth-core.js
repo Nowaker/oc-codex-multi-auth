@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PACKAGE_NAME = "oc-codex-multi-auth";
@@ -231,19 +231,48 @@ function pluginPathSegments(entryPath) {
 	return entryPath.replaceAll("\\", "/").replace(/\/+$/, "").split("/").filter(Boolean);
 }
 
-function isPackageManagerPath(entryPath, platform = process.platform) {
+/**
+ * Compared as written, without resolving symlinks: this asks whether an entry
+ * names something `clearCache` removes, and `clearCache` removes the paths
+ * exactly as it spells them - `rm` unlinks a symlink rather than descending
+ * into it. Cache eviction resolves symlinks because it decides the opposite
+ * question, whether a recursive delete is safe.
+ */
+function isInsideDirectory(candidate, directory, platform) {
+	const fold = (value) => (platform === "win32" ? value.toLowerCase() : value);
+	const relativePath = relative(fold(resolve(directory)), fold(resolve(candidate)));
+	return relativePath !== "" && !relativePath.startsWith("..") && !isAbsolute(relativePath);
+}
+
+function isPackageManagerPath(entryPath, options = {}) {
+	const { platform = process.platform, cacheDirectory, inspectionPath } = options;
 	// Windows reaches one directory under many spellings, so `NODE_MODULES`
 	// there is the same package-manager output as `node_modules`. Elsewhere the
 	// two are different directories and must stay so.
 	const segments = pluginPathSegments(entryPath).map((segment) =>
 		platform === "win32" ? segment.toLowerCase() : segment,
 	);
-	return segments.some(
-		(segment, index) =>
-			segment === "node_modules" ||
-			// OpenCode's plugin cache spells the version into the directory name.
-			// A `packages/` directory without one is an ordinary monorepo.
-			(segments[index - 1] === "packages" && segment.includes("@")),
+	if (
+		segments.some(
+			(segment, index) =>
+				segment === "node_modules" ||
+				// OpenCode's plugin cache spells the version into the directory name.
+				// A `packages/` directory without one is an ordinary monorepo.
+				(segments[index - 1] === "packages" && segment.includes("@")),
+		)
+	) {
+		return true;
+	}
+	// The cache is where this installer puts its own copies, and `clearCache`
+	// empties it on the same run. Reading spelling alone leaves the cache's
+	// unversioned `packages/<name>` looking like somebody's monorepo, so the
+	// entry is kept while the directory under it is deleted - a config left
+	// pointing at nothing. Whose directory it is settles that; the spelling
+	// cannot.
+	return Boolean(
+		cacheDirectory &&
+			inspectionPath &&
+			isInsideDirectory(inspectionPath, cacheDirectory, platform),
 	);
 }
 
@@ -316,6 +345,7 @@ function classifyPluginEntry(entry, options = {}) {
 	const {
 		resolveDeclaredName = resolveDeclaredPackageName,
 		baseDirectory,
+		cacheDirectory,
 		platform = process.platform,
 	} = options;
 	const specifier = pluginEntrySpecifier(entry);
@@ -343,7 +373,7 @@ function classifyPluginEntry(entry, options = {}) {
 
 	if (!managedName) return { kind: UNRELATED_ENTRY, name: null };
 
-	return isPackageManagerPath(entryPath, platform)
+	return isPackageManagerPath(entryPath, { platform, cacheDirectory, inspectionPath })
 		? { kind: MANAGED_PACKAGE_ENTRY, name: managedName }
 		: { kind: LOCAL_CHECKOUT_ENTRY, name: managedName, path: inspectionPath ?? entryPath };
 }
@@ -1537,6 +1567,7 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 			const merged = { ...existing };
 			merged.plugin = normalizePluginList(existing.plugin, log, {
 				baseDirectory: paths.configDir,
+				cacheDirectory: paths.cacheDir,
 			});
 			if (!pluginOnly) {
 				const provider = (existing.provider && typeof existing.provider === "object")
@@ -1573,6 +1604,7 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 			existingTuiConfig = existing;
 			nextTuiConfig = mergeTuiConfig(existing, log, {
 				baseDirectory: paths.configDir,
+				cacheDirectory: paths.cacheDir,
 			});
 		} catch (error) {
 			if (pluginOnly) {

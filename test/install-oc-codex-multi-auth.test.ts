@@ -1250,5 +1250,75 @@ describe("install-oc-codex-multi-auth script", () => {
 			await expect(readFile(tuiConfigPath, "utf-8")).resolves.toBe(tuiText);
 			await expect(readdir(configDir)).resolves.toEqual(["opencode.json", "tui.json"]);
 		});
+
+		it("retires a cache copy this installer deletes, versioned or not", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const cacheDirectory = join(tempHome, ".cache", "opencode");
+			const packagesDirectory = join(cacheDirectory, "packages");
+			const unversioned = await createCheckout(
+				packagesDirectory,
+				"oc-codex-multi-auth",
+				"oc-codex-multi-auth",
+			);
+			const versioned = await createCheckout(
+				packagesDirectory,
+				"oc-codex-multi-auth",
+				"oc-codex-multi-auth@latest",
+			);
+
+			for (const entry of [unversioned, versioned]) {
+				expect(__test.normalizePluginList([entry], undefined, { cacheDirectory })).toEqual([
+					"oc-codex-multi-auth",
+				]);
+			}
+		});
+
+		it("keeps a monorepo checkout that merely spells its directory like the cache", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const cacheDirectory = join(tempHome, ".cache", "opencode");
+			const monorepoCheckout = await createCheckout(
+				join(tempHome, "workspace", "packages"),
+				"oc-codex-multi-auth",
+				"oc-codex-multi-auth",
+			);
+
+			expect(
+				__test.normalizePluginList([monorepoCheckout], undefined, { cacheDirectory }),
+			).toEqual([monorepoCheckout]);
+		});
+
+		it("never leaves the config pointing at the cache copy it just deleted", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const cachePackage = await createCheckout(
+				join(tempHome, ".cache", "opencode", "packages"),
+				"oc-codex-multi-auth",
+				"oc-codex-multi-auth",
+			);
+			const configDir = join(tempHome, ".config", "opencode");
+			const configPath = join(configDir, "opencode.json");
+
+			await mkdir(configDir, { recursive: true });
+			await writeFile(
+				configPath,
+				JSON.stringify({ plugin: [pathToFileURL(cachePackage).href] }, null, 2),
+				"utf-8",
+			);
+
+			await expect(
+				runInstaller([], {
+					env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+				}),
+			).resolves.toMatchObject({ action: "install", exitCode: 0 });
+
+			const saved = JSON.parse(await readFile(configPath, "utf-8")) as { plugin: string[] };
+			expect(saved.plugin).toEqual(["oc-codex-multi-auth"]);
+			await expect(readdir(cachePackage)).rejects.toMatchObject({ code: "ENOENT" });
+		});
 	});
 });
