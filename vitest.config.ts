@@ -28,6 +28,12 @@ export default defineConfig({
       USERPROFILE: isolatedHome,
       OC_CODEX_TEST_HOME: isolatedHome,
     },
+    // Four suites import the real `index.ts`, and the first one scheduled pays
+    // the transform of a 4900-line entry plus its dependency graph: measured at
+    // 3.2s-6.7s on an idle machine, against a 5s default. Whichever suite loses
+    // that race times out under full-suite CPU contention, which is flakiness in
+    // the harness rather than in any assertion (a warm re-import costs ~400ms).
+    testTimeout: 15_000,
     include: ['test/**/*.test.ts'],
     exclude: [
       'node_modules/**',
