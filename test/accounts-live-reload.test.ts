@@ -362,6 +362,35 @@ describe("accounts live reload", () => {
 		await vi.advanceTimersByTimeAsync(5000);
 		expect((await response).status).toBe(200);
 	});
+	it("keeps the loaded pool when an external change loads as empty", async () => {
+		const previous = captured.context?.cachedAccountManagerRef.current;
+		if (!previous) throw new Error("Missing manager");
+		expect(previous.getAccountCount()).toBe(1);
+		const empty = new AccountManager(undefined, { ...storage(true), accounts: [] });
+		const load = vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(empty);
+		await fs.writeFile(path, JSON.stringify(storage(false)));
+		await tick();
+		await settle();
+		expect(load).toHaveBeenCalledTimes(1);
+		expect(captured.context?.cachedAccountManagerRef.current).toBe(previous);
+		expect(captured.context?.cachedAccountManagerRef.current?.getAccountCount()).toBe(1);
+		const reloaded = nextReload();
+		await vi.advanceTimersByTimeAsync(1500);
+		await drainReads();
+		await reloaded;
+		expect(load).toHaveBeenCalledTimes(2);
+		expect(captured.context?.cachedAccountManagerRef.current?.getAccountsSnapshot()[0]?.enabled).toBe(false);
+	});
+	it("adopts an external change that genuinely removes the last account", async () => {
+		const previous = captured.context?.cachedAccountManagerRef.current;
+		const reloaded = nextReload();
+		await fs.writeFile(path, JSON.stringify({ ...storage(true), accounts: [] }));
+		await tick();
+		await settle();
+		await reloaded;
+		expect(captured.context?.cachedAccountManagerRef.current).not.toBe(previous);
+		expect(captured.context?.cachedAccountManagerRef.current?.getAccountCount()).toBe(0);
+	});
 	it("keeps externally cleared blocks cleared despite queued and late saves from the old manager", async () => {
 		const previous = captured.context?.cachedAccountManagerRef.current;
 		if (!previous) throw new Error("Missing manager");
