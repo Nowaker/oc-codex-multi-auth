@@ -218,7 +218,13 @@ describe("login-runner persistAccountPool", () => {
 			resolveFirstRename?.();
 			await Promise.all([firstPersist, secondPersist]);
 
-			expect(renameSpy).toHaveBeenCalledTimes(2);
+			// Count only the renames that publish the accounts file. The
+			// pre-write credential snapshotter swaps its own file through the
+			// same `fs.rename`, so a raw call count also counts snapshots.
+			const accountFileRenames = renameSpy.mock.calls.filter(
+				([, destinationPath]) => destinationPath === storagePath,
+			);
+			expect(accountFileRenames).toHaveLength(2);
 			const loaded = await loadAccounts();
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(
