@@ -1707,6 +1707,50 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
+		/**
+		 * `loadAccounts()` reports a read or parse failure the same way it reports
+		 * an absent file - by returning null - and a null load builds a manager
+		 * holding zero accounts. Installing that over a working pool makes this
+		 * process answer "No Codex accounts configured" while the accounts file on
+		 * disk is intact, which cross-process lock contention makes reachable.
+		 *
+		 * Emptying the pool for real always goes through an explicit action
+		 * (`codex-remove`, logout, a storage-mode switch); each installs its own
+		 * manager rather than arriving here, so refusing the shrink costs a genuine
+		 * deletion nothing.
+		 */
+		const isUntrustworthyEmptyReload = (
+			incumbent: AccountManager | null,
+			reloaded: AccountManager,
+		): boolean =>
+			incumbent !== null &&
+			incumbent !== reloaded &&
+			reloaded.getAccountCount() === 0 &&
+			incumbent.getAccountCount() > 0;
+
+		const EMPTY_RELOAD_RETRY_DELAY_MS = 2000;
+		const EMPTY_RELOAD_MAX_RETRIES = 3;
+		let emptyReloadRetries = 0;
+		let emptyReloadRetryTimer: ReturnType<typeof setTimeout> | undefined;
+		const cancelEmptyReloadRetry = (): void => {
+			clearTimeout(emptyReloadRetryTimer);
+			emptyReloadRetryTimer = undefined;
+			emptyReloadRetries = 0;
+		};
+		const scheduleEmptyReloadRetry = (retry: () => Promise<void>): void => {
+			if (emptyReloadRetries >= EMPTY_RELOAD_MAX_RETRIES) {
+				emptyReloadRetries = 0;
+				return;
+			}
+			emptyReloadRetries += 1;
+			clearTimeout(emptyReloadRetryTimer);
+			emptyReloadRetryTimer = setTimeout(() => {
+				emptyReloadRetryTimer = undefined;
+				void retry();
+			}, EMPTY_RELOAD_RETRY_DELAY_MS);
+			emptyReloadRetryTimer.unref();
+		};
+
 		const reloadCachedAccountManager = async (): Promise<void> => {
 			if (!cachedAccountManager) return;
 			const previous = cachedAccountManager;
@@ -1725,6 +1769,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 			try {
 				const reloadedManager = await AccountManager.loadFromDisk();
+				if (isUntrustworthyEmptyReload(previous, reloadedManager)) {
+					reloadedManager.disposeShutdownHandler();
+					logWarn(
+						`[${PLUGIN_NAME}] Account reload returned no accounts while ${previous.getAccountCount()} are held; keeping the loaded pool and retrying`,
+					);
+					scheduleEmptyReloadRetry(reloadCachedAccountManager);
+					return;
+				}
+				cancelEmptyReloadRetry();
 				cachedAccountManager = reloadedManager;
 				accountManagerPromise = Promise.resolve(reloadedManager);
 				// Dispose only after the replacement is installed so we never leak
@@ -1757,21 +1810,41 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			accountsWatcherDisposed = true;
 			unsubscribeAccountsPath?.();
 			stopAccountsWatcher();
+			cancelEmptyReloadRetry();
 			unregisterCleanup(disposeAccountsWatcher);
 		};
-		const readAccountsDigest = async (path: string): Promise<string | undefined> => {
+		const readAccountsFileState = async (
+			path: string,
+		): Promise<{ digest: string; accountCount: number } | undefined> => {
 			try {
 				const content = await readFile(path, "utf8");
-				if (!AnyAccountStorageSchema.safeParse(JSON.parse(content)).success) return;
-				return createHash("sha256").update(content).digest("hex");
+				const data = JSON.parse(content) as unknown;
+				if (!AnyAccountStorageSchema.safeParse(data).success) return;
+				// Counted off the raw document rather than the parsed union so the
+				// count is the same for every storage version.
+				const accounts = (data as { accounts?: unknown }).accounts;
+				return {
+					digest: createHash("sha256").update(content).digest("hex"),
+					accountCount: Array.isArray(accounts) ? accounts.length : 0,
+				};
 			} catch {
 				return;
 			}
 		};
 		const reloadForExternalAccountsChange = async (path: string, generation: number, attempt = 0, retired?: AccountManager): Promise<void> => {
-			const digest = await readAccountsDigest(path);
-			if (generation !== accountsWatchGeneration || !digest || path !== getStoragePath()) return;
+			const observed = await readAccountsFileState(path);
+			if (generation !== accountsWatchGeneration || !observed || path !== getStoragePath()) return;
+			const digest = observed.digest;
 			if (digest === consumeLastWrittenAccountsDigest(path)) return;
+			const retryLater = (): void => {
+				if (attempt < 2 && generation === accountsWatchGeneration && !accountsWatcherDisposed) {
+					accountsReloadTimer = setTimeout(() => {
+						accountsReloadTimer = undefined;
+						void reloadForExternalAccountsChange(path, generation, attempt + 1, retired);
+					}, 1500);
+					accountsReloadTimer.unref();
+				}
+			};
 			const previous = cachedAccountManager;
 			try {
 				// A null cache means an invalidation retired the incumbent; the
@@ -1792,6 +1865,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					reloaded.disposeShutdownHandler();
 					return;
 				}
+				// The file this reload observed carried accounts but the load
+				// produced none, so `loadAccounts()` failed to read it rather than
+				// the accounts having gone away - a failure it reports as an empty
+				// result, never as a throw, so the catch below cannot see it.
+				// Adopting it would answer "No Codex accounts configured" against an
+				// intact file; the retired incumbent still serves its accounts until
+				// a retry lands a real one.
+				if (observed.accountCount > 0 && reloaded.getAccountCount() === 0) {
+					reloaded.disposeShutdownHandler();
+					logWarn(
+						`[${PLUGIN_NAME}] Externally changed accounts file holds ${observed.accountCount} account(s) but loaded as empty; keeping the current pool and retrying`,
+					);
+					retryLater();
+					return;
+				}
 				const outgoing = cachedAccountManager;
 				if (outgoing && outgoing !== retired) {
 					// Another actor replaced the cached manager while this reload
@@ -1807,13 +1895,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				observedAccountsDigest = digest;
 			} catch {
 				logWarn("Could not reload externally updated account storage");
-				if (attempt < 2 && generation === accountsWatchGeneration && !accountsWatcherDisposed) {
-					accountsReloadTimer = setTimeout(() => {
-						accountsReloadTimer = undefined;
-						void reloadForExternalAccountsChange(path, generation, attempt + 1, retired);
-					}, 1500);
-					accountsReloadTimer.unref();
-				}
+				retryLater();
 				return;
 			}
 			logDebug("Reloaded cached account manager after external accounts file change");
@@ -1827,8 +1909,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			const path = watchedAccountsPath;
 			if (!path) return;
 			const generation = accountsWatchGeneration;
-			const digest = await readAccountsDigest(path);
-			if (generation !== accountsWatchGeneration || !digest || digest === observedAccountsDigest) return;
+			const observed = await readAccountsFileState(path);
+			if (generation !== accountsWatchGeneration || !observed || observed.digest === observedAccountsDigest) return;
+			const digest = observed.digest;
 			observedAccountsDigest = digest;
 			clearTimeout(accountsReloadTimer);
 			accountsReloadTimer = undefined;
@@ -1853,9 +1936,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			});
 			watchedAccountsPath = path;
 			const generation = accountsWatchGeneration;
-			const initialDigest = await readAccountsDigest(path);
+			const initial = await readAccountsFileState(path);
 			if (generation !== accountsWatchGeneration) return;
-			observedAccountsDigest = initialDigest;
+			observedAccountsDigest = initial?.digest;
 			// Stat polling follows the path across the storage writer's temp-file rename.
 			watchFile(path, { interval: 1500, persistent: false }, onAccountsStatChanged);
 			unregisterCleanup(disposeAccountsWatcher);
