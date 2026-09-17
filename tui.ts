@@ -9,6 +9,7 @@ import {
 	getQuotaStatus,
 	loadPluginConfig,
 	type QuotaStatusConfig,
+	type QuotaStatusMode,
 } from "./lib/config.js";
 import type { QuotaDisplayMode } from "./lib/quota-display.js";
 import type {
@@ -39,6 +40,7 @@ import {
 	resolveQuotaPromptTone,
 	type CompactQuotaLimit,
 	type CompactQuotaStatus,
+	type QuotaPromptTone,
 } from "./lib/tui-status.js";
 import {
 	createTuiQuotaSnapshot,
@@ -56,6 +58,13 @@ const CACHE_KEY = "oc-codex-multi-auth:tui-status:v2";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EVENT_REFRESH_DEBOUNCE_MS = 750;
 const ACCOUNT_POLL_INTERVAL_MS = 1_000;
+// The status line is the one surface that reads this configuration once and
+// then renders it for the rest of the session, so it is the only one where an
+// edit would otherwise need a restart to be seen. `loadPluginConfig` already
+// re-reads the file on every call and only skips re-parsing when the bytes are
+// unchanged, so polling it costs one read of a file measured in hundreds of
+// bytes.
+const CONFIG_POLL_INTERVAL_MS = 2_000;
 
 type StoredQuotaStatus = TuiQuotaSnapshot;
 
@@ -378,6 +387,54 @@ type PromptStatusOptions = {
 	quotaStatus: QuotaStatusConfig;
 };
 
+export function readPromptStatusOptions(): PromptStatusOptions {
+	const pluginConfig = loadPluginConfig();
+	return {
+		maskEmail: getCodexTuiMaskEmail(pluginConfig),
+		maskEmailInQuotaDetails: getCodexTuiMaskEmailInQuotaDetails(pluginConfig),
+		quotaDisplay: getQuotaDisplay(pluginConfig),
+		quotaStatus: getQuotaStatus(pluginConfig),
+	};
+}
+
+/**
+ * Whether two readings of the configuration would render the same line.
+ *
+ * Compared field by field rather than by identity: every poll builds a fresh
+ * object, so identity always differs and pushing it into a signal would
+ * re-render the status line every two seconds forever.
+ */
+export function samePromptStatusOptions(
+	left: PromptStatusOptions,
+	right: PromptStatusOptions,
+): boolean {
+	return (
+		left.maskEmail === right.maskEmail &&
+		left.maskEmailInQuotaDetails === right.maskEmailInQuotaDetails &&
+		left.quotaDisplay === right.quotaDisplay &&
+		left.quotaStatus.mode === right.quotaStatus.mode &&
+		left.quotaStatus.accounts === right.quotaStatus.accounts &&
+		left.quotaStatus.multipliers === right.quotaStatus.multipliers &&
+		left.quotaStatus.resetTimes === right.quotaStatus.resetTimes &&
+		left.quotaStatus.resetCredits === right.quotaStatus.resetCredits &&
+		left.quotaStatus.recovery === right.quotaStatus.recovery
+	);
+}
+
+/**
+ * One status line's data pipeline, separated from the node that shows it.
+ *
+ * `mode` chooses between two pipelines that poll different things, and it can
+ * change while a session is open. Keeping the data behind this interface lets
+ * the node stay put and simply read from whichever pipeline is current, rather
+ * than the slot having to replace a node the renderer already mounted.
+ */
+type QuotaStatusController = {
+	content(options: PromptStatusOptions): string;
+	tone(): QuotaPromptTone;
+	dispose(): void;
+};
+
 function toQuotaOverviewOptions(
 	options: PromptStatusOptions,
 	now: number,
@@ -398,18 +455,17 @@ function toQuotaOverviewOptions(
 }
 
 /**
- * The pool-wide status line.
+ * The pool-wide status line's data pipeline.
  *
- * Kept apart from the active-account line rather than branching inside it:
+ * Kept apart from the active-account one rather than branching inside it:
  * that one maintains a serving-account fingerprint, a snapshot revision and a
  * one-second identity poll, all of which exist to answer "which account is
  * this" - the question this mode is built to stop asking.
  */
-function createOverviewPromptStatus(
+function createOverviewQuotaController(
 	api: TuiPluginApi,
 	solid: SolidRuntime,
-	options: PromptStatusOptions,
-): JSX.Element {
+): QuotaStatusController {
 	const [state, setState] = solid.createSignal<QuotaOverviewState>({
 		type: "loading",
 	});
@@ -446,58 +502,40 @@ function createOverviewPromptStatus(
 			if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
 		}),
 	];
-	solid.onCleanup(() => {
-		clearInterval(interval);
-		if (refreshTimeout) clearTimeout(refreshTimeout);
-		for (const dispose of disposers) dispose();
-	});
-
-	const node = solid.createElement("text");
-	solid.spread(
-		node,
-		{
-			get content() {
-				const current = state();
-				if (current.type !== "ready") {
-					// Blank while the first pass runs; a placeholder swapped out a
-					// moment later is exactly the flicker this mode removes.
-					return current.type === "loading" ? "" : "limits ?";
-				}
-				return formatQuotaOverviewStatusText({
-					accounts: current.accounts,
-					options: toQuotaOverviewOptions(options, Date.now()),
-					width: api.renderer.width,
-				});
-			},
-			get fg() {
-				const current = state();
-				const tone =
-					current.type === "ready"
-						? resolveQuotaOverviewTone(current.accounts, current.stale)
-						: current.type === "loading"
-							? "unknown"
-							: "warning";
-				if (tone === "danger") return api.theme.current.error;
-				if (tone === "warning" || tone === "stale") {
-					return api.theme.current.warning;
-				}
-				if (tone === "normal") return api.theme.current.success;
-				return api.theme.current.textMuted;
-			},
-			selectable: false,
-			truncate: true,
-			wrapMode: "none",
+	return {
+		content(options) {
+			const current = state();
+			if (current.type !== "ready") {
+				// Blank while the first pass runs; a placeholder swapped out a
+				// moment later is exactly the flicker this mode removes.
+				return current.type === "loading" ? "" : "limits ?";
+			}
+			return formatQuotaOverviewStatusText({
+				accounts: current.accounts,
+				options: toQuotaOverviewOptions(options, Date.now()),
+				width: api.renderer.width,
+			});
 		},
-		false,
-	);
-	return node;
+		tone() {
+			const current = state();
+			if (current.type === "ready") {
+				return resolveQuotaOverviewTone(current.accounts, current.stale);
+			}
+			return current.type === "loading" ? "unknown" : "warning";
+		},
+		dispose() {
+			clearInterval(interval);
+			if (refreshTimeout) clearTimeout(refreshTimeout);
+			for (const dispose of disposers) dispose();
+		},
+	};
 }
 
-function createPromptStatus(
+/** The serving-account pipeline: the status line's original behaviour. */
+function createActiveQuotaController(
 	api: TuiPluginApi,
 	solid: SolidRuntime,
-	options: PromptStatusOptions,
-): JSX.Element {
+): QuotaStatusController {
 	const [quota, setQuota] = solid.createSignal<CompactQuotaStatus>({
 		type: "loading",
 	});
@@ -582,15 +620,66 @@ function createPromptStatus(
 	const disposeSessionError = api.event.on("session.error", (event) => {
 		if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
 	});
+	return {
+		content(options) {
+			return formatPromptStatusText({
+				quota: quota(),
+				width: api.renderer.width,
+				maskEmail: options.maskEmail,
+				quotaDisplay: options.quotaDisplay,
+			});
+		},
+		tone() {
+			return resolveQuotaPromptTone(quota());
+		},
+		dispose() {
+			clearInterval(interval);
+			clearInterval(accountInterval);
+			if (refreshTimeout) clearTimeout(refreshTimeout);
+			disposeMessageUpdated();
+			disposeMessagePartUpdated();
+			disposeSessionIdle();
+			disposeSessionStatus();
+			disposeSessionError();
+		},
+	};
+}
+
+/**
+ * The status-line node, which outlives any change to how it is configured.
+ *
+ * Both the shape of the line and the pipeline behind it come from a file the
+ * user edits while sessions are open, so this polls that file and swaps the
+ * pipeline underneath a node the renderer keeps mounted. The alternative -
+ * re-registering the slot - would ask the renderer to replace a live node, and
+ * a mode change is exactly when it must not blink.
+ */
+function createPromptStatus(
+	api: TuiPluginApi,
+	solid: SolidRuntime,
+	initialOptions: PromptStatusOptions,
+): JSX.Element {
+	const [options, setOptions] = solid.createSignal(initialOptions);
+	const create = (mode: QuotaStatusMode): QuotaStatusController =>
+		mode === "overview"
+			? createOverviewQuotaController(api, solid)
+			: createActiveQuotaController(api, solid);
+	let controller = create(initialOptions.quotaStatus.mode);
+	let controllerMode = initialOptions.quotaStatus.mode;
+
+	const configInterval = setInterval(() => {
+		const next = readPromptStatusOptions();
+		if (samePromptStatusOptions(options(), next)) return;
+		if (next.quotaStatus.mode !== controllerMode) {
+			controller.dispose();
+			controller = create(next.quotaStatus.mode);
+			controllerMode = next.quotaStatus.mode;
+		}
+		setOptions(next);
+	}, CONFIG_POLL_INTERVAL_MS);
 	solid.onCleanup(() => {
-		clearInterval(interval);
-		clearInterval(accountInterval);
-		if (refreshTimeout) clearTimeout(refreshTimeout);
-		disposeMessageUpdated();
-		disposeMessagePartUpdated();
-		disposeSessionIdle();
-		disposeSessionStatus();
-		disposeSessionError();
+		clearInterval(configInterval);
+		controller.dispose();
 	});
 
 	const node = solid.createElement("text");
@@ -598,16 +687,14 @@ function createPromptStatus(
 		node,
 		{
 			get content() {
-				return formatPromptStatusText({
-					quota: quota(),
-					width: api.renderer.width,
-					maskEmail: options.maskEmail,
-					quotaDisplay: options.quotaDisplay,
-				});
+				// Read through the signal first: a pipeline swap always comes with
+				// an options change, and that is what re-subscribes this to the
+				// new pipeline's state.
+				return controller.content(options());
 			},
 			get fg() {
-				const current = quota();
-				const tone = resolveQuotaPromptTone(current);
+				options();
+				const tone = controller.tone();
 				if (tone === "danger") return api.theme.current.error;
 				if (tone === "warning" || tone === "stale") {
 					return api.theme.current.warning;
@@ -624,7 +711,11 @@ function createPromptStatus(
 	return node;
 }
 
-function showQuotaDetails(api: TuiPluginApi, options: PromptStatusOptions): void {
+function showQuotaDetails(api: TuiPluginApi): void {
+	// Read at open time, not at startup: the dialog is one keystroke away from
+	// the line it explains, and the two disagreeing about `used` vs `free`
+	// after an edit would be worse than either being stale alone.
+	const options = readPromptStatusOptions();
 	void refreshQuotaStatus(api).then(
 		(status) => {
 			api.ui.dialog.replace(() =>
@@ -653,13 +744,7 @@ function showQuotaDetails(api: TuiPluginApi, options: PromptStatusOptions): void
 const module: TuiPluginModule = {
 	id: "oc-codex-multi-auth.status",
 	async tui(api) {
-		const pluginConfig = loadPluginConfig();
-		const promptOptions: PromptStatusOptions = {
-			maskEmail: getCodexTuiMaskEmail(pluginConfig),
-			maskEmailInQuotaDetails: getCodexTuiMaskEmailInQuotaDetails(pluginConfig),
-			quotaDisplay: getQuotaDisplay(pluginConfig),
-			quotaStatus: getQuotaStatus(pluginConfig),
-		};
+		const promptOptions = readPromptStatusOptions();
 		const [{ createElement, spread }, { createSignal, onCleanup }] =
 			await Promise.all([import("@opentui/solid"), import("solid-js")]);
 		const solid: SolidRuntime = {
@@ -672,9 +757,7 @@ const module: TuiPluginModule = {
 		api.slots.register({
 			slots: {
 				session_prompt_right: () =>
-					promptOptions.quotaStatus.mode === "overview"
-						? createOverviewPromptStatus(api, solid, promptOptions)
-						: createPromptStatus(api, solid, promptOptions),
+					createPromptStatus(api, solid, promptOptions),
 			},
 		});
 		const disposeCommand = api.command.register(() => [
@@ -684,7 +767,7 @@ const module: TuiPluginModule = {
 				description:
 					"Show active account usage, reset times, source, and last refresh.",
 				category: "Codex",
-				onSelect: () => showQuotaDetails(api, promptOptions),
+				onSelect: () => showQuotaDetails(api),
 			},
 		]);
 		api.lifecycle.onDispose(disposeCommand);
