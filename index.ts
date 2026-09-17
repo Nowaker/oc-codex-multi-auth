@@ -1288,15 +1288,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			options: {
 				maskEmail?: boolean;
 				peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
+				omitSeat?: boolean;
 			} = {},
 		): string => {
 			const email = resolveDisplayEmail(account?.email, options.maskEmail ?? false);
 			const workspace = account?.accountLabel?.trim();
 			const accountId = formatAccountIdForDisplay(account?.accountId);
-			const seat = formatSeatSuffix(
-				account?.accountUserId,
-				options.peerAccounts?.map((peer) => peer?.accountUserId),
-			);
+			// `omitSeat` is for a caller that renders the seat itself in a place
+			// a long email cannot push it out of - a table column of its own.
+			// Leaving it in the label too would print the seat twice.
+			const seat = options.omitSeat
+				? undefined
+				: formatSeatSuffix(
+						account?.accountUserId,
+						options.peerAccounts?.map((peer) => peer?.accountUserId),
+					);
 			const tags =
 				Array.isArray(account?.accountTags)
 					? account.accountTags

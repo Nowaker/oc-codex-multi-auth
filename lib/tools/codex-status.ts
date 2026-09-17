@@ -6,6 +6,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { loadAccounts } from "../storage.js";
 import { AccountManager, formatCooldown, formatWaitTime } from "../accounts.js";
+import { resolveSeatSuffixes } from "../account-display.js";
 import { MODEL_FAMILIES } from "../prompts/codex.js";
 import { recommendBeginnerNextAction } from "../ui/beginner.js";
 import {
@@ -305,10 +306,23 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 				return lines.join("\n");
 			}
 
+			// A column of its own, sized to what it holds, for the same reason as
+			// in `codex-list`: behind an unbounded email this 42-wide Label
+			// truncates, and a seat that does not reach the screen cannot tell
+			// two members of one workspace apart.
+			const seatSuffixes = resolveSeatSuffixes(
+				storage.accounts.map((entry) => entry.accountUserId),
+			);
+			const seatHeader = "Seat";
+			const seatWidth = seatSuffixes.reduce(
+				(widest, seat) => Math.max(widest, seat?.length ?? 0),
+				seatHeader.length,
+			);
 			const statusTableOptions: TableOptions = {
 				columns: [
 					{ header: "#", width: 3 },
 					{ header: "Label", width: 42 },
+					{ header: seatHeader, width: seatWidth },
 					{ header: "Plan", width: 18 },
 					{ header: "Active", width: 6 },
 					{ header: "Rate Limit", width: 16 },
@@ -327,6 +341,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 				const label = formatCommandAccountLabel(account, index, {
 					maskEmail,
 					peerAccounts: storage.accounts,
+					omitSeat: true,
 				});
 				const active = index === activeIndex ? "Yes" : "No";
 				const rateLimit = formatRateLimitEntry(account, now) ?? "None";
@@ -341,6 +356,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 						[
 							String(index + 1),
 							label,
+							seatSuffixes[index] ?? "-",
 							formatPlanType(account.planType) ?? "unknown",
 							active,
 							rateLimit,

@@ -3927,6 +3927,17 @@ describe("OpenAIOAuthPlugin", () => {
 			vi.mocked(configModule.getCodexTuiMaskEmail).mockReturnValue(value);
 		};
 
+		const WORKSPACE_ID = "05cd9f040000000000989a40";
+
+		// The rendered account rows, stripped of their leading number. The
+		// number alone always differs, so comparing whole rows would pass even
+		// when every identity on them is identical - which is the bug.
+		const identityRows = (output: string): string[] =>
+			output
+				.split("\n")
+				.filter((line) => /^\d+ /.test(line))
+				.map((line) => line.replace(/^\d+ +/, "").trim());
+
 		it("codex-list: distinguishes two seats sharing one workspace account id", async () => {
 			await setMaskEmail(false);
 			// Same email AND same workspace id on both rows, so the seat is the
@@ -3935,21 +3946,116 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					refreshToken: "r1",
 					email: "shared@example.com",
-					accountId: "05cd9f040000000000989a40",
+					accountId: WORKSPACE_ID,
 					accountUserId: "user_aaaaaa111111",
 				},
 				{
 					refreshToken: "r2",
 					email: "shared@example.com",
-					accountId: "05cd9f040000000000989a40",
+					accountId: WORKSPACE_ID,
 					accountUserId: "user_bbbbbb222222",
 				},
 			];
 
 			const output = (await plugin.tool["codex-list"].execute()) as string;
 
-			expect(output).toContain("seat:111111");
-			expect(output).toContain("seat:222222");
+			expect(output).toContain("111111");
+			expect(output).toContain("222222");
+			const [first, second] = identityRows(output);
+			expect(first).not.toBe(second);
+		});
+
+		// The reported case, with the reviewer's own example ids. Six characters
+		// is a tail, not an identity: `member-000001` and `other-000001` are
+		// different seats that end the same way. A fixed six-character seat
+		// renders both as `000001` and puts the display back to claiming two
+		// accounts are one - the exact false reading this suffix exists to stop.
+		it("codex-list: distinguishes member ids that share a six-character tail", async () => {
+			await setMaskEmail(false);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "member-000001",
+				},
+				{
+					refreshToken: "r2",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "other-000001",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			const [first, second] = identityRows(output);
+			expect(first).not.toBe(second);
+			// Grown past six to the shortest tail that separates them.
+			expect(output).toContain("ber-000001");
+			expect(output).toContain("her-000001");
+		});
+
+		// Email and workspace label have no length bound, so anything that
+		// shares a fixed-width cell with them can be pushed off its right edge.
+		// The seat must survive an email long enough to truncate the label.
+		it("codex-list: keeps both seats legible when a long email truncates the label", async () => {
+			await setMaskEmail(false);
+			const longEmail =
+				"extremely.long.account.display.name@very-long-corporate-subdomain.example.com";
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: longEmail,
+					accountId: WORKSPACE_ID,
+					accountUserId: "user_aaaaaa111111",
+				},
+				{
+					refreshToken: "r2",
+					email: longEmail,
+					accountId: WORKSPACE_ID,
+					accountUserId: "user_bbbbbb222222",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			// The label really is truncated here, so the assertions below are
+			// exercising the overflow case rather than a comfortable fit.
+			expect(output).toContain("…");
+			expect(output).toContain("111111");
+			expect(output).toContain("222222");
+			const [first, second] = identityRows(output);
+			expect(first).not.toBe(second);
+		});
+
+		// The seat column is sized to the seats it holds rather than to a fixed
+		// number. These two seats are the same length and differ only in their
+		// last character, so any column narrower than they are truncates both to
+		// the same string - a seat that is present but no longer distinguishing.
+		it("codex-list: sizes the seat column so it never truncates a seat", async () => {
+			await setMaskEmail(false);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "xAAAAAB",
+				},
+				{
+					refreshToken: "r2",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "yAAAAAC",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			expect(output).toContain("AAAAAB");
+			expect(output).toContain("AAAAAC");
+			const [first, second] = identityRows(output);
+			expect(first).not.toBe(second);
 		});
 
 		it("codex-list: renders no seat for an account with no member id", async () => {
@@ -3958,7 +4064,7 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					refreshToken: "r1",
 					email: "solo@example.com",
-					accountId: "05cd9f040000000000989a40",
+					accountId: WORKSPACE_ID,
 				},
 			];
 

@@ -119,6 +119,7 @@ export interface ToolContext {
 		options?: {
 			maskEmail?: boolean;
 			peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
+			omitSeat?: boolean;
 		},
 	) => string;
 	resolveMaskEmail: () => boolean;
