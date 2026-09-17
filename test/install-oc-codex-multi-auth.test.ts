@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 type OpenAiTemplate = {
 	provider: {
@@ -993,5 +994,151 @@ describe("install-oc-codex-multi-auth script", () => {
 		const firstCachePath = join(tempHome, ".cache", "opencode", "node_modules", "oc-codex-multi-auth");
 		expect(rmMock).toHaveBeenNthCalledWith(1, firstCachePath, { recursive: true, force: true });
 		expect(rmMock).toHaveBeenNthCalledWith(2, firstCachePath, { recursive: true, force: true });
+	});
+
+	describe("plugin entry registration", () => {
+		async function createCheckout(root: string, packageName: string, directoryName: string) {
+			const directory = join(root, directoryName);
+			await mkdir(directory, { recursive: true });
+			await writeFile(
+				join(directory, "package.json"),
+				JSON.stringify({ name: packageName, version: "1.0.0" }),
+				"utf-8",
+			);
+			return directory;
+		}
+
+		it("keeps a local checkout however it is spelled and does not add the published name", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const checkout = await createCheckout(tempHome, "oc-codex-multi-auth", "oc-codex-multi-auth");
+			const buildOutput = join(checkout, "dist");
+			await mkdir(buildOutput, { recursive: true });
+			const forkInDifferentlyNamedDirectory = await createCheckout(
+				tempHome,
+				"oc-codex-multi-auth",
+				"my-codex-fork",
+			);
+			const monorepoCheckout = await createCheckout(
+				join(tempHome, "workspace", "packages"),
+				"oc-codex-multi-auth",
+				"oc-codex-multi-auth",
+			);
+
+			for (const entry of [
+				checkout,
+				pathToFileURL(checkout).href,
+				buildOutput,
+				forkInDifferentlyNamedDirectory,
+				monorepoCheckout,
+			]) {
+				expect(__test.normalizePluginList(["other-plugin", entry])).toEqual([
+					"other-plugin",
+					entry,
+				]);
+			}
+		});
+
+		it("retires package-manager references while leaving a published-name entry in place", async () => {
+			vi.resetModules();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+			expect(
+				__test.normalizePluginList([
+					"oc-codex-multi-auth",
+					"other-plugin",
+					"oc-chatgpt-multi-auth@1.2.3",
+					"/absent/node_modules/oc-codex-multi-auth",
+					"file:///absent/node_modules/oc-chatgpt-multi-auth/dist",
+					"/absent/.cache/opencode/packages/oc-codex-multi-auth@latest",
+				]),
+			).toEqual(["oc-codex-multi-auth", "other-plugin"]);
+		});
+
+		it("preserves a path it cannot resolve unless the path is package-manager output", async () => {
+			vi.resetModules();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const unmountedCheckout = "/absent/projects/oc-codex-multi-auth";
+
+			expect(__test.normalizePluginList([unmountedCheckout])).toEqual([unmountedCheckout]);
+		});
+
+		it("never rewrites an entry that carries plugin options", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const checkout = await createCheckout(tempHome, "oc-codex-multi-auth", "oc-codex-multi-auth");
+			const configuredCheckout = [checkout, { debug: true }];
+			const configuredUnrelated = ["other-plugin", { debug: true }];
+
+			expect(__test.normalizePluginList([configuredCheckout])).toEqual([configuredCheckout]);
+			expect(__test.normalizePluginList([configuredUnrelated])).toEqual([
+				configuredUnrelated,
+				"oc-codex-multi-auth",
+			]);
+		});
+
+		it("registers the published name without touching an unrelated local plugin", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const unrelated = await createCheckout(tempHome, "some-other-plugin", "some-other-plugin");
+
+			expect(__test.normalizePluginList([unrelated])).toEqual([unrelated, "oc-codex-multi-auth"]);
+		});
+
+		it("leaves a config that already registers a local checkout untouched", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const checkout = await createCheckout(tempHome, "oc-codex-multi-auth", "oc-codex-multi-auth");
+			const entry = pathToFileURL(checkout).href;
+			const configDir = join(tempHome, ".config", "opencode");
+			const configPath = join(configDir, "opencode.json");
+			const tuiConfigPath = join(configDir, "tui.json");
+			const configText = `${JSON.stringify({ plugin: [entry] }, null, 2)}\n`;
+			const tuiText = `${JSON.stringify(
+				{ $schema: "https://opencode.ai/tui.json", plugin: [entry] },
+				null,
+				2,
+			)}\n`;
+
+			await mkdir(configDir, { recursive: true });
+			await writeFile(configPath, configText, "utf-8");
+			await writeFile(tuiConfigPath, tuiText, "utf-8");
+
+			await expect(
+				runInstaller(["install", "--plugin-only", "--no-cache-clear"], {
+					env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+				}),
+			).resolves.toMatchObject({ wrote: false, pluginOnly: true, exitCode: 0 });
+
+			await expect(readFile(configPath, "utf-8")).resolves.toBe(configText);
+			await expect(readFile(tuiConfigPath, "utf-8")).resolves.toBe(tuiText);
+			await expect(readdir(configDir)).resolves.toEqual(["opencode.json", "tui.json"]);
+		});
+
+		it("keeps a local checkout when a catalog mode rewrites provider.openai", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const checkout = await createCheckout(tempHome, "oc-codex-multi-auth", "oc-codex-multi-auth");
+			const entry = pathToFileURL(checkout).href;
+			const configDir = join(tempHome, ".config", "opencode");
+			const configPath = join(configDir, "opencode.json");
+
+			await mkdir(configDir, { recursive: true });
+			await writeFile(configPath, JSON.stringify({ plugin: [entry] }, null, 2), "utf-8");
+
+			await expect(
+				runInstaller(["--modern", "--no-cache-clear"], {
+					env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+				}),
+			).resolves.toMatchObject({ action: "install", configMode: "modern", exitCode: 0 });
+
+			const saved = JSON.parse(await readFile(configPath, "utf-8")) as { plugin: string[] };
+			expect(saved.plugin).toEqual([entry]);
+		});
 	});
 });
