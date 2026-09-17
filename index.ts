@@ -394,6 +394,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPreflightShown = false;
 	let beginnerSafeModeEnabled = false;
 	const MIN_BACKOFF_MS = 100;
+	// An all-accounts rate-limit wait can run for days, and the local accounts
+	// file is its only wake-up. A quota reset granted server-side leaves that file
+	// untouched, so such a wait would be slept straight through. Long waits
+	// therefore re-probe upstream: first after a minute, doubling to a quarter
+	// hour, so a multi-day sleep costs a handful of usage requests rather than one
+	// per countdown tick.
+	const UPSTREAM_REPROBE_MIN_WAIT_MS = 60_000;
+	const UPSTREAM_REPROBE_FIRST_DELAY_MS = 60_000;
+	const UPSTREAM_REPROBE_MAX_DELAY_MS = 15 * 60_000;
 
 	const runtimeMetrics: RuntimeMetrics = {
 		startedAt: Date.now(),
@@ -2461,16 +2470,35 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						totalMs: number,
 						message: string,
 						intervalMs: number = 5000,
+						probeUpstream?: () => Promise<boolean>,
 					): Promise<void> => {
 						const startTime = Date.now();
 						const endTime = startTime + totalMs;
-						
+						let probeDelayMs = UPSTREAM_REPROBE_FIRST_DELAY_MS;
+						let nextProbeAt =
+							probeUpstream && totalMs >= UPSTREAM_REPROBE_MIN_WAIT_MS
+								? startTime + probeDelayMs
+								: Number.POSITIVE_INFINITY;
+
 						while (Date.now() < endTime) {
 							if (cachedAccountManager !== accountManager) return;
 							if (abortSignal?.aborted) {
 								throw abortError();
 							}
-							
+
+							if (probeUpstream && Date.now() >= nextProbeAt) {
+								if (await probeUpstream()) return;
+								if (cachedAccountManager !== accountManager) return;
+								if (abortSignal?.aborted) {
+									throw abortError();
+								}
+								probeDelayMs = Math.min(probeDelayMs * 2, UPSTREAM_REPROBE_MAX_DELAY_MS);
+								// Measured from the end of the probe, so a slow usage
+								// request cannot schedule the next one in the past and
+								// collapse the countdown sleep below to zero.
+								nextProbeAt = Date.now() + probeDelayMs;
+							}
+
 							const remaining = Math.max(0, endTime - Date.now());
 							const waitLabel = formatWaitTime(remaining);
 							await showToast(
@@ -2478,14 +2506,40 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								"warning",
 								{ duration: Math.min(intervalMs + 1000, toastDurationMs) },
 							);
-							
-							const sleepTime = Math.min(intervalMs, remaining);
+
+							const sleepTime = Math.min(intervalMs, remaining, nextProbeAt - Date.now());
 							if (sleepTime > 0) {
 								await sleep(sleepTime);
 							} else {
 								break;
 							}
 						}
+					};
+
+					/**
+					 * True when an all-accounts wait can stop early.
+					 *
+					 * `runNow` refreshes `/wham/usage` for every account and persists
+					 * whatever it finds, so a reset that never touched local disk
+					 * becomes visible here. Persisting a recovery also drops the cached
+					 * manager, which is what makes the enclosing retry loop re-resolve
+					 * one that no longer reports a block.
+					 */
+					const probeUpstreamBlockLifted = async (): Promise<boolean> => {
+						try {
+							await quotaMonitor.runNow();
+						} catch (error) {
+							logDebug(
+								`[${PLUGIN_NAME}] Upstream quota re-probe failed: ${
+									error instanceof Error ? error.message : String(error)
+								}`,
+							);
+							return false;
+						}
+						if (cachedAccountManager !== accountManager) return true;
+						const manager = accountManager;
+						if (!manager) return false;
+						return manager.getMinWaitTimeForFamily(modelFamily, model) === 0;
 					};
 
 							let allRateLimitedRetries = 0;
@@ -3810,7 +3864,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									)
 								) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
-									await sleepWithCountdown(addJitter(waitMs, 0.2), countdownMessage);
+									await sleepWithCountdown(
+										addJitter(waitMs, 0.2),
+										countdownMessage,
+										undefined,
+										probeUpstreamBlockLifted,
+									);
 									allRateLimitedRetries++;
 									continue;
 								}

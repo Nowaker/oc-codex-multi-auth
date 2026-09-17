@@ -9,6 +9,7 @@ const captured = vi.hoisted((): {
 	context?: ToolContext;
 	listener?: () => void;
 	onWatch?: () => void;
+	onQuotaProbe?: () => Promise<void>;
 	reads: Promise<unknown>[];
 	maxRetries?: number;
 } => ({ reads: [] }));
@@ -32,7 +33,11 @@ vi.mock("../lib/tools/index.js", () => ({
 	createToolRegistry: (context: ToolContext) => { captured.context = context; return {}; },
 }));
 vi.mock("../lib/quota-notifications.js", () => ({
-	createQuotaMonitor: () => ({ start() {}, dispose() {} }),
+	createQuotaMonitor: () => ({
+		start() {},
+		dispose() {},
+		runNow: async () => { await captured.onQuotaProbe?.(); },
+	}),
 }));
 vi.mock("../lib/auto-update-checker.js", () => ({ checkAndNotify: vi.fn(async () => {}) }));
 vi.mock("../lib/config.js", async (original) => ({
@@ -91,6 +96,7 @@ describe("accounts live reload", () => {
 		await fs.writeFile(path, JSON.stringify(storage(true)));
 		captured.listener = undefined;
 		captured.onWatch = undefined;
+		captured.onQuotaProbe = undefined;
 		captured.reads.length = 0;
 		captured.maxRetries = undefined;
 		plugin = await Reflect.apply(OpenAIOAuthPlugin, undefined, [{
@@ -279,6 +285,77 @@ describe("accounts live reload", () => {
 		await waiting;
 		const reloaded = nextReload();
 		await fs.writeFile(path, JSON.stringify({ ...storage(true), activeIndexByFamily: {} }));
+		await tick();
+		await settle();
+		await reloaded;
+		await vi.advanceTimersByTimeAsync(5000);
+		expect((await response).status).toBe(200);
+	});
+	it("wakes a long wait when an upstream re-probe finds the block lifted", async () => {
+		const manager = captured.context?.cachedAccountManagerRef.current;
+		if (!manager) throw new Error("Missing manager");
+		const account = manager.getCurrentAccount();
+		if (!account) throw new Error("Missing account");
+		manager.markQuotaExhausted(account, Date.now() + 86_400_000, "gpt-5.1");
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("data: [DONE]\n\n", {
+			status: 200, headers: { "content-type": "text/event-stream" },
+		}));
+		let enteredWait: () => void = () => {};
+		const waiting = new Promise<void>((resolve) => { enteredWait = resolve; });
+		const minWait = manager.getMinWaitTimeForFamily.bind(manager);
+		vi.spyOn(manager, "getMinWaitTimeForFamily").mockImplementation((...args) => {
+			enteredWait();
+			return minWait(...args);
+		});
+		let probes = 0;
+		captured.onQuotaProbe = async () => {
+			probes += 1;
+			// What a server-side grant looks like: usage reports the quota back,
+			// the recovery is persisted, and the cached manager is dropped. The
+			// accounts file is never written by another process, so the watcher
+			// has nothing to fire on - this is the wake-up it cannot provide.
+			captured.context?.invalidateAccountManagerCache();
+		};
+		const response = request("https://api.openai.com/v1/responses", {
+			method: "POST", body: JSON.stringify({ model: "gpt-5.1", stream: true, input: [] }),
+		});
+		await waiting;
+		for (let elapsed = 0; elapsed < 120_000 && probes === 0; elapsed += 5000) {
+			await vi.advanceTimersByTimeAsync(5000);
+		}
+		expect(probes).toBe(1);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect((await response).status).toBe(200);
+	});
+	it("wakes a waiting request when a login adds an account mid-sleep", async () => {
+		const manager = captured.context?.cachedAccountManagerRef.current;
+		if (!manager) throw new Error("Missing manager");
+		const account = manager.getCurrentAccount();
+		if (!account) throw new Error("Missing account");
+		const blockedUntil = Date.now() + 86_400_000;
+		manager.markQuotaExhausted(account, blockedUntil, "gpt-5.1");
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("data: [DONE]\n\n", {
+			status: 200, headers: { "content-type": "text/event-stream" },
+		}));
+		let enteredWait: () => void = () => {};
+		const waiting = new Promise<void>((resolve) => { enteredWait = resolve; });
+		const minWait = manager.getMinWaitTimeForFamily.bind(manager);
+		vi.spyOn(manager, "getMinWaitTimeForFamily").mockImplementation((...args) => {
+			enteredWait();
+			return minWait(...args);
+		});
+		const response = request("https://api.openai.com/v1/responses", {
+			method: "POST", body: JSON.stringify({ model: "gpt-5.1", stream: true, input: [] }),
+		});
+		await waiting;
+		const reloaded = nextReload();
+		// The incumbent account stays blocked on disk, so the only thing that can
+		// end this wait is the account the login added.
+		await fs.writeFile(path, JSON.stringify({ ...storage(true), accounts: [
+			{ ...storage(true).accounts[0], quotaExhaustedUntil: blockedUntil },
+			{ accountId: "fresh-login", refreshToken: "fresh-refresh", accessToken: "fresh-access",
+				expiresAt: Date.now() + 86_400_000, enabled: true, addedAt: 2, lastUsed: 2 },
+		] }));
 		await tick();
 		await settle();
 		await reloaded;
