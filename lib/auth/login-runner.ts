@@ -938,7 +938,20 @@ export async function persistAccountPool(
 				const accountUserId = account?.accountUserId?.trim() ?? "";
 				const email = account?.email?.trim().toLowerCase() ?? "";
 				const refreshToken = account?.refreshToken?.trim() ?? "";
-				if (organizationId || accountId || accountUserId) {
+				// A member id pins one seat of one workspace, so two records
+				// carrying it are the same seat and the newer one supersedes the
+				// older. The refresh token is left out because a re-login mints a
+				// new one: keying on it meant the single case this prune exists
+				// to collapse was the one case that could never collide.
+				if (accountUserId) {
+					return `org:${organizationId}|account:${accountId}|member:${accountUserId}`;
+				}
+				// No member id, so the seat is unknown. Two records under one
+				// workspace id, like two sharing only an email, can be two
+				// different members whose seat was never recorded - so both keep
+				// the token that tells them apart rather than risk merging two
+				// live accounts into one.
+				if (organizationId || accountId) {
 					return `org:${organizationId}|account:${accountId}|member:${accountUserId}|refresh:${refreshToken}`;
 				}
 				return `email:${email}|refresh:${refreshToken}`;
