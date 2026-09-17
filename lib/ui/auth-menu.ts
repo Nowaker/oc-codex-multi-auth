@@ -3,7 +3,7 @@ import { confirm } from "./confirm.js";
 import { getUiRuntimeOptions } from "./runtime.js";
 import { select, type MenuItem } from "./select.js";
 import { paintUiText, formatUiBadge } from "./format.js";
-import { resolveDisplayEmail } from "../account-display.js";
+import { formatSeatSuffix, resolveDisplayEmail } from "../account-display.js";
 
 export type AccountStatus =
 	| "active"
@@ -18,6 +18,7 @@ export type AccountStatus =
 export interface AccountInfo {
 	index: number;
 	accountId?: string;
+	accountUserId?: string;
 	accountLabel?: string;
 	email?: string;
 	addedAt?: number;
@@ -121,6 +122,8 @@ function accountTitle(account: AccountInfo, maskEmail = false): string {
 	if (accountIdSuffix && (!label || !label.includes(accountIdSuffix))) {
 		details.push(`id:${accountIdSuffix}`);
 	}
+	const seatSuffix = formatSeatSuffix(account.accountUserId);
+	if (seatSuffix) details.push(`seat:${seatSuffix}`);
 
 	if (details.length === 0) {
 		return `${account.index + 1}. Account`;

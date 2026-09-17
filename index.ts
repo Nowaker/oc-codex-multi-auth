@@ -147,7 +147,8 @@ import {
 	matchesModelPoolAccountKey,
 	type ModelPoolAccount,
 } from "./lib/accounts/pool-identity.js";
-import { resolveDisplayEmail } from "./lib/account-display.js";
+import { formatSeatSuffix, resolveDisplayEmail } from "./lib/account-display.js";
+import { extractAccountUserId } from "./lib/auth/token-utils.js";
 import { CodexAuthError } from "./lib/errors.js";
 import {
 	getStoragePath,
@@ -1296,6 +1297,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			account: {
 				email?: string;
 				accountId?: string;
+				accountUserId?: string;
 				accountLabel?: string;
 				accountTags?: string[];
 				accountNote?: string;
@@ -1306,6 +1308,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			const email = resolveDisplayEmail(account?.email, options.maskEmail ?? false);
 			const workspace = account?.accountLabel?.trim();
 			const accountId = formatAccountIdForDisplay(account?.accountId);
+			const seat = formatSeatSuffix(account?.accountUserId);
 			const tags =
 				Array.isArray(account?.accountTags)
 					? account.accountTags
@@ -1317,6 +1320,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (email) details.push(email);
 			if (workspace) details.push(`workspace:${workspace}`);
 			if (accountId) details.push(`id:${accountId}`);
+			if (seat) details.push(`seat:${seat}`);
 			if (tags.length > 0) details.push(`tags:${tags.join(",")}`);
 
 			if (details.length === 0) {
@@ -4332,9 +4336,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 										if (deepProbe) {
 											ok += 1;
+											// Both read from the probed token, so the pair is the seat
+											// the credential actually belongs to. The workspace id
+											// alone repeats across every member of a Business
+											// workspace and cannot confirm which seat answered.
+											const tokenSeat = formatSeatSuffix(
+												extractAccountUserId(accessToken),
+											);
+											const identity = [
+												tokenAccountId ? `id:${tokenAccountId.slice(-6)}` : undefined,
+												tokenSeat ? `seat:${tokenSeat}` : undefined,
+											].filter((part): part is string => part !== undefined);
 											const detail =
-												tokenAccountId
-													? `${authDetail} (id:${tokenAccountId.slice(-6)})`
+												identity.length > 0
+													? `${authDetail} (${identity.join(", ")})`
 													: authDetail;
 											console.log(`[${i + 1}/${total}] ${label}: ${detail}`);
 											continue;
@@ -4686,6 +4701,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										}
 										return {
 											accountId: account.accountId,
+											accountUserId: account.accountUserId,
 											accountLabel: account.accountLabel,
 											email: account.email,
 											index,

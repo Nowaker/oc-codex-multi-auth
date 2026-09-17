@@ -820,6 +820,42 @@ describe("AccountManager", () => {
     expect(formatAccountLabel({ accountId: "123456" }, 0)).toBe("Account 1 (123456)");
   });
 
+  // Same index on both sides: the rendered label may only differ by seat, so
+  // the assertion cannot pass on "Account 7" vs "Account 8" alone.
+  it("renders distinct labels for two seats sharing one workspace accountId", () => {
+    const workspace = {
+      email: "shared@example.com",
+      accountId: "05cd9f040000000000989a40",
+    };
+
+    const first = formatAccountLabel(
+      { ...workspace, accountUserId: "user_aaaaaa111111" },
+      6,
+    );
+    const second = formatAccountLabel(
+      { ...workspace, accountUserId: "user_bbbbbb222222" },
+      6,
+    );
+
+    expect(first).not.toBe(second);
+    expect(first).toBe("Account 7 (shared@example.com, id:989a40, seat:111111)");
+    expect(second).toBe("Account 7 (shared@example.com, id:989a40, seat:222222)");
+  });
+
+  it("renders an account with no accountUserId exactly as before", () => {
+    expect(
+      formatAccountLabel({ email: "user@example.com", accountId: "abcdef123456" }, 0),
+    ).toBe("Account 1 (user@example.com, id:123456)");
+    expect(formatAccountLabel({ accountId: "abcdef123456" }, 2)).toBe("Account 3 (123456)");
+    expect(
+      formatAccountLabel(
+        { accountLabel: "Work", email: "work@co.com", accountId: "abcdef123456" },
+        0,
+      ),
+    ).toBe("Account 1 (Work, work@co.com, id:123456)");
+    expect(formatAccountLabel({ accountUserId: "" }, 3)).toBe("Account 4");
+  });
+
   it("performs true round-robin rotation across multiple requests", () => {
     const now = Date.now();
     const stored = {
