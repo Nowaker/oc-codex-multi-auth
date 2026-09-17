@@ -14,6 +14,8 @@ import {
 } from "../lib/auth/login-runner.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
 import { loadAccounts, setStoragePathDirect } from "../lib/storage.js";
+import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
+import * as loadSaveModule from "../lib/storage/load-save.js";
 import * as loggerModule from "../lib/logger.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
 
@@ -685,6 +687,100 @@ describe("login-runner account and quota identities", () => {
 		expect(infoSpy).not.toHaveBeenCalledWith(
 			expect.stringContaining("Same workspace id as"),
 		);
+	});
+
+	// Reads the array the runner hands to `persist`, because reading it back
+	// through the storage layer cannot see this: `saveAccounts` normalizes on
+	// write using the same org|account|member seat key, so it merges same-seat
+	// records itself and hides whether the prune did anything.
+	const prunedAccountsFor = async (
+		stored: AccountMetadataV3[],
+		result: TokenSuccessWithAccount,
+	): Promise<AccountMetadataV3[]> => {
+		let persisted: AccountStorageV3 | undefined;
+		const transaction = vi
+			.spyOn(loadSaveModule, "withAccountStorageTransaction")
+			.mockImplementation(<T>(
+				handler: (
+					current: AccountStorageV3 | null,
+					persist: (storage: AccountStorageV3) => Promise<void>,
+				) => Promise<T>,
+			): Promise<T> =>
+				handler(
+					{ version: 3, accounts: stored, activeIndex: 0, activeIndexByFamily: {} },
+					async (storage) => {
+						persisted = storage;
+					},
+				));
+		try {
+			await persistAccountPool([result], false);
+		} finally {
+			transaction.mockRestore();
+		}
+		return persisted?.accounts ?? [];
+	};
+
+	/** A login for a seat none of the seeded records hold, so only the prune acts on them. */
+	const unrelatedSeatLogin = (): TokenSuccessWithAccount => ({
+		type: "success",
+		access: businessAccessTokenFor("workspace-z", "member-z", "z@example.com"),
+		refresh: "refresh-z",
+		expires: Date.now() + 60_000,
+	});
+
+	it("merges two records of one seat that carry different refresh tokens", async () => {
+		const accounts = await prunedAccountsFor(
+			[
+				{
+					accountId: "workspace-a",
+					accountUserId: "member-a",
+					email: "a@example.com",
+					refreshToken: "refresh-stale",
+					addedAt: 1_000,
+					lastUsed: 1_000,
+				},
+				{
+					accountId: "workspace-a",
+					accountUserId: "member-a",
+					email: "a@example.com",
+					refreshToken: "refresh-current",
+					addedAt: 2_000,
+					lastUsed: 2_000,
+				},
+			],
+			unrelatedSeatLogin(),
+		);
+
+		const seat = accounts.filter((account) => account.accountUserId === "member-a");
+		expect(seat).toHaveLength(1);
+		expect(seat[0]?.refreshToken).toBe("refresh-current");
+		expect(accounts).toHaveLength(2);
+	});
+
+	it("keeps two email-only records with different refresh tokens apart", async () => {
+		const accounts = await prunedAccountsFor(
+			[
+				{
+					email: "shared@example.com",
+					refreshToken: "refresh-1",
+					addedAt: 1_000,
+					lastUsed: 1_000,
+				},
+				{
+					email: "shared@example.com",
+					refreshToken: "refresh-2",
+					addedAt: 2_000,
+					lastUsed: 2_000,
+				},
+			],
+			unrelatedSeatLogin(),
+		);
+
+		expect(accounts.map((account) => account.refreshToken)).toEqual([
+			"refresh-1",
+			"refresh-2",
+			"refresh-z",
+		]);
 	});
 
 	/** An access token that names one ChatGPT account, the unit the backend meters. */
