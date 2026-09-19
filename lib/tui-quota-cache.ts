@@ -365,6 +365,10 @@ export type TuiQuotaOverviewAccount = {
 	fingerprint: string;
 	/** 1-based, matching how `codex-list` and `codex-switch` number accounts. */
 	index: number;
+	/** ChatGPT email, for the surfaces that name an account rather than number it. */
+	email?: string;
+	/** `codex-label` label when one is set, else whatever identity storage has. */
+	label?: string;
 	planType?: string;
 	/** Banked rate-limit resets redeemable now. */
 	resetCredits?: number;
@@ -396,6 +400,8 @@ function isTuiQuotaOverviewAccount(
 		value.fingerprint.trim().length > 0 &&
 		typeof value.index === "number" &&
 		Number.isFinite(value.index) &&
+		(value.email === undefined || typeof value.email === "string") &&
+		(value.label === undefined || typeof value.label === "string") &&
 		(value.planType === undefined || typeof value.planType === "string") &&
 		isOptionalFiniteNumber(value.resetCredits) &&
 		Array.isArray(value.limits) &&

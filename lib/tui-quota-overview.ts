@@ -68,6 +68,8 @@ export function toOverviewAccount(params: {
 	fingerprint: string;
 	index: number;
 	usage: CodexUsageSummary;
+	email?: string;
+	label?: string;
 }): TuiQuotaOverviewAccount {
 	const limits = [
 		{ window: params.usage.primary, label: "5h" },
@@ -79,6 +81,11 @@ export function toOverviewAccount(params: {
 	return {
 		fingerprint: params.fingerprint,
 		index: params.index,
+		email: params.email?.trim() || undefined,
+		// Only a label the user set, never the accountId/organizationId
+		// fallbacks other surfaces use: those identify an account without
+		// naming it, and a 36-character UUID on a status line names nothing.
+		label: params.label?.trim() || undefined,
 		planType: params.usage.planType ?? undefined,
 		// `applicableNow` is the count that can be redeemed against a window
 		// that is actually spent, which is the only one worth showing beside a
@@ -115,6 +122,8 @@ async function fetchOverviewAccount(
 			fingerprint: createUsageAccountFingerprint(account),
 			index: index + 1,
 			usage,
+			email: account.email,
+			label: account.accountLabel,
 		});
 	} catch (error) {
 		logDebug(
@@ -195,6 +204,7 @@ export function mergeOverviewWithLatestAccount(
 		return {
 			...account,
 			planType: latest.planType ?? account.planType,
+			email: account.email ?? (latest.accountEmail?.trim() || undefined),
 			limits: latest.limits,
 		};
 	});
@@ -206,6 +216,8 @@ export function toQuotaOverviewAccounts(
 ): QuotaOverviewAccount[] {
 	return snapshot.accounts.map((account) => ({
 		index: account.index,
+		email: account.email,
+		label: account.label,
 		planType: account.planType,
 		resetCredits: account.resetCredits,
 		windows: account.limits.map((limit) => ({

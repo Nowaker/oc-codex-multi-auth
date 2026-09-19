@@ -23,12 +23,13 @@
  * every decision here - which window governs an account, which account is
  * closest to recovering, whether a reset time is worth the characters - stays
  * keyed on the percentage remaining.
+ *
+ * Everything below is pure string work over already-gathered readings, so the
+ * whole rendering can be exercised without a network, a clock or a terminal.
  */
 
-import {
-	formatPlanMultiplier,
-	getPlanWeight,
-} from "./plan-allotment.js";
+import { maskEmailForDisplay } from "./account-display.js";
+import { formatPlanMultiplier, getPlanWeight } from "./plan-allotment.js";
 import {
 	formatQuotaPercent,
 	toQuotaDisplayPercent,
@@ -40,13 +41,16 @@ const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
 
 /**
- * Only an account at or below this headroom gets its reset time printed.
+ * Under `resetTimes: "low"`, only an account at or below this headroom gets
+ * its reset time printed.
  *
  * Every account has a reset, and printing all of them triples the length of
  * the line to say "this account you are not waiting on recovers at some point
  * too". The threshold matches the one the single-account status line already
  * uses to decide the same question, so an account near exhaustion reads the
- * same way in either mode.
+ * same way in either mode. `resetTimes: "always"` opts out of the threshold,
+ * because 90% spent with an hour to go and 90% spent with six days to go are
+ * not the same situation.
  */
 export const OVERVIEW_RESET_LEFT_PERCENT = 25;
 
@@ -62,6 +66,15 @@ export type QuotaOverviewWindow = {
 export type QuotaOverviewAccount = {
 	/** 1-based position, as `codex-list` and `codex-switch` number accounts. */
 	index: number;
+	/**
+	 * The account's own name for itself: a `codex-label` label when one is
+	 * set, otherwise whatever identity the account storage carries. May be an
+	 * email address, which is why every rendering of it goes through
+	 * {@link resolveAccountName} rather than printing it directly.
+	 */
+	label?: string;
+	/** ChatGPT email, used by the reset-credit line and as a label fallback. */
+	email?: string;
 	/** `plan_type` as reported by `/wham/usage`, used for the weighting only. */
 	planType?: string;
 	windows: readonly QuotaOverviewWindow[];
@@ -69,18 +82,59 @@ export type QuotaOverviewAccount = {
 	resetCredits?: number;
 };
 
+/** How the accounts are arranged on the line. */
+export type QuotaOverviewLayout =
+	/** One segment per account: `#1 13%, #2 100% 3d`. */
+	| "accounts"
+	/** Accounts sharing a percentage collapse: `100% 3d 4d 5d`. */
+	| "aggregate"
+	/** No accounts at all, just how many there are: `3 accounts`. */
+	| "count";
+
+/** What identifies an account on the line. */
+export type QuotaOverviewNames =
+	/** `#1`, the number `codex-switch` takes. */
+	| "number"
+	/** The account's label, or its email's local part: `damian`, `work`. */
+	| "label"
+	/** Nothing; the accounts are told apart by position alone. */
+	| "none";
+
+/** The order accounts appear in. */
+export type QuotaOverviewOrder =
+	| "number"
+	/** Least headroom first - the accounts rotation is about to stop using. */
+	| "most-used"
+	/** Most headroom first - the accounts with work left in them. */
+	| "least-used"
+	/** Soonest reset first. Accounts with no known reset sort last. */
+	| "renewing-earliest"
+	/** Latest reset first, which is redemption order for a banked reset. */
+	| "renewing-latest";
+
+/** Which accounts get a reset countdown printed beside them. */
+export type QuotaOverviewResetTimes =
+	| "never"
+	/** Only accounts at or below {@link OVERVIEW_RESET_LEFT_PERCENT}. */
+	| "low"
+	| "always";
+
 export type QuotaOverviewOptions = {
 	mode: QuotaDisplayMode;
-	/** Per-account breakdown, versus a bare `3 accounts`. */
-	accounts: boolean;
+	layout: QuotaOverviewLayout;
+	names: QuotaOverviewNames;
+	order: QuotaOverviewOrder;
 	/** `5x` / `20x` allotment badges beside each account. */
 	multipliers: boolean;
-	/** `3d` beside an account close to exhaustion. */
-	resetTimes: boolean;
+	/** `66% of 65x`: what the pool the percentage is taken over adds up to. */
+	allotment: boolean;
+	resetTimes: QuotaOverviewResetTimes;
 	/** `1r` for redeemable banked resets. */
 	resetCredits: boolean;
 	/** `+12% in 3d`: how far the pool total moves at the next reset. */
 	recovery: boolean;
+	/** Masks any email this line would otherwise print in full. */
+	maskEmail?: boolean;
 	now?: number;
 };
 
@@ -171,6 +225,28 @@ export function computeWeightedLeftPercent(
 }
 
 /**
+ * What the pool the percentage is taken over adds up to, in 1x seats.
+ *
+ * Deliberately the same sum {@link computeWeightedLeftPercent} divides by, and
+ * over the same accounts, so `66% of 65x` is one statement rather than two
+ * that can disagree. An account whose plan states no ratio therefore
+ * contributes its fallback weight here exactly as it does to the mean.
+ */
+export function computePoolAllotment(
+	accounts: readonly QuotaOverviewAccount[],
+): number | undefined {
+	let total = 0;
+	for (const account of accounts) {
+		const governing = resolveGoverningWindow(account);
+		if (!governing || !isPercent(governing.leftPercent)) continue;
+		const weight = getPlanWeight(account.planType);
+		if (!Number.isFinite(weight) || weight <= 0) continue;
+		total += weight;
+	}
+	return total > 0 ? total : undefined;
+}
+
+/**
  * The next moment the pool gets capacity back, and how much.
  *
  * Only the window that actually resets is refilled, and the account's
@@ -212,61 +288,349 @@ export function resolveQuotaOverviewRecovery(
 	return { deltaPercent, atMs: earliest };
 }
 
-type AccountSegmentOptions = Pick<
-	QuotaOverviewOptions,
-	"mode" | "multipliers" | "resetTimes" | "resetCredits"
-> & { now: number };
-
-function formatAccountSegment(
-	account: QuotaOverviewAccount,
-	options: AccountSegmentOptions,
-): string | undefined {
-	const governing = resolveGoverningWindow(account);
-	if (!governing || !isPercent(governing.leftPercent)) return undefined;
-	const parts = [`#${account.index}`];
-	if (options.multipliers) {
-		const multiplier = formatPlanMultiplier(account.planType);
-		if (multiplier) parts.push(multiplier);
+/**
+ * Whether nothing in the pool has capacity left.
+ *
+ * This is the condition the reset-credit line exists for: while any account
+ * can still serve a request, which one recovers when is a detail, and once
+ * none can it is the only question left. Accounts whose quota could not be
+ * read do not count either way - an unknown reading is not evidence of
+ * exhaustion, but it is not capacity either, so a pool of nothing but
+ * unreadable accounts is reported as not spent rather than as dead.
+ */
+export function isPoolFullySpent(
+	accounts: readonly QuotaOverviewAccount[],
+): boolean {
+	let readable = 0;
+	for (const account of accounts) {
+		const governing = resolveGoverningWindow(account);
+		if (!governing || !isPercent(governing.leftPercent)) continue;
+		readable += 1;
+		if (governing.leftPercent > 0) return false;
 	}
-	parts.push(formatQuotaPercent(governing.leftPercent, options.mode));
+	return readable > 0;
+}
+
+/**
+ * Sort key for the reset-time orders.
+ *
+ * An account with no known reset sorts after every account that has one, in
+ * both directions. Not knowing when something returns is a different statement
+ * from knowing it returns soon, and a different statement from knowing it
+ * returns last.
+ */
+function governingResetAtMs(
+	account: QuotaOverviewAccount,
+): number | undefined {
+	const governing = resolveGoverningWindow(account);
+	return governing && isPercent(governing.resetAtMs)
+		? governing.resetAtMs
+		: undefined;
+}
+
+function governingLeftPercent(
+	account: QuotaOverviewAccount,
+): number | undefined {
+	const governing = resolveGoverningWindow(account);
+	return governing && isPercent(governing.leftPercent)
+		? governing.leftPercent
+		: undefined;
+}
+
+/**
+ * Arrange the accounts for display.
+ *
+ * Every comparison falls back to the account number, so two accounts reading
+ * the same percentage never trade places between renders. An order that let
+ * them would reintroduce exactly the movement this mode exists to remove.
+ */
+export function orderOverviewAccounts(
+	accounts: readonly QuotaOverviewAccount[],
+	order: QuotaOverviewOrder,
+): QuotaOverviewAccount[] {
+	const sorted = [...accounts];
+	if (order === "most-used" || order === "least-used") {
+		const direction = order === "most-used" ? 1 : -1;
+		return sorted.sort((left, right) => {
+			const leftPercent = governingLeftPercent(left);
+			const rightPercent = governingLeftPercent(right);
+			if (leftPercent === undefined && rightPercent === undefined) {
+				return left.index - right.index;
+			}
+			if (leftPercent === undefined) return 1;
+			if (rightPercent === undefined) return -1;
+			if (leftPercent !== rightPercent) {
+				return direction * (leftPercent - rightPercent);
+			}
+			return left.index - right.index;
+		});
+	}
+	if (order === "renewing-earliest" || order === "renewing-latest") {
+		const direction = order === "renewing-earliest" ? 1 : -1;
+		return sorted.sort((left, right) => {
+			const leftReset = governingResetAtMs(left);
+			const rightReset = governingResetAtMs(right);
+			if (leftReset === undefined && rightReset === undefined) {
+				return left.index - right.index;
+			}
+			if (leftReset === undefined) return 1;
+			if (rightReset === undefined) return -1;
+			if (leftReset !== rightReset) return direction * (leftReset - rightReset);
+			return left.index - right.index;
+		});
+	}
+	// `number` and anything unrecognized: an order nobody asked for must not
+	// silently become one of the sorted ones, which would move accounts around
+	// under a reader who configured nothing.
+	return sorted.sort((left, right) => left.index - right.index);
+}
+
+const EMAIL_LIKE = /^[^\s@]+@[^\s@]+$/;
+
+/**
+ * The local part of an email, which is what a person calls the account.
+ *
+ * `damian@nowaker.net` -> `damian`. Masking is applied to the local part
+ * rather than to the whole address, because the domain is what
+ * {@link maskEmailForDisplay} keeps and there is no room for it here.
+ */
+function formatEmailLocalPart(
+	email: string,
+	maskEmail: boolean,
+): string | undefined {
+	const trimmed = email.trim();
+	if (!trimmed) return undefined;
+	const local = trimmed.split("@")[0]?.trim();
+	if (!local) return undefined;
+	if (!maskEmail) return local;
+	return `${Array.from(local).slice(0, 2).join("")}***`;
+}
+
+/**
+ * What this account is called on the line.
+ *
+ * Under `label` a user-set label wins, because it is the one name the user
+ * chose; an account that only knows its email falls back to that email's local
+ * part, and an account with neither falls back to its number rather than
+ * rendering nothing - a nameless segment in a named line reads as a missing
+ * account.
+ */
+export function resolveAccountName(
+	account: QuotaOverviewAccount,
+	names: QuotaOverviewNames,
+	maskEmail = false,
+): string | undefined {
+	if (names === "none") return undefined;
+	if (names === "number") return `#${account.index}`;
+	const label = account.label?.trim();
+	if (label && !EMAIL_LIKE.test(label)) return label;
+	const email = label && EMAIL_LIKE.test(label) ? label : account.email;
+	const local = email ? formatEmailLocalPart(email, maskEmail) : undefined;
+	return local ?? `#${account.index}`;
+}
+
+/** The full email for the reset-credit line, masked when asked. */
+function resolveAccountEmail(
+	account: QuotaOverviewAccount,
+	maskEmail: boolean,
+): string | undefined {
+	const label = account.label?.trim();
+	const email =
+		account.email?.trim() || (label && EMAIL_LIKE.test(label) ? label : undefined);
+	if (!email) return undefined;
+	return maskEmail ? maskEmailForDisplay(email) : email;
+}
+
+function resolveResetCredits(account: QuotaOverviewAccount): number {
+	const credits = account.resetCredits;
+	return typeof credits === "number" && Number.isFinite(credits) && credits > 0
+		? Math.trunc(credits)
+		: 0;
+}
+
+/** How much of an account's segment is annotation rather than percentage. */
+type AnnotationRung = {
+	names: QuotaOverviewNames;
+	multipliers: boolean;
+	resetTimes: QuotaOverviewResetTimes;
+	resetCredits: boolean;
+};
+
+type SegmentOptions = AnnotationRung & {
+	mode: QuotaDisplayMode;
+	maskEmail: boolean;
+	now: number;
+};
+
+function shouldPrintReset(
+	leftPercent: number,
+	resetTimes: QuotaOverviewResetTimes,
+): boolean {
+	if (resetTimes === "never") return false;
+	if (resetTimes === "always") return true;
+	return leftPercent <= OVERVIEW_RESET_LEFT_PERCENT;
+}
+
+/** The part of a segment that is not the account's name or its percentage. */
+function formatAccountAnnotations(
+	account: QuotaOverviewAccount,
+	governing: QuotaOverviewWindow,
+	options: SegmentOptions,
+): string[] {
+	const parts: string[] = [];
+	const leftPercent = governing.leftPercent;
 	if (
-		options.resetTimes &&
-		governing.leftPercent <= OVERVIEW_RESET_LEFT_PERCENT &&
+		isPercent(leftPercent) &&
+		shouldPrintReset(leftPercent, options.resetTimes) &&
 		isPercent(governing.resetAtMs)
 	) {
 		const reset = formatCompactDuration(governing.resetAtMs - options.now);
 		if (reset) parts.push(reset);
 	}
-	if (
-		options.resetCredits &&
-		typeof account.resetCredits === "number" &&
-		Number.isFinite(account.resetCredits) &&
-		account.resetCredits > 0
-	) {
-		parts.push(`${Math.trunc(account.resetCredits)}r`);
+	if (options.resetCredits) {
+		const credits = resolveResetCredits(account);
+		if (credits > 0) parts.push(`${credits}r`);
 	}
+	return parts;
+}
+
+function formatAccountSegment(
+	account: QuotaOverviewAccount,
+	options: SegmentOptions,
+): string | undefined {
+	const governing = resolveGoverningWindow(account);
+	if (!governing || !isPercent(governing.leftPercent)) return undefined;
+	const parts: string[] = [];
+	const name = resolveAccountName(account, options.names, options.maskEmail);
+	if (name) parts.push(name);
+	if (options.multipliers) {
+		const multiplier = formatPlanMultiplier(account.planType);
+		if (multiplier) parts.push(multiplier);
+	}
+	parts.push(formatQuotaPercent(governing.leftPercent, options.mode));
+	parts.push(...formatAccountAnnotations(account, governing, options));
 	return parts.join(" ");
 }
 
 /**
- * `+12% in 3d` / `-12% in 3d`.
+ * Accounts reading the same percentage, collapsed into one segment.
+ *
+ * On a pool where several accounts are fully spent, `100% 3d, 100% 4d,
+ * 100% 5d` spends two thirds of its characters repeating a number that is the
+ * same every time. Grouping prints it once and keeps what differs:
+ *
+ * ```text
+ * 100% 3d 1r 4d 5d
+ * ```
+ *
+ * The group's size is stated explicitly - `100% x3 3d` - only when the
+ * annotations do not already reveal it, so a group of three accounts where one
+ * has no reset time to print cannot read as a group of two. A group of one is
+ * never counted, because there is nothing to count.
+ *
+ * Grouping discards identity by construction, so `names` has no effect here.
+ */
+function formatAggregateSegments(
+	accounts: readonly QuotaOverviewAccount[],
+	options: SegmentOptions,
+): string[] {
+	const groups = new Map<
+		string,
+		{ percent: string; size: number; annotations: string[] }
+	>();
+	for (const account of accounts) {
+		const governing = resolveGoverningWindow(account);
+		if (!governing || !isPercent(governing.leftPercent)) continue;
+		const percent = formatQuotaPercent(governing.leftPercent, options.mode);
+		const group = groups.get(percent) ?? {
+			percent,
+			size: 0,
+			annotations: [],
+		};
+		group.size += 1;
+		const annotations = formatAccountAnnotations(account, governing, options);
+		if (annotations.length > 0) group.annotations.push(annotations.join(" "));
+		groups.set(percent, group);
+	}
+	return [...groups.values()].map((group) => {
+		const parts = [group.percent];
+		if (group.size > 1 && group.annotations.length < group.size) {
+			parts.push(`x${group.size}`);
+		}
+		parts.push(...group.annotations);
+		return parts.join(" ");
+	});
+}
+
+/**
+ * `+12% in 3d` / `-12% 3d`.
  *
  * The sign describes the direction the number beside it moves, not the
  * direction of the user's fortunes: under `used` the pool total falls as
  * capacity returns, and a `+` there would contradict the figure it annotates.
+ * The word `in` is the first thing dropped when the line is short, because it
+ * is the only part of the clause a reader can supply themselves.
  */
 function formatRecovery(
 	recovery: QuotaOverviewRecovery,
-	options: { mode: QuotaDisplayMode; now: number },
+	options: { mode: QuotaDisplayMode; now: number; words: boolean },
 ): string | undefined {
 	const at = formatCompactDuration(recovery.atMs - options.now);
 	if (!at) return undefined;
 	const sign = options.mode === "used" ? "-" : "+";
-	return `${sign}${recovery.deltaPercent}% in ${at}`;
+	return `${sign}${recovery.deltaPercent}% ${options.words ? "in " : ""}${at}`;
 }
 
-function formatAccountCount(count: number): string {
+/** `3 accounts` -> `3 acct.` -> `3`, in the order they are given up. */
+export type QuotaOverviewCountStyle = "long" | "short" | "bare";
+
+function formatAccountCount(
+	count: number,
+	style: QuotaOverviewCountStyle,
+): string {
+	if (style === "bare") return `${count}`;
+	if (style === "short") return `${count} acct.`;
 	return `${count} account${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * Every annotation level to try, most informative first.
+ *
+ * One dimension is given up per rung and never restored within the ladder, so
+ * each rung is strictly shorter than the one above it. The order is by what a
+ * reader loses: the plan badge says nothing the account's own numbers do not,
+ * a long label can be replaced by the number that selects the same account,
+ * banked resets only matter once something is spent, and a reset countdown on
+ * a healthy account is the detail `resetTimes: "always"` opted into.
+ *
+ * Dropping the account's name entirely is the last rung, and it is offered
+ * only when position still identifies an account: under a sorted order, or
+ * with any account missing from the line, `39%, 8%, 91%` names nothing at all
+ * and a reader would attach those figures to the wrong seats.
+ */
+function annotationRungs(
+	options: QuotaOverviewOptions,
+	positionsAreComplete: boolean,
+): AnnotationRung[] {
+	const rungs: AnnotationRung[] = [];
+	let current: AnnotationRung = {
+		names: options.names,
+		multipliers: options.multipliers,
+		resetTimes: options.resetTimes,
+		resetCredits: options.resetCredits,
+	};
+	rungs.push(current);
+	const step = (next: Partial<AnnotationRung>): void => {
+		current = { ...current, ...next };
+		rungs.push(current);
+	};
+	if (current.multipliers) step({ multipliers: false });
+	if (current.names === "label") step({ names: "number" });
+	if (current.resetCredits) step({ resetCredits: false });
+	if (current.resetTimes === "always") step({ resetTimes: "low" });
+	if (current.resetTimes !== "never") step({ resetTimes: "never" });
+	if (current.names !== "none" && positionsAreComplete) step({ names: "none" });
+	return rungs;
 }
 
 /**
@@ -292,63 +656,86 @@ export function formatQuotaOverviewCandidates(
 	options: QuotaOverviewOptions,
 ): string[] {
 	const now = options.now ?? Date.now();
+	const maskEmail = options.maskEmail ?? false;
 	const total = computeWeightedLeftPercent(accounts);
 	if (total === undefined) return [];
 	const totalText = formatQuotaPercent(total, options.mode);
 
-	const usable = accounts.filter((account) => resolveGoverningWindow(account));
+	const ordered = orderOverviewAccounts(accounts, options.order);
+	const usable = ordered.filter((account) => resolveGoverningWindow(account));
 	const recovery = options.recovery
 		? resolveQuotaOverviewRecovery(accounts, now)
 		: undefined;
-	const recoveryText = recovery
-		? formatRecovery(recovery, { mode: options.mode, now })
-		: undefined;
-
-	const breakdowns: string[] = [];
-	if (options.accounts) {
-		// Each rung drops one annotation, so a narrow terminal loses the badge
-		// rather than the account it was attached to.
-		const rungs: Array<Pick<QuotaOverviewOptions, "multipliers" | "resetTimes" | "resetCredits">> = [
-			{
-				multipliers: options.multipliers,
-				resetTimes: options.resetTimes,
-				resetCredits: options.resetCredits,
-			},
-			{
-				multipliers: false,
-				resetTimes: options.resetTimes,
-				resetCredits: options.resetCredits,
-			},
-			{ multipliers: false, resetTimes: options.resetTimes, resetCredits: false },
-			{ multipliers: false, resetTimes: false, resetCredits: false },
-		];
-		for (const rung of rungs) {
-			const segments = usable
-				.map((account) =>
-					formatAccountSegment(account, { ...rung, mode: options.mode, now }),
+	const recoveryForms = recovery
+		? [true, false]
+				.map((words) =>
+					formatRecovery(recovery, { mode: options.mode, now, words }),
 				)
-				.filter((segment): segment is string => Boolean(segment));
+				.filter((form): form is string => Boolean(form))
+		: [];
+
+	const bodies: string[] = [];
+	if (options.layout !== "count") {
+		// Position identifies an account only when the accounts are in number
+		// order and none of them is missing from the line.
+		const positionsAreComplete =
+			options.order === "number" && usable.length === accounts.length;
+		for (const rung of annotationRungs(options, positionsAreComplete)) {
+			const segmentOptions: SegmentOptions = {
+				...rung,
+				mode: options.mode,
+				maskEmail,
+				now,
+			};
+			const segments =
+				options.layout === "aggregate"
+					? formatAggregateSegments(usable, segmentOptions)
+					: usable
+							.map((account) => formatAccountSegment(account, segmentOptions))
+							.filter((segment): segment is string => Boolean(segment));
 			if (segments.length === 0) continue;
 			const text = segments.join(", ");
-			if (!breakdowns.includes(text)) breakdowns.push(text);
+			if (!bodies.includes(text)) bodies.push(text);
 		}
 	}
 
-	const countText = formatAccountCount(usable.length);
+	// `66% of 65x` before `66%`: the allotment is a small, near-static
+	// annotation, so it is given up early - but not before any account detail,
+	// which is what the line is read for.
+	const heads: string[] = [];
+	if (options.allotment) {
+		const allotment = computePoolAllotment(accounts);
+		if (allotment !== undefined) heads.push(`${totalText} of ${allotment}x`);
+	}
+	if (!heads.includes(totalText)) heads.push(totalText);
+
 	const candidates: string[] = [];
-	const push = (...tail: Array<string | undefined>): void => {
+	const push = (head: string, ...tail: Array<string | undefined>): void => {
 		const body = tail.filter((part): part is string => Boolean(part));
-		const text = body.length > 0 ? `${totalText}: ${body.join(", ")}` : totalText;
+		const text = body.length > 0 ? `${head}: ${body.join(", ")}` : head;
 		if (!candidates.includes(text)) candidates.push(text);
 	};
 
-	for (const breakdown of breakdowns) {
-		push(breakdown, recoveryText);
-		push(breakdown);
+	for (const body of bodies) {
+		for (const head of heads) {
+			for (const form of recoveryForms) push(head, body, form);
+			push(head, body);
+		}
 	}
-	push(countText, recoveryText);
-	push(countText);
-	push();
+	for (const head of heads) {
+		// The count word is grammar, the recovery clause is information, so the
+		// word goes first.
+		if (recoveryForms.length > 0) {
+			for (const form of recoveryForms) push(head, formatAccountCount(usable.length, "long"), form);
+			const shortest = recoveryForms[recoveryForms.length - 1];
+			push(head, formatAccountCount(usable.length, "short"), shortest);
+			push(head, formatAccountCount(usable.length, "bare"), shortest);
+		}
+		push(head, formatAccountCount(usable.length, "long"));
+		push(head, formatAccountCount(usable.length, "short"));
+		push(head, formatAccountCount(usable.length, "bare"));
+	}
+	for (const head of heads) push(head);
 	return candidates;
 }
 
@@ -358,6 +745,95 @@ export function formatQuotaOverviewText(
 	options: QuotaOverviewOptions,
 ): string {
 	return formatQuotaOverviewCandidates(accounts, options)[0] ?? "";
+}
+
+/**
+ * Every rendering of the banked reset credits, longest first.
+ *
+ * ```text
+ * Free resets: 6d 1r damian@nowaker.net, 4d 2r work@example.com
+ * ```
+ *
+ * Sorted by the LATEST reset first, which is redemption order rather than
+ * reading order: redeeming a credit on an account that renews by itself
+ * tomorrow throws the credit away, while the account six days out is the one
+ * worth spending it on.
+ *
+ * Returns nothing at all unless the pool is spent and something is redeemable.
+ * A reset credit is only an answer to "everything is used up"; offered while
+ * accounts still have headroom it is an invitation to waste it.
+ */
+export function formatQuotaResetsCandidates(
+	accounts: readonly QuotaOverviewAccount[],
+	options: Pick<QuotaOverviewOptions, "maskEmail"> & { now?: number },
+): string[] {
+	if (!isPoolFullySpent(accounts)) return [];
+	const now = options.now ?? Date.now();
+	const maskEmail = options.maskEmail ?? false;
+	const redeemable = orderOverviewAccounts(accounts, "renewing-latest").filter(
+		(account) => resolveResetCredits(account) > 0,
+	);
+	if (redeemable.length === 0) return [];
+
+	const durations = redeemable.map((account) => {
+		const resetAtMs = governingResetAtMs(account);
+		return resetAtMs === undefined
+			? undefined
+			: formatCompactDuration(resetAtMs - now);
+	});
+	const credits = redeemable.map((account) => resolveResetCredits(account));
+	const everyAccountHasOneCredit = credits.every((count) => count === 1);
+
+	const emailIdentity = redeemable.map((account) =>
+		resolveAccountEmail(account, maskEmail),
+	);
+	const identities: Array<Array<string | undefined>> = [
+		emailIdentity,
+		redeemable.map((account) => resolveAccountName(account, "label", maskEmail)),
+		redeemable.map((account) => resolveAccountName(account, "number", maskEmail)),
+	];
+
+	const candidates: string[] = [];
+	const add = (text: string): void => {
+		if (!candidates.includes(text)) candidates.push(text);
+	};
+	const push = (
+		prefix: string,
+		identity: Array<string | undefined>,
+		withDuration: boolean,
+		withCredits: boolean,
+	): void => {
+		const segments = redeemable.map((_account, position) => {
+			const parts: string[] = [];
+			const duration = durations[position];
+			if (withDuration && duration) parts.push(duration);
+			if (withCredits) parts.push(`${credits[position]}r`);
+			const name = identity[position];
+			if (name) parts.push(name);
+			return parts.join(" ");
+		});
+		// A form that would render one account as an empty segment is not a
+		// shorter rendering of this line, it is a different and wrong one.
+		if (segments.some((segment) => segment.length === 0)) return;
+		add(`${prefix} ${segments.join(", ")}`);
+	};
+
+	// The word `Free` is given up before any account detail is, and the
+	// identity then shortens from the full address a person recognizes down to
+	// the number `codex-reset` takes.
+	push("Free resets:", emailIdentity, true, true);
+	for (const identity of identities) push("Resets:", identity, true, true);
+	// Only once every identity form has been tried does the line start giving
+	// up facts: the countdown is the reason one account is a better redemption
+	// than another, and the credit count stops being news when every account
+	// holds exactly one.
+	for (const identity of identities) {
+		if (everyAccountHasOneCredit) push("Resets:", identity, true, false);
+		push("Resets:", identity, false, true);
+		push("Resets:", identity, false, false);
+	}
+	add(`Resets: ${redeemable.length}`);
+	return candidates;
 }
 
 /**

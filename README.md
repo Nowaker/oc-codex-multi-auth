@@ -367,41 +367,83 @@ constant line instead, which only changes when a quota does:
 {
   "quotaStatus": {
     "mode": "overview",
-    "accounts": true,
+    "layout": "accounts",
+    "accountNames": "number",
+    "order": "number",
     "multipliers": false,
-    "resetTimes": true,
+    "allotment": false,
+    "resetTimes": "low",
     "resetCredits": false,
-    "recovery": false
+    "recovery": false,
+    "rows": 1,
+    "showFor": "always"
   }
 }
 ```
 
 ```text
-24%: #1 13%, #2 0% 3d, #3 12%              # defaults
-24%: 3 accounts                            # "accounts": false
-24%: #1 5x 13%, #2 20x 0% 3d, #3 1x 12%    # "multipliers": true
-24%: #1 5x 13%, #2 20x 0% 3d 1r, #3 1x 12% # + "resetCredits": true
-24%: 3 accounts, +12% in 3d                # "accounts": false, "recovery": true
+24%: #1 13%, #2 0% 3d, #3 12%               # defaults
+24%: 3 accounts                             # "layout": "count"
+24%: #1 5x 13%, #2 20x 0% 3d, #3 1x 12%     # "multipliers": true
+24%: #1 5x 13%, #2 20x 0% 3d 1r, #3 1x 12%  # + "resetCredits": true
+24%: 3 accounts, +12% in 3d                 # "layout": "count", "recovery": true
+24% of 26x: #1 13%, #2 0% 3d, #3 12%        # "allotment": true
+24%: #1 13% 2d, #2 0% 3d, #3 12% 5d         # "resetTimes": "always"
+24%: 13%, 0% 3d, 12%                        # "accountNames": "none"
+24%: damian 13%, work 0% 3d, spare 12%      # "accountNames": "label"
+24%: #2 0% 3d, #1 13%, #3 12%               # "order": "most-used"
+24%: 13% 2d, 0% 3d 4d 5d                    # "layout": "aggregate"
 ```
 
 Each switch is independent, so any combination works. `#N` is the account
 number `codex-list` and `codex-switch` use. An account is shown by whichever
 of its windows has the least headroom, since that is the one that stops a
-request; a reset time (`3d`) is added only for an account at or below 25%, and
-`1r` counts banked rate-limit resets that account can redeem now.
+request; a reset time (`3d`) is added for an account at or below 25% by
+default, for every account under `"resetTimes": "always"`, and for none under
+`"never"`. `1r` counts banked rate-limit resets that account can redeem now.
+
+`order` takes `number`, `most-used`, `least-used`, `renewing-earliest`, or
+`renewing-latest`. `layout: "aggregate"` prints a shared percentage once and
+keeps only what differs after it, which matters most on a pool where several
+accounts are spent.
 
 The leading figure is the pool total, and it is a **weighted** mean: a Pro seat
 spent to 50% has given up twenty times the capacity a Business Standard seat
 does at 50%, so an unweighted average would describe a pool nobody has. The
-per-plan ratios are listed in [docs/plan-allotments.md](docs/plan-allotments.md).
+per-plan ratios are listed in [docs/plan-allotments.md](docs/plan-allotments.md),
+and `"allotment": true` shows what they add up to.
+
+`mode` also accepts a list, and the line then alternates between those screens
+every `rotateMs` (default 5000). The third screen, `resets`, appears only once
+every account is spent and lists the banked reset credits worth redeeming,
+latest reset first - redeeming one on an account that renews by itself tomorrow
+throws it away:
+
+```json
+{
+  "quotaStatus": { "mode": ["overview", "resets"] }
+}
+```
+
+```text
+Free resets: 6d 1r damian@nowaker.net, 4d 2r work@example.com
+```
+
+`"rows"` (1-4, default 1) is a ceiling rather than a height: a rendering that
+fits on one row still takes one, so `"rows": 2` costs nothing on a wide terminal
+and buys the whole line back on a narrow one, where the agent/model label beside
+it has already wrapped to two rows anyway. `"showFor": "codex-models"` hides the
+line unless the session is running a model this plugin routes.
 
 Percentages follow `quotaDisplay`, so the first line above reads
 `76%: #1 87%, #2 100% 3d, #3 88%` under `"used"`. The whole setting is
 presentation only: rotation, quota blocks and the line's warning/danger
 colouring stay keyed on the headroom remaining.
 
-Add the object to `~/.opencode/openai-codex-auth-config.json`, or set
-`CODEX_AUTH_QUOTA_STATUS=overview`, then quit and restart OpenCode.
+Add the object to `~/.opencode/openai-codex-auth-config.json`. It is read from
+that file only - a display preference belongs to a person, not to a shell - and
+the status line re-reads it while sessions are open, so an edit takes effect
+within a couple of seconds without a restart.
 
 ### Desktop quota notifications
 
@@ -531,12 +573,6 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_MASK_EMAIL=0/1` | Mask account emails across account-display surfaces (list/status/limits/health/dashboard/menus + TUI quota status) |
 | `CODEX_TUI_MASK_EMAIL_DETAILS=0/1` | Also hide account email in quota details when prompt masking is enabled |
 | `CODEX_AUTH_QUOTA_DISPLAY=free\|used` | Word quota percentages as headroom left (default, matching Codex) or as consumption |
-| `CODEX_AUTH_QUOTA_STATUS=active\|overview` | Prompt status line describes the serving account (default) or the whole pool |
-| `CODEX_AUTH_QUOTA_STATUS_ACCOUNTS=0` | Drop the per-account breakdown from the pool line, leaving `24%: 3 accounts` |
-| `CODEX_AUTH_QUOTA_STATUS_MULTIPLIERS=1` | Add `5x` / `20x` plan allotment badges to the pool line |
-| `CODEX_AUTH_QUOTA_STATUS_RESET_TIMES=0` | Drop `3d` reset times from the pool line |
-| `CODEX_AUTH_QUOTA_STATUS_RESET_CREDITS=1` | Add `1r` banked reset counts to the pool line |
-| `CODEX_AUTH_QUOTA_STATUS_RECOVERY=1` | Add `+12% in 3d` to the pool line |
 | `CODEX_AUTH_CLIPBOARD=0` | Stop login from copying the authorization URL to the clipboard |
 | `CODEX_AUTH_PER_PROJECT_ACCOUNTS=0/1` | Disable/enable per-project account pools |
 | `CODEX_AUTH_CREDENTIAL_SNAPSHOTS=0/1` | Disable/enable pre-write snapshots of the credential store (default on) |

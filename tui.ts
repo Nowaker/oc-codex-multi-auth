@@ -8,9 +8,11 @@ import {
 	getQuotaDisplay,
 	getQuotaStatus,
 	loadPluginConfig,
+	type QuotaStatusAudience,
 	type QuotaStatusConfig,
-	type QuotaStatusMode,
+	type QuotaStatusScreen,
 } from "./lib/config.js";
+import { PROVIDER_ID } from "./lib/constants.js";
 import type { QuotaDisplayMode } from "./lib/quota-display.js";
 import type {
 	QuotaOverviewAccount,
@@ -35,7 +37,8 @@ import {
 import {
 	formatPromptStatusText,
 	formatQuotaDetailsText,
-	formatQuotaOverviewStatusText,
+	formatQuotaOverviewStatusLines,
+	formatQuotaResetsStatusLines,
 	resolveQuotaOverviewTone,
 	resolveQuotaPromptTone,
 	type CompactQuotaLimit,
@@ -65,6 +68,10 @@ const ACCOUNT_POLL_INTERVAL_MS = 1_000;
 // unchanged, so polling it costs one read of a file measured in hundreds of
 // bytes.
 const CONFIG_POLL_INTERVAL_MS = 2_000;
+// Re-reading three numbers off the laid-out node, which is cheap enough to do
+// often and has to be: the first pass happens before any layout exists, and
+// until it is picked up the line is budgeting against the whole terminal.
+const LAYOUT_MEASURE_INTERVAL_MS = 500;
 
 type StoredQuotaStatus = TuiQuotaSnapshot;
 
@@ -408,30 +415,144 @@ export function samePromptStatusOptions(
 	left: PromptStatusOptions,
 	right: PromptStatusOptions,
 ): boolean {
+	const leftStatus = left.quotaStatus;
+	const rightStatus = right.quotaStatus;
 	return (
 		left.maskEmail === right.maskEmail &&
 		left.maskEmailInQuotaDetails === right.maskEmailInQuotaDetails &&
 		left.quotaDisplay === right.quotaDisplay &&
-		left.quotaStatus.mode === right.quotaStatus.mode &&
-		left.quotaStatus.accounts === right.quotaStatus.accounts &&
-		left.quotaStatus.multipliers === right.quotaStatus.multipliers &&
-		left.quotaStatus.resetTimes === right.quotaStatus.resetTimes &&
-		left.quotaStatus.resetCredits === right.quotaStatus.resetCredits &&
-		left.quotaStatus.recovery === right.quotaStatus.recovery
+		leftStatus.screens.length === rightStatus.screens.length &&
+		leftStatus.screens.every(
+			(screen, position) => screen === rightStatus.screens[position],
+		) &&
+		leftStatus.rotateMs === rightStatus.rotateMs &&
+		leftStatus.layout === rightStatus.layout &&
+		leftStatus.accountNames === rightStatus.accountNames &&
+		leftStatus.order === rightStatus.order &&
+		leftStatus.multipliers === rightStatus.multipliers &&
+		leftStatus.allotment === rightStatus.allotment &&
+		leftStatus.resetTimes === rightStatus.resetTimes &&
+		leftStatus.resetCredits === rightStatus.resetCredits &&
+		leftStatus.recovery === rightStatus.recovery &&
+		leftStatus.rows === rightStatus.rows &&
+		leftStatus.showFor === rightStatus.showFor
 	);
+}
+
+/**
+ * What the renderer actually gave this slot, once it has laid the prompt out.
+ *
+ * The terminal's own width is the wrong budget for a line sharing its row with
+ * a sidebar, and wrong by an amount nothing in this plugin can derive - so the
+ * row is measured instead of computed.
+ */
+type StatusSlotMetrics = {
+	/** Columns this line may spend, or nothing when the prompt is unreadable. */
+	availableChars?: number;
+};
+
+type LayoutNode = {
+	width?: unknown;
+	primaryAxis?: unknown;
+	parent?: unknown;
+	getChildren?: unknown;
+};
+
+/**
+ * Columns on the prompt's bottom row that belong to the model label beside
+ * this line, plus the gap between them.
+ *
+ * A constant rather than the label's measured width, and that is the whole
+ * point. The row lays both boxes out by their content, so a label with no room
+ * left is SHRUNK to whatever this line did not take - measuring it would make
+ * the budget a function of the line's own length, and every render would
+ * ratchet it further down. The row's width is the one number on that row that
+ * this line cannot influence.
+ *
+ * 40 is measured against the real TUI: "Build - Big Pickle OpenCode Zen" is 31
+ * characters, and at 80 columns a 48-character line was ellipsized through its
+ * middle AND pushed the label onto a second row.
+ */
+const PROMPT_LABEL_RESERVED_CHARS = 40;
+const MAX_LAYOUT_WALK_DEPTH = 8;
+
+function asLayoutNode(value: unknown): LayoutNode | undefined {
+	return typeof value === "object" && value !== null ? value : undefined;
+}
+
+function layoutSize(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0
+		? value
+		: undefined;
+}
+
+function layoutChildren(node: LayoutNode): LayoutNode[] {
+	if (typeof node.getChildren !== "function") return [];
+	try {
+		const children: unknown = node.getChildren();
+		if (!Array.isArray(children)) return [];
+		return children
+			.map((child) => asLayoutNode(child))
+			.filter((child): child is LayoutNode => Boolean(child));
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Measure the row this line sits on, by walking up to it.
+ *
+ * The walk looks for the nearest ancestor laid out as a row with something else
+ * in it - the prompt's bottom row, where the model label is the something else.
+ * That row stretches to the prompt's inner width, which is the number the
+ * terminal width fails to be whenever a sidebar is open, and the only number on
+ * that row this line does not influence.
+ *
+ * Every hop is guarded and the whole thing returns nothing rather than a guess:
+ * before the first layout pass there are no widths to read, and a host that
+ * rearranges its prompt must degrade to the width heuristic rather than compute
+ * a budget from numbers that no longer mean what they did.
+ */
+export function measureStatusSlot(node: unknown): StatusSlotMetrics {
+	const chain: LayoutNode[] = [];
+	let current = asLayoutNode(node);
+	for (let depth = 0; current && depth < MAX_LAYOUT_WALK_DEPTH; depth += 1) {
+		chain.push(current);
+		current = asLayoutNode(current.parent);
+	}
+	for (const [position, ancestor] of chain.entries()) {
+		if (position === 0) continue;
+		if (ancestor.primaryAxis !== "row") continue;
+		const rowWidth = layoutSize(ancestor.width);
+		if (!rowWidth) continue;
+		const children = layoutChildren(ancestor);
+		if (children.length < 2) continue;
+		const mine = chain[position - 1];
+		if (!mine || !children.includes(mine)) continue;
+		const availableChars = rowWidth - PROMPT_LABEL_RESERVED_CHARS;
+		if (availableChars < 1) continue;
+		return { availableChars };
+	}
+	return {};
 }
 
 /**
  * One status line's data pipeline, separated from the node that shows it.
  *
- * `mode` chooses between two pipelines that poll different things, and it can
- * change while a session is open. Keeping the data behind this interface lets
- * the node stay put and simply read from whichever pipeline is current, rather
- * than the slot having to replace a node the renderer already mounted.
+ * The screens read different things - one polls the pool, one tracks whichever
+ * account is serving - and which screens are wanted can change while a session
+ * is open. Keeping the data behind this interface lets the node stay put and
+ * read from whichever pipelines are current, rather than the slot having to
+ * replace a node the renderer already mounted.
  */
 type QuotaStatusController = {
-	content(options: PromptStatusOptions): string;
-	tone(): QuotaPromptTone;
+	screens: readonly QuotaStatusScreen[];
+	lines(
+		screen: QuotaStatusScreen,
+		options: PromptStatusOptions,
+		layout: { availableChars?: number; maxRows: number },
+	): string[];
+	tone(screen: QuotaStatusScreen): QuotaPromptTone;
 	dispose(): void;
 };
 
@@ -439,17 +560,21 @@ function toQuotaOverviewOptions(
 	options: PromptStatusOptions,
 	now: number,
 ): QuotaOverviewOptions {
-	// Spelled out rather than spread: `QuotaStatusConfig.mode` selects the
-	// status line's shape while `QuotaOverviewOptions.mode` is the free/used
-	// wording, and spreading one over the other silently renders every
-	// percentage as headroom.
+	// Spelled out rather than spread: `QuotaStatusConfig` calls the free/used
+	// wording `quotaDisplay` and its own screen list `screens`, while
+	// `QuotaOverviewOptions.mode` IS the wording - spreading one over the other
+	// silently renders every percentage as headroom.
 	return {
 		mode: options.quotaDisplay,
-		accounts: options.quotaStatus.accounts,
+		layout: options.quotaStatus.layout,
+		names: options.quotaStatus.accountNames,
+		order: options.quotaStatus.order,
 		multipliers: options.quotaStatus.multipliers,
+		allotment: options.quotaStatus.allotment,
 		resetTimes: options.quotaStatus.resetTimes,
 		resetCredits: options.quotaStatus.resetCredits,
 		recovery: options.quotaStatus.recovery,
+		maskEmail: options.maskEmail,
 		now,
 	};
 }
@@ -503,22 +628,39 @@ function createOverviewQuotaController(
 		}),
 	];
 	return {
-		content(options) {
+		screens: ["overview", "resets"],
+		lines(screen, options, layout) {
 			const current = state();
 			if (current.type !== "ready") {
 				// Blank while the first pass runs; a placeholder swapped out a
-				// moment later is exactly the flicker this mode removes.
-				return current.type === "loading" ? "" : "limits ?";
+				// moment later is exactly the flicker this mode removes. The
+				// reset screen stays blank either way - it has nothing to add
+				// to a pool nobody has read yet.
+				if (screen === "resets") return [];
+				return current.type === "loading" ? [] : ["limits ?"];
 			}
-			return formatQuotaOverviewStatusText({
+			const render =
+				screen === "resets"
+					? formatQuotaResetsStatusLines
+					: formatQuotaOverviewStatusLines;
+			return render({
 				accounts: current.accounts,
 				options: toQuotaOverviewOptions(options, Date.now()),
 				width: api.renderer.width,
+				availableChars: layout.availableChars,
+				maxRows: layout.maxRows,
 			});
 		},
-		tone() {
+		tone(screen) {
 			const current = state();
 			if (current.type === "ready") {
+				// The reset screen only appears once nothing has headroom left,
+				// so the pool tone it would otherwise carry is always danger and
+				// says nothing. Warning is the honest colour for "here is the
+				// thing you can still do about it".
+				if (screen === "resets") {
+					return current.stale ? "stale" : "warning";
+				}
 				return resolveQuotaOverviewTone(current.accounts, current.stale);
 			}
 			return current.type === "loading" ? "unknown" : "warning";
@@ -621,13 +763,15 @@ function createActiveQuotaController(
 		if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
 	});
 	return {
-		content(options) {
-			return formatPromptStatusText({
+		screens: ["active"],
+		lines(_screen, options) {
+			const text = formatPromptStatusText({
 				quota: quota(),
 				width: api.renderer.width,
 				maskEmail: options.maskEmail,
 				quotaDisplay: options.quotaDisplay,
 			});
+			return text ? [text] : [];
 		},
 		tone() {
 			return resolveQuotaPromptTone(quota());
@@ -654,47 +798,203 @@ function createActiveQuotaController(
  * re-registering the slot - would ask the renderer to replace a live node, and
  * a mode change is exactly when it must not blink.
  */
+/**
+ * The pipelines a set of screens needs, and which screen each one answers.
+ *
+ * `resets` is served by the pool pipeline rather than one of its own: it needs
+ * every account's windows and banked credits, which is exactly what that
+ * pipeline already gathers, and a second poller reading the same endpoint for
+ * the same numbers would double the request cost to say the same thing.
+ */
+function createQuotaControllers(
+	api: TuiPluginApi,
+	solid: SolidRuntime,
+	screens: readonly QuotaStatusScreen[],
+): QuotaStatusController[] {
+	const controllers: QuotaStatusController[] = [];
+	if (screens.includes("active")) {
+		controllers.push(createActiveQuotaController(api, solid));
+	}
+	if (screens.includes("overview") || screens.includes("resets")) {
+		controllers.push(createOverviewQuotaController(api, solid));
+	}
+	return controllers;
+}
+
+/**
+ * Whether the account pool is worth naming for the model in front of the user.
+ *
+ * Unknown counts as yes. A line the user asked for should not disappear
+ * because a fresh session has no message to read a provider off yet, and being
+ * told about a pool one model does not draw from is a smaller wrong than being
+ * told nothing while it runs out.
+ */
+export function showsQuotaForSession(params: {
+	audience: QuotaStatusAudience;
+	providerID: string | undefined;
+}): boolean {
+	if (params.audience === "always") return true;
+	return !params.providerID || params.providerID === PROVIDER_ID;
+}
+
+function getString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0
+		? value.trim()
+		: undefined;
+}
+
+/**
+ * The provider actually serving this session, newest statement first.
+ *
+ * A message records what ran, which is the only reliable answer once a session
+ * has moved off the configured default; the configured model is the fallback
+ * for a session that has not run anything yet.
+ */
+function resolveSessionProviderId(
+	api: TuiPluginApi,
+	sessionID: string | undefined,
+): string | undefined {
+	if (sessionID) {
+		try {
+			const messages = api.state.session.messages(sessionID);
+			for (let position = messages.length - 1; position >= 0; position -= 1) {
+				const message = messages[position];
+				if (message?.role !== "assistant") continue;
+				const providerID = getString(message.providerID);
+				if (providerID) return providerID;
+			}
+		} catch {
+			// The session may not be in the store yet; fall through to config.
+		}
+	}
+	const configured = getString(api.state.config.model);
+	if (!configured) return undefined;
+	const slashIndex = configured.indexOf("/");
+	return slashIndex > 0 ? configured.slice(0, slashIndex) : undefined;
+}
+
+/**
+ * The status-line node, which outlives any change to how it is configured.
+ *
+ * Both the shape of the line and the pipelines behind it come from a file the
+ * user edits while sessions are open, so this polls that file and swaps the
+ * pipelines underneath a node the renderer keeps mounted. The alternative -
+ * re-registering the slot - would ask the renderer to replace a live node, and
+ * a screen change is exactly when it must not blink.
+ */
 function createPromptStatus(
 	api: TuiPluginApi,
 	solid: SolidRuntime,
 	initialOptions: PromptStatusOptions,
+	sessionID: string | undefined,
 ): JSX.Element {
 	const [options, setOptions] = solid.createSignal(initialOptions);
-	const create = (mode: QuotaStatusMode): QuotaStatusController =>
-		mode === "overview"
-			? createOverviewQuotaController(api, solid)
-			: createActiveQuotaController(api, solid);
-	let controller = create(initialOptions.quotaStatus.mode);
-	let controllerMode = initialOptions.quotaStatus.mode;
+	const [metrics, setMetrics] = solid.createSignal<StatusSlotMetrics>({});
+	const [rotation, setRotation] = solid.createSignal(0);
+	let controllers = createQuotaControllers(
+		api,
+		solid,
+		initialOptions.quotaStatus.screens,
+	);
+	let controllerScreens = initialOptions.quotaStatus.screens;
+	let rotationInterval: ReturnType<typeof setInterval> | undefined;
+
+	const node = solid.createElement("text");
+
+	const restartRotation = (screens: readonly QuotaStatusScreen[]): void => {
+		if (rotationInterval) clearInterval(rotationInterval);
+		rotationInterval = undefined;
+		if (screens.length < 2) return;
+		rotationInterval = setInterval(() => {
+			setRotation((tick) => tick + 1);
+		}, options().quotaStatus.rotateMs);
+	};
+	restartRotation(controllerScreens);
+
+	const remeasure = (): void => {
+		const next = measureStatusSlot(node);
+		if (next.availableChars === metrics().availableChars) return;
+		setMetrics(next);
+	};
+	const measureInterval = setInterval(remeasure, LAYOUT_MEASURE_INTERVAL_MS);
 
 	const configInterval = setInterval(() => {
 		const next = readPromptStatusOptions();
 		if (samePromptStatusOptions(options(), next)) return;
-		if (next.quotaStatus.mode !== controllerMode) {
-			controller.dispose();
-			controller = create(next.quotaStatus.mode);
-			controllerMode = next.quotaStatus.mode;
+		const nextScreens = next.quotaStatus.screens;
+		const screensChanged =
+			nextScreens.length !== controllerScreens.length ||
+			nextScreens.some((screen, position) => screen !== controllerScreens[position]);
+		// The swap happens BEFORE the signal that re-renders against it. The
+		// other order leaves the line blank until something else happens to
+		// change: the render triggered by `setOptions` would read the outgoing
+		// pipelines, find none of them serving the incoming screens, subscribe
+		// to nothing, and never hear the new pipeline resolve.
+		if (screensChanged) {
+			for (const controller of controllers) controller.dispose();
+			controllers = createQuotaControllers(api, solid, nextScreens);
+			controllerScreens = nextScreens;
+			setRotation(0);
 		}
 		setOptions(next);
+		restartRotation(nextScreens);
 	}, CONFIG_POLL_INTERVAL_MS);
+
 	solid.onCleanup(() => {
 		clearInterval(configInterval);
-		controller.dispose();
+		clearInterval(measureInterval);
+		if (rotationInterval) clearInterval(rotationInterval);
+		for (const controller of controllers) controller.dispose();
 	});
 
-	const node = solid.createElement("text");
+	/**
+	 * The screen on show right now, picked from the ones that have something to
+	 * say. A screen with nothing to render is skipped rather than shown blank,
+	 * which is what lets `resets` sit in the rotation permanently and only
+	 * appear on the day it matters.
+	 */
+	const current = (): { screen: QuotaStatusScreen; lines: string[] } | undefined => {
+		const currentOptions = options();
+		if (
+			!showsQuotaForSession({
+				audience: currentOptions.quotaStatus.showFor,
+				providerID: resolveSessionProviderId(api, sessionID),
+			})
+		) {
+			return undefined;
+		}
+		const layout = {
+			availableChars: metrics().availableChars,
+			maxRows: currentOptions.quotaStatus.rows,
+		};
+		const rendered: Array<{ screen: QuotaStatusScreen; lines: string[] }> = [];
+		for (const screen of currentOptions.quotaStatus.screens) {
+			const controller = controllers.find((candidate) =>
+				candidate.screens.includes(screen),
+			);
+			if (!controller) continue;
+			const lines = controller.lines(screen, currentOptions, layout);
+			if (lines.length > 0) rendered.push({ screen, lines });
+		}
+		if (rendered.length === 0) return undefined;
+		return rendered[Math.abs(rotation()) % rendered.length];
+	};
+
 	solid.spread(
 		node,
 		{
 			get content() {
-				// Read through the signal first: a pipeline swap always comes with
-				// an options change, and that is what re-subscribes this to the
-				// new pipeline's state.
-				return controller.content(options());
+				// A newline is how one text node becomes two rows: the renderer
+				// measures the content it was given, so the node grows to match
+				// instead of the slot having to add and remove child nodes.
+				return current()?.lines.join("\n") ?? "";
 			},
 			get fg() {
-				options();
-				const tone = controller.tone();
+				const screen = current()?.screen;
+				const controller = screen
+					? controllers.find((candidate) => candidate.screens.includes(screen))
+					: undefined;
+				const tone = screen && controller ? controller.tone(screen) : "unknown";
 				if (tone === "danger") return api.theme.current.error;
 				if (tone === "warning" || tone === "stale") {
 					return api.theme.current.warning;
@@ -702,6 +1002,10 @@ function createPromptStatus(
 				if (tone === "normal") return api.theme.current.success;
 				return api.theme.current.textMuted;
 			},
+			// The host centres this slot against a model label that wraps to two
+			// rows on a narrow terminal, which put a one-row line on the bottom
+			// row and left the top one empty. Reading starts at the top.
+			alignSelf: "flex-start",
 			selectable: false,
 			truncate: true,
 			wrapMode: "none",
@@ -756,8 +1060,8 @@ const module: TuiPluginModule = {
 
 		api.slots.register({
 			slots: {
-				session_prompt_right: () =>
-					createPromptStatus(api, solid, promptOptions),
+				session_prompt_right: (_ctx, props) =>
+					createPromptStatus(api, solid, promptOptions, props.session_id),
 			},
 		});
 		const disposeCommand = api.command.register(() => [

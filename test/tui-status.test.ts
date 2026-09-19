@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+	fitStatusLines,
 	formatPromptStatusText,
 	formatQuotaDetailsText,
+	formatQuotaOverviewStatusLines,
 	formatQuotaOverviewStatusText,
+	formatQuotaResetsStatusLines,
 	resolvePromptReasoningVariant,
 	resolveQuotaOverviewTone,
 	resolveQuotaPromptTone,
+	wrapStatusCandidate,
 	type CompactQuotaStatus,
 	type PromptStatusConfig,
 	type PromptStatusMessage,
@@ -702,9 +706,12 @@ describe("pool-wide prompt status", () => {
 	];
 	const options: QuotaOverviewOptions = {
 		mode: "used",
-		accounts: true,
+		layout: "accounts",
+		names: "number",
+		order: "number",
 		multipliers: true,
-		resetTimes: true,
+		allotment: false,
+		resetTimes: "low",
 		resetCredits: true,
 		recovery: false,
 		now: NOW,
@@ -724,14 +731,27 @@ describe("pool-wide prompt status", () => {
 		).toContain("#3");
 	});
 
-	it("degrades to the count rather than overflowing a narrow terminal", () => {
+	it("gives up the account numbers before the percentages behind them", () => {
+		// Three figures in account order say more than `3 accounts` does, and
+		// cost four characters more.
 		const text = formatQuotaOverviewStatusText({
 			accounts: pool,
 			options,
 			width: 60,
 		});
-		expect(text).toBe("80%: 3 accounts");
+		expect(text).toBe("80%: 13%, 100%, 12%");
 		expect(text.length).toBeLessThanOrEqual(24);
+	});
+
+	it("degrades to the count when position would name the wrong account", () => {
+		// One account nobody could read leaves a hole in the line, so the
+		// unnamed form is not offered and the count is the next rung down.
+		const text = formatQuotaOverviewStatusText({
+			accounts: [...pool, { index: 4, planType: "plus", windows: [] }],
+			options,
+			width: 60,
+		});
+		expect(text).toBe("80%: 3 accounts");
 	});
 
 	it("leaves the model label its room on an 80-column terminal", () => {
@@ -756,13 +776,37 @@ describe("pool-wide prompt status", () => {
 		expect(text).not.toContain("...");
 	});
 
-	it("falls back to the bare total when nothing else fits", () => {
+	it("abbreviates the count rather than giving up on it", () => {
 		const text = formatQuotaOverviewStatusText({
 			accounts: pool,
 			options,
 			width: 20,
 		});
-		expect(text).toBe("80%");
+		expect(text).toBe("80%: 3 acct.");
+	});
+
+	it("falls back to the bare total when nothing else fits", () => {
+		expect(
+			formatQuotaOverviewStatusText({ accounts: pool, options, width: 4 }),
+		).toBe("80%");
+	});
+
+	it("uses the measured space in preference to the whole terminal", () => {
+		// The same 200-column terminal, once with and once without a measured
+		// budget. A sidebar and a model label can leave this slot 14 columns on
+		// a wide terminal, and the measurement is what stops the renderer
+		// ellipsizing a 44-character line through its middle.
+		expect(
+			formatQuotaOverviewStatusText({ accounts: pool, options, width: 200 }),
+		).toBe("80%: #1 5x 13%, #2 20x 100% 3d 1r, #3 1x 12%");
+		expect(
+			formatQuotaOverviewStatusText({
+				accounts: pool,
+				options,
+				width: 200,
+				availableChars: 14,
+			}),
+		).toBe("80%: 3 acct.");
 	});
 
 	it("stays conservative when the width is unknown", () => {
@@ -774,6 +818,131 @@ describe("pool-wide prompt status", () => {
 		expect(
 			formatQuotaOverviewStatusText({ accounts: [], options, width: 200 }),
 		).toBe("");
+	});
+
+	it("uses a second row before it gives up any detail", () => {
+		// 30 columns on one row loses the badges and the reset; across two it
+		// keeps the whole line.
+		expect(
+			formatQuotaOverviewStatusLines({
+				accounts: pool,
+				options,
+				availableChars: 30,
+				maxRows: 2,
+			}),
+		).toEqual(["80%: #1 5x 13%,", "#2 20x 100% 3d 1r, #3 1x 12%"]);
+	});
+
+	it("keeps a one-row line on one row", () => {
+		expect(
+			formatQuotaOverviewStatusLines({
+				accounts: pool,
+				options,
+				availableChars: 60,
+				maxRows: 2,
+			}),
+		).toEqual(["80%: #1 5x 13%, #2 20x 100% 3d 1r, #3 1x 12%"]);
+	});
+
+	it("renders the reset-credit line only once the pool is spent", () => {
+		const spent: QuotaOverviewAccount[] = [
+			{
+				index: 1,
+				planType: "plus",
+				email: "damian@nowaker.net",
+				resetCredits: 1,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 6 * DAY }],
+			},
+			{
+				index: 2,
+				planType: "plus",
+				email: "work@example.com",
+				resetCredits: 2,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 4 * DAY }],
+			},
+		];
+		expect(
+			formatQuotaResetsStatusLines({ accounts: spent, options, availableChars: 80 }),
+		).toEqual([
+			"Free resets: 6d 1r damian@nowaker.net, 4d 2r work@example.com",
+		]);
+		expect(
+			formatQuotaResetsStatusLines({ accounts: pool, options, availableChars: 80 }),
+		).toEqual([]);
+	});
+
+	it("shortens the reset-credit line rather than overflowing", () => {
+		const spent: QuotaOverviewAccount[] = [
+			{
+				index: 1,
+				planType: "plus",
+				email: "damian@nowaker.net",
+				resetCredits: 1,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 6 * DAY }],
+			},
+			{
+				index: 3,
+				planType: "plus",
+				email: "work@example.com",
+				resetCredits: 1,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 4 * DAY }],
+			},
+		];
+		expect(
+			formatQuotaResetsStatusLines({ accounts: spent, options, availableChars: 30 }),
+		).toEqual(["Resets: 6d 1r #1, 4d 1r #3"]);
+		expect(
+			formatQuotaResetsStatusLines({ accounts: spent, options, availableChars: 11 }),
+		).toEqual(["Resets: 2"]);
+	});
+});
+
+describe("wrapStatusCandidate", () => {
+	it("breaks only at the separators the line already has", () => {
+		expect(wrapStatusCandidate("20%: #1 87%, #2 0%, #3 88%", 16, 2)).toEqual([
+			"20%: #1 87%,",
+			"#2 0%, #3 88%",
+		]);
+	});
+
+	it("leaves a line that already fits alone", () => {
+		expect(wrapStatusCandidate("20%: 3 accounts", 20, 2)).toEqual([
+			"20%: 3 accounts",
+		]);
+	});
+
+	it("refuses a line that would need more rows than it has", () => {
+		expect(
+			wrapStatusCandidate("20%: #1 87%, #2 0%, #3 88%", 12, 2),
+		).toBeUndefined();
+		expect(wrapStatusCandidate("20%: #1 87%, #2 0%, #3 88%", 12, 3)).toEqual([
+			"20%: #1 87%,",
+			"#2 0%,",
+			"#3 88%",
+		]);
+	});
+
+	it("refuses a single segment that cannot fit a row at all", () => {
+		expect(wrapStatusCandidate("20%: #1 87%, #2 0%", 8, 4)).toBeUndefined();
+	});
+
+	it("never wraps when it is only allowed one row", () => {
+		expect(wrapStatusCandidate("20%: #1 87%, #2 0%", 12, 1)).toBeUndefined();
+	});
+});
+
+describe("fitStatusLines", () => {
+	it("takes the first rung that fits, wrapped or not", () => {
+		expect(fitStatusLines(["aaaa, bbbb", "cc"], 5, 2)).toEqual(["aaaa,", "bbbb"]);
+		expect(fitStatusLines(["aaaa, bbbb", "cc"], 5, 1)).toEqual(["cc"]);
+	});
+
+	it("falls back to the shortest rung rather than rendering nothing", () => {
+		expect(fitStatusLines(["aaaaaa", "bbbb"], 2, 1)).toEqual(["bbbb"]);
+	});
+
+	it("renders nothing for an empty ladder", () => {
+		expect(fitStatusLines([], 40, 2)).toEqual([]);
 	});
 });
 

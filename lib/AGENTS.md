@@ -87,7 +87,7 @@ lib/
 | Tool registry | `tools/index.ts` | `ToolContext`, `createToolRegistry` |
 | TUI quota status | `tui-status.ts`, `tui-quota-cache.ts`, `codex-usage.ts` | prompt quota display and usage cache |
 | Quota percentage wording | `quota-display.ts` | `quotaDisplay` free/used rendering shared by the TUI, `codex-limits`, the standalone CLI, and notifications; presentation only, so exhaustion and tone stay on the remaining percentage |
-| Pool-wide status line | `quota-overview.ts`, `tui-quota-overview.ts` | `quotaStatus.mode=overview` renders every account on one constant line; `quota-overview.ts` is a pure formatter, `tui-quota-overview.ts` gathers/caches the pool and merges the request path's live reading of the serving account |
+| Pool-wide status line | `quota-overview.ts`, `tui-quota-overview.ts` | `quotaStatus.mode` `overview` / `resets` renders every account on one constant line; `quota-overview.ts` is a pure formatter (ordering, `accounts`/`aggregate`/`count` layouts, degradation ladder, reset-credit line), `tui-quota-overview.ts` gathers/caches the pool and merges the request path's live reading of the serving account |
 | Plan allotments | `plan-allotment.ts` | `plan_type` -> weight/multiplier/price, used to weight the pool total and to render `5x` badges; see `docs/plan-allotments.md` |
 | Error types | `errors.ts`, `error-sentinels.ts` | StorageError and structured sentinel errors |
 | Health monitoring | `health.ts` | account health status |

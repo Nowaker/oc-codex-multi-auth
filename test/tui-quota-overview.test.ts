@@ -195,6 +195,47 @@ describe("toOverviewAccount", () => {
 		});
 		expect(account.resetCredits).toBe(3);
 	});
+
+	it("carries the names the status line can call an account by", () => {
+		const account = toOverviewAccount({
+			fingerprint: "aaaa",
+			index: 1,
+			email: " damian@nowaker.net ",
+			label: " work ",
+			usage: {
+				planType: null,
+				credits: null,
+				resetCredits: null,
+				primary: { usedPercent: 0, windowMinutes: 300 },
+				secondary: {},
+				codeReview: {},
+				additionalLimits: [],
+				limits: [],
+			},
+		});
+		expect(account.email).toBe("damian@nowaker.net");
+		expect(account.label).toBe("work");
+	});
+
+	it("leaves a nameless account nameless rather than inventing one", () => {
+		const account = toOverviewAccount({
+			fingerprint: "aaaa",
+			index: 1,
+			label: "   ",
+			usage: {
+				planType: null,
+				credits: null,
+				resetCredits: null,
+				primary: { usedPercent: 0, windowMinutes: 300 },
+				secondary: {},
+				codeReview: {},
+				additionalLimits: [],
+				limits: [],
+			},
+		});
+		expect(account.email).toBeUndefined();
+		expect(account.label).toBeUndefined();
+	});
 });
 
 describe("mergeOverviewWithLatestAccount", () => {
@@ -238,6 +279,14 @@ describe("mergeOverviewWithLatestAccount", () => {
 
 	it("is a no-op with nothing to merge", () => {
 		expect(mergeOverviewWithLatestAccount(snapshot(), undefined)).toEqual(snapshot());
+	});
+
+	it("learns an email the pool poll did not have", () => {
+		const merged = mergeOverviewWithLatestAccount(snapshot(), {
+			...latest,
+			accountEmail: "damian@nowaker.net",
+		});
+		expect(merged.accounts[1]!.email).toBe("damian@nowaker.net");
 	});
 });
 
