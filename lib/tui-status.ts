@@ -4,6 +4,7 @@ import { getEffortSuffix } from "./request/helpers/effort-suffix.js";
 import { formatPlanType } from "./auth/plan-tier.js";
 import {
 	formatQuotaOverviewCandidates,
+	formatQuotaResetsCandidates,
 	resolveQuotaOverviewTonePercent,
 	type QuotaOverviewAccount,
 	type QuotaOverviewOptions,
@@ -491,23 +492,129 @@ function maxOverviewStatusChars(width: number | undefined): number {
 }
 
 /**
+ * Columns available to this line, preferring what the renderer measured.
+ *
+ * `width` is the whole terminal, which is the wrong number whenever anything
+ * else is on the row - a sidebar, the model label - and it is wrong by however
+ * much those take. A measured value comes from the laid-out node itself and
+ * needs no reserve at all, so it is used verbatim.
+ */
+function resolveOverviewChars(
+	width: number | undefined,
+	availableChars: number | undefined,
+): number {
+	if (
+		typeof availableChars === "number" &&
+		Number.isFinite(availableChars) &&
+		availableChars > 0
+	) {
+		return Math.floor(availableChars);
+	}
+	return maxOverviewStatusChars(width);
+}
+
+/**
+ * Break one rendering across rows, at the separators it already has.
+ *
+ * Only `, ` boundaries are used, so a row never ends mid-account: a line cut
+ * between `#2` and its percentage is worse than no second row at all. A
+ * candidate with any single segment wider than the row cannot be laid out this
+ * way and is rejected, which sends the caller to the next rung down.
+ */
+export function wrapStatusCandidate(
+	candidate: string,
+	maxChars: number,
+	maxRows: number,
+): string[] | undefined {
+	if (candidate.length <= maxChars) return [candidate];
+	if (maxRows <= 1 || maxChars <= 0) return undefined;
+	const segments = candidate.split(", ");
+	const rows: string[] = [];
+	let row = "";
+	for (const [position, segment] of segments.entries()) {
+		const piece = position === segments.length - 1 ? segment : `${segment},`;
+		if (piece.length > maxChars) return undefined;
+		if (row.length === 0) {
+			row = piece;
+			continue;
+		}
+		const joined = `${row} ${piece}`;
+		if (joined.length <= maxChars) {
+			row = joined;
+			continue;
+		}
+		rows.push(row);
+		if (rows.length >= maxRows) return undefined;
+		row = piece;
+	}
+	if (row.length > 0) rows.push(row);
+	return rows.length > 0 && rows.length <= maxRows ? rows : undefined;
+}
+
+/**
+ * Lay a candidate ladder out in the space available, in up to `maxRows` rows.
+ *
+ * The ladder is walked once, and the first rung that fits wins - whether it
+ * fits on one row or has to be broken across two. Trying every rung on one row
+ * before allowing a second would shed detail the reader has room for.
+ */
+export function fitStatusLines(
+	candidates: readonly string[],
+	maxChars: number,
+	maxRows: number,
+): string[] {
+	for (const candidate of candidates) {
+		const rows = wrapStatusCandidate(candidate, maxChars, maxRows);
+		if (rows) return rows;
+	}
+	const last = candidates.at(-1);
+	return last ? [last] : [];
+}
+
+/**
  * Render the whole account pool, degrading through
  * {@link formatQuotaOverviewCandidates} until one form fits.
  */
+export function formatQuotaOverviewStatusLines(params: {
+	accounts: readonly QuotaOverviewAccount[];
+	options: QuotaOverviewOptions;
+	width?: number;
+	availableChars?: number;
+	maxRows?: number;
+}): string[] {
+	return fitStatusLines(
+		formatQuotaOverviewCandidates(params.accounts, params.options),
+		resolveOverviewChars(params.width, params.availableChars),
+		params.maxRows ?? 1,
+	);
+}
+
 export function formatQuotaOverviewStatusText(params: {
 	accounts: readonly QuotaOverviewAccount[];
 	options: QuotaOverviewOptions;
 	width?: number;
+	availableChars?: number;
 }): string {
-	const candidates = formatQuotaOverviewCandidates(
-		params.accounts,
-		params.options,
-	);
-	const maxChars = maxOverviewStatusChars(params.width);
-	return (
-		candidates.find((candidate) => candidate.length <= maxChars) ??
-		candidates.at(-1) ??
-		""
+	return formatQuotaOverviewStatusLines(params)[0] ?? "";
+}
+
+/** The banked-reset line, laid out the same way as the pool line. */
+export function formatQuotaResetsStatusLines(params: {
+	accounts: readonly QuotaOverviewAccount[];
+	options: QuotaOverviewOptions;
+	width?: number;
+	availableChars?: number;
+	maxRows?: number;
+}): string[] {
+	const candidates = formatQuotaResetsCandidates(params.accounts, {
+		maskEmail: params.options.maskEmail,
+		now: params.options.now,
+	});
+	if (candidates.length === 0) return [];
+	return fitStatusLines(
+		candidates,
+		resolveOverviewChars(params.width, params.availableChars),
+		params.maxRows ?? 1,
 	);
 }
 

@@ -10,7 +10,6 @@ vi.mock("node:os", async (original) => ({
 }));
 
 type TuiModule = typeof import("../tui.js");
-type PromptStatusOptions = ReturnType<TuiModule["readPromptStatusOptions"]>;
 
 describe("TUI status configuration reload", () => {
 	let configPath: string;
@@ -48,26 +47,32 @@ describe("TUI status configuration reload", () => {
 		expect(read()).toMatchObject({
 			quotaDisplay: "free",
 			quotaStatus: {
-				mode: "active",
-				accounts: true,
+				screens: ["active"],
+				rotateMs: 5_000,
+				layout: "accounts",
+				accountNames: "number",
+				order: "number",
 				multipliers: false,
-				resetTimes: true,
+				allotment: false,
+				resetTimes: "low",
 				resetCredits: false,
 				recovery: false,
+				rows: 1,
+				showFor: "always",
 			},
 		});
 	});
 
 	it("picks up an edit to the file without reloading the module", () => {
 		writeConfig({ quotaStatus: { mode: "active" } });
-		expect(read().quotaStatus.mode).toBe("active");
+		expect(read().quotaStatus.screens).toEqual(["active"]);
 
 		writeConfig({
 			quotaDisplay: "used",
 			quotaStatus: { mode: "overview", multipliers: true, recovery: true },
 		});
 		const after = read();
-		expect(after.quotaStatus.mode).toBe("overview");
+		expect(after.quotaStatus.screens).toEqual(["overview"]);
 		expect(after.quotaStatus.multipliers).toBe(true);
 		expect(after.quotaStatus.recovery).toBe(true);
 		expect(after.quotaDisplay).toBe("used");
@@ -75,10 +80,20 @@ describe("TUI status configuration reload", () => {
 
 	it("follows a switch back to the serving-account line", () => {
 		writeConfig({ quotaStatus: { mode: "overview" } });
-		expect(read().quotaStatus.mode).toBe("overview");
+		expect(read().quotaStatus.screens).toEqual(["overview"]);
 
 		writeConfig({ quotaStatus: { mode: "active" } });
-		expect(read().quotaStatus.mode).toBe("active");
+		expect(read().quotaStatus.screens).toEqual(["active"]);
+	});
+
+	it("picks up a screen list being turned into a rotation", () => {
+		writeConfig({ quotaStatus: { mode: "overview" } });
+		expect(read().quotaStatus.screens).toEqual(["overview"]);
+
+		writeConfig({ quotaStatus: { mode: ["overview", "resets"], rotateMs: 3_000 } });
+		const after = read();
+		expect(after.quotaStatus.screens).toEqual(["overview", "resets"]);
+		expect(after.quotaStatus.rotateMs).toBe(3_000);
 	});
 
 	it("keeps the last usable reading when the file is mid-write", () => {
@@ -87,19 +102,16 @@ describe("TUI status configuration reload", () => {
 
 		writeFileSync(configPath, '{"quotaStatus":{"mode":"over');
 		const during = read();
-		expect(during.quotaStatus.mode).toBe("overview");
+		expect(during.quotaStatus.screens).toEqual(["overview"]);
 		expect(during.quotaStatus.recovery).toBe(true);
 	});
 
-	it("lets the environment keep overriding the file on every read", () => {
+	it("ignores an environment variable naming the screen", () => {
 		writeConfig({ quotaStatus: { mode: "overview" } });
 		vi.stubEnv("CODEX_AUTH_QUOTA_STATUS", "active");
-		expect(read().quotaStatus.mode).toBe("active");
-
-		writeConfig({ quotaStatus: { mode: "overview", multipliers: true } });
-		const after = read();
-		expect(after.quotaStatus.mode).toBe("active");
-		expect(after.quotaStatus.multipliers).toBe(true);
+		// The whole object is a display preference and belongs to the person, not
+		// to whichever shell started this process.
+		expect(read().quotaStatus.screens).toEqual(["overview"]);
 	});
 
 	it("treats two readings of unchanged configuration as equal", () => {
@@ -122,11 +134,17 @@ describe("TUI status configuration reload", () => {
 			maskEmailInQuotaDetails: false,
 			quotaStatus: {
 				mode: "active",
-				accounts: true,
+				rotateMs: 5_000,
+				layout: "accounts",
+				accountNames: "number",
+				order: "number",
 				multipliers: false,
-				resetTimes: true,
+				allotment: false,
+				resetTimes: "low",
 				resetCredits: false,
 				recovery: false,
+				rows: 1,
+				showFor: "always",
 			},
 		} as const;
 		writeConfig(base);
@@ -137,11 +155,19 @@ describe("TUI status configuration reload", () => {
 			{ ...base, maskEmail: true },
 			{ ...base, maskEmailInQuotaDetails: true },
 			{ ...base, quotaStatus: { ...base.quotaStatus, mode: "overview" } },
-			{ ...base, quotaStatus: { ...base.quotaStatus, accounts: false } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, mode: ["active", "overview"] } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, rotateMs: 9_000 } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, layout: "count" } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, layout: "aggregate" } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, accountNames: "label" } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, order: "most-used" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, multipliers: true } },
-			{ ...base, quotaStatus: { ...base.quotaStatus, resetTimes: false } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, allotment: true } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, resetTimes: "always" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, resetCredits: true } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, recovery: true } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, rows: 2 } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, showFor: "codex-models" } },
 		];
 		for (const change of changes) {
 			writeConfig(change);

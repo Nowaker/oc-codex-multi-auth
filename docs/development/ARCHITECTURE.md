@@ -97,7 +97,8 @@ tui.ts
 | OpenCode plugin entry | `index.ts` | auth loader, runtime wiring, custom fetch pipeline, account manager lifecycle, `ToolContext`, OpenCode plugin export |
 | TUI plugin entry | `tui.ts`, `lib/tui-status.ts`, `lib/tui-quota-cache.ts`, `lib/codex-usage.ts` | prompt quota status, account-aware quota snapshots, usage refresh, details rendering |
 | Quota percentage wording | `lib/quota-display.ts` | `quotaDisplay` free/used rendering shared by the TUI, `codex-limits`, the standalone CLI, and notifications; a leaf module so the status line and the usage surfaces can both depend on it |
-| Pool-wide status line | `lib/quota-overview.ts`, `lib/tui-quota-overview.ts` | `quotaStatus.mode=overview`; the first is a pure formatter (weighted total, width ladder), the second gathers and caches every account's usage and merges the request path's live reading of the serving account |
+| Pool-wide status line | `lib/quota-overview.ts`, `lib/tui-quota-overview.ts` | `quotaStatus.mode` `overview` / `resets`; the first is a pure formatter (weighted total, ordering, layouts, degradation ladder, reset-credit line), the second gathers and caches every account's usage and merges the request path's live reading of the serving account |
+| Status slot layout | `tui.ts` (`measureStatusSlot`, `resolveStatusRows`), `lib/tui-status.ts` (`wrapStatusCandidate`, `fitStatusLines`) | measures the columns and rows the prompt actually left this slot, and lays a candidate ladder out across them |
 | Plan allotments | `lib/plan-allotment.ts` | `plan_type` to weight/multiplier/price; another leaf, so the render path weights the pool total without pulling in JWT decoding |
 | Auth flow | `lib/auth/auth.ts`, `lib/auth/loopback-flow.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts`, `lib/auth/scopes.ts` | PKCE OAuth, callback server, default-browser and open-URL-manually listener flows, device code, manual URL paste, workspace/account selection, scope validation |
 | Account manager | `lib/accounts.ts`, `lib/accounts/` | account state facade, persistence, rotation, recovery, rate-limit tracking, workspace identity preservation, warm |
@@ -276,14 +277,27 @@ The request path also writes quota snapshots from response headers, so the TUI c
 
 The shared cache file resolves in this order. `tui.ts` passes the OpenCode state path (`api.state.path.state`) to `getTuiQuotaCachePath`. That function falls back to `$OPENCODE_STATE_DIR`, then to `~/.local/state/opencode/oc-codex-multi-auth-tui-quota.json`. There is no `~/.opencode/` fallback.
 
-With `quotaStatus.mode` set to `overview`, `tui.ts` registers a different prompt-status component that describes the whole pool instead of the serving account:
+`quotaStatus.mode` names the screen, or the list of screens to alternate between every `rotateMs`. One node stays mounted for the whole session and reads from whichever pipelines the current screens need, so a config edit never asks the renderer to replace a live node:
+
+- `active` is the pipeline above: one serving account, a fingerprint, and a one-second identity poll.
+- `overview` and `resets` share the pool pipeline, since `resets` needs exactly the windows and banked credits that pipeline already gathers.
+
+The pool pipeline:
 
 1. Read the pool snapshot from `oc-codex-multi-auth-tui-quota-overview.json` in that same directory.
 2. Re-query `/wham/usage` for every deduplicated enabled account when that snapshot has aged past the refresh interval, and write it back.
 3. Merge the single-account snapshot above when it is newer, so the account currently serving requests shows header-fresh numbers rather than poll-aged ones.
-4. Render through `formatQuotaOverviewCandidates`, taking the first candidate that fits the terminal width.
+4. Render through `formatQuotaOverviewCandidates` (or `formatQuotaResetsCandidates`), taking the first rung that fits.
 
 The two caches stay separate files on purpose: the request path rewrites the single-account one after every response, and folding them together would make each request rewrite a document describing accounts that request never touched.
+
+The space the line has is **measured**, not computed. `measureStatusSlot` walks up from the mounted node to the prompt's bottom row and takes that row's width, less a constant for the model label, because an open sidebar takes a share nothing in the plugin can derive from the terminal width. Every hop is duck-typed and guarded, and an unfamiliar tree degrades to the old width heuristic rather than budgeting from numbers that no longer mean what they did.
+
+The label's own width and height are deliberately **not** measured, and both were tried and reverted during QA. The row sizes both boxes by their content with `alignItems: stretch`, so the label box reports this line's own height once this line grows, and is shrunk to whatever this line did not take once the row is full. Either reading makes the budget a function of its own output: the height version latched `rows: "auto"` at two rows permanently, and the width version ratchets the column budget down on every render. The row's width is the only number on that row this line cannot influence.
+
+`rows` is therefore a plain ceiling (1-4, default 1), not a measurement. It costs nothing until the content needs the room, since a candidate that fits on one row still returns one row. A second row is one `text` node with a newline in it, so the renderer measures it and the node sizes itself; `alignSelf: "flex-start"` keeps it on the top row, since the host centres this slot against a label that wraps.
+
+A screen that renders nothing is skipped in the rotation rather than shown blank, which is what lets `resets` sit in the list permanently and surface only on the day every account is spent.
 
 ---
 

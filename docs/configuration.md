@@ -210,11 +210,17 @@ a restart to change their configuration.
   "quotaDisplay": "free",
   "quotaStatus": {
     "mode": "active",
-    "accounts": true,
+    "rotateMs": 5000,
+    "layout": "accounts",
+    "accountNames": "number",
+    "order": "number",
     "multipliers": false,
-    "resetTimes": true,
+    "allotment": false,
+    "resetTimes": "low",
     "resetCredits": false,
-    "recovery": false
+    "recovery": false,
+    "rows": 1,
+    "showFor": "always"
   },
   "beginnerSafeMode": false,
   "fastSession": false,
@@ -281,7 +287,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `maskEmail` | `false` | masks account emails across account-display surfaces: the TUI prompt quota status, command output (`codex-list`, `codex-status`, `codex-limits`, `codex-health`, `codex-dashboard`, `codex-refresh`, `codex-switch`, `codex-label`, `codex-tag`, `codex-note`, `codex-remove`), the interactive account menu, and the standalone login menu. Account labels (set via `codex-label`) are preferred and always shown; emails are reduced to a masked form such as `us***@example.com`. Raw emails are still emitted in `--includeSensitive` JSON output, which is opt-in. |
 | `maskEmailInQuotaDetails` | `false` | also masks the active account email in the quota details dialog when `maskEmail` is enabled |
 | `quotaDisplay` | `free` | wording of every quota percentage a person reads: `free` reports the headroom left (`5h limit: 88% left`), matching how Codex itself reports a quota; `used` reports consumption instead (`5h limit: 12% used`). Covers the TUI prompt status line and quota details dialog, `codex-limits`, the standalone `limits` CLI, the interactive account check, and macOS quota notifications. Presentation only: exhaustion, rotation blocks, notification thresholds, and the status line's warning/danger colouring stay keyed on the remaining percentage, and the `usedPercent` / `leftPercent` fields in JSON output are unchanged. |
-| `quotaStatus` | `mode: active` | shape of the TUI prompt status line. `active` describes the account serving requests; `overview` describes the whole pool on one constant line. See [Pool-wide quota status](#pool-wide-quota-status). |
+| `quotaStatus` | `mode: active` | shape of the TUI prompt status line. `active` describes the account serving requests, `overview` describes the whole pool on one constant line, `resets` lists redeemable reset credits once nothing has headroom left. A list of screens alternates between them. File-only; no environment override. See [Pool-wide quota status](#pool-wide-quota-status). |
 | `beginnerSafeMode` | `false` | enables conservative beginner-safe runtime behavior for retries and recovery |
 | `fastSession` | `false` | forces low-latency settings per request (`reasoningEffort=none/low`, `reasoningSummary=auto`, `textVerbosity=low`) |
 | `fastSessionStrategy` | `hybrid` | `hybrid` speeds simple turns and keeps full-depth for complex prompts; `always` forces fast mode every turn |
@@ -422,29 +428,132 @@ a reset, and printing all of them triples the length of the line.
 Percentages follow [`quotaDisplay`](#options), so the same pool reads `24%` as
 headroom or `76%` as consumption.
 
-Four switches add detail, each independent of the others:
+The whole `quotaStatus` object is read from the config file only. It is a
+display preference that belongs to a person rather than to whichever shell
+started OpenCode, so there is no environment override for any field in it.
 
-| Field | Default | Adds |
+#### What the line says
+
+| Field | Default | Effect |
 | --- | --- | --- |
-| `accounts` | `true` | the per-account breakdown; `false` gives `24%: 3 accounts` |
+| `layout` | `accounts` | `accounts` gives one segment per account; `aggregate` collapses accounts that share a percentage; `count` gives `24%: 3 accounts` |
+| `accountNames` | `number` | `number` gives `#1`; `label` gives the account's `codex-label` label, or its email's local part; `none` drops the name |
+| `order` | `number` | `number`, `most-used`, `least-used`, `renewing-earliest`, `renewing-latest` |
 | `multipliers` | `false` | `5x` / `20x` plan allotment badges |
-| `resetTimes` | `true` | `3d` beside an account at or below 25% headroom |
+| `allotment` | `false` | `24% of 26x`, what the pool the percentage is averaged over adds up to |
+| `resetTimes` | `low` | `never`, `low` (only accounts at or below 25% headroom), or `always` |
 | `resetCredits` | `false` | `1r` for banked rate-limit resets redeemable now |
 | `recovery` | `false` | `+12% in 3d`, how far the pool total moves at the next reset |
 
 With everything on:
 
 ```text
-24%: #1 5x 87%, #2 20x 0% 3d 1r, #3 1x 88%
+24% of 26x: #1 5x 87%, #2 20x 0% 3d 1r, #3 1x 88%, +3% in 2d
+```
+
+`resetTimes: "always"` answers a question `low` cannot: 90% spent with an hour
+to go and 90% spent with six days to go are not the same situation.
+
+```text
+24%: #1 87% 2d, #2 0% 3d, #3 88% 5d
+```
+
+`layout: "aggregate"` is for a pool where several accounts read the same
+number. The percentage is printed once and only what differs follows it, so
+three spent accounts cost one segment rather than three:
+
+```text
+72%: 12% 3d, 50% 4d, 100% 3d 1r 4d 5d
+```
+
+A group states its own size - `100% x3 4d 5d` - when its annotations would not
+already reveal it. Grouping discards identity by construction, so
+`accountNames` has no effect under this layout.
+
+`accountNames: "none"` leaves position to identify the accounts, which only
+works while they are in `number` order and every one of them is readable:
+
+```text
+24%: 87%, 0% 3d, 88%
 ```
 
 The recovery clause is signed to match the direction the figure beside it
 moves, so it reads `+12% in 3d` under `free` and `-12% in 3d` under `used`.
 
-The line degrades to fit the terminal, dropping the recovery clause, then the
-badges and banked resets, then the per-account breakdown, and finally showing
-the pool total alone. A switch left off never reappears because the terminal
-happens to be wide.
+#### Rotating between screens
+
+`mode` accepts a list, and the line then alternates between its entries every
+`rotateMs` (default 5000, minimum 1000):
+
+```json
+{
+  "quotaStatus": {
+    "mode": ["overview", "resets"],
+    "rotateMs": 5000
+  }
+}
+```
+
+A screen with nothing to say is skipped rather than shown blank, which is what
+makes `resets` worth leaving in the list permanently. It renders only once
+**every** account is spent, and lists the banked reset credits worth redeeming,
+latest reset first - because redeeming a credit on an account that renews by
+itself tomorrow throws the credit away, while the account six days out is the
+one worth spending it on:
+
+```text
+Free resets: 6d 1r damian@nowaker.net, 4d 2r work@example.com
+```
+
+That line honours [`maskEmail`](#options). It shortens by giving up the word
+`Free`, then the address (to a label, then to `#1`), then the countdown, then
+the credit counts, and finally becomes `Resets: 2`.
+
+#### How much room the line takes
+
+```json
+{
+  "quotaStatus": {
+    "rows": 2
+  }
+}
+```
+
+`rows` (1 to 4, default 1) is a **ceiling, not a height**. A rendering that
+fits on one row still takes one, so raising it costs nothing on a wide terminal
+and buys the whole line back on a narrow one, where the agent/model label
+beside it has already wrapped to two rows anyway. Rows break only at the `, `
+between accounts, so a row never ends mid-account.
+
+The space available is measured from the laid-out prompt row rather than
+computed from the terminal width, since an open sidebar takes a share nothing
+in the plugin can derive. The model label's own width is deliberately *not*
+measured: the row sizes both boxes by their content, so a label with no room
+left is shrunk to whatever this line did not take, and reading its width would
+make the budget a function of the line's own length.
+
+Within that space the line degrades in the order that costs a reader the least:
+the recovery clause and the pool allotment, then the badges and banked resets,
+then reset countdowns, then the account names, then the per-account breakdown
+(`3 accounts` -> `3 acct.` -> `3`), and finally the pool total alone. A switch
+left off never reappears because the terminal happens to be wide.
+
+#### When the line appears
+
+```json
+{
+  "quotaStatus": {
+    "showFor": "always"
+  }
+}
+```
+
+`always` (the default) shows the line whenever accounts are configured,
+whichever model the session is running. `codex-models` shows it only while the
+session is running a model this plugin routes. A session that has not run
+anything yet still shows the line.
+
+#### Where the numbers come from
 
 Quota for the whole pool is read from `/wham/usage` on a five-minute interval
 and cached at `oc-codex-multi-auth-tui-quota-overview.json` in the OpenCode
@@ -453,8 +562,9 @@ round of requests. The account currently serving requests is refreshed from
 response headers after every response and folded into the cached pool, so its
 figure stays live between polls.
 
-Add the configuration to `~/.opencode/openai-codex-auth-config.json`, or set
-`CODEX_AUTH_QUOTA_STATUS=overview`, then quit and restart OpenCode.
+Add the configuration to `~/.opencode/openai-codex-auth-config.json`. The
+status line re-reads that file while sessions are open, so an edit takes effect
+within a couple of seconds without a restart.
 
 ### Beginner Safe Mode Behavior
 
@@ -535,12 +645,7 @@ override any config with env vars (boolean values are truthy only for `"1"`):
 | `CODEX_TUI_MASK_EMAIL=1` | mask account emails across account-display surfaces (TUI prompt quota status, command output, interactive account menu, and standalone login menu) |
 | `CODEX_TUI_MASK_EMAIL_DETAILS=1` | also mask the active account email in quota details when prompt masking is enabled |
 | `CODEX_AUTH_QUOTA_DISPLAY=free\|used` | word quota percentages as headroom left (default) or as consumption |
-| `CODEX_AUTH_QUOTA_STATUS=active\|overview` | describe the serving account (default) or the whole pool on the prompt status line |
-| `CODEX_AUTH_QUOTA_STATUS_ACCOUNTS=0` | drop the per-account breakdown from the pool line, leaving `24%: 3 accounts` |
-| `CODEX_AUTH_QUOTA_STATUS_MULTIPLIERS=1` | add `5x` / `20x` plan allotment badges to the pool line |
-| `CODEX_AUTH_QUOTA_STATUS_RESET_TIMES=0` | drop `3d` reset times from the pool line |
-| `CODEX_AUTH_QUOTA_STATUS_RESET_CREDITS=1` | add `1r` banked reset counts to the pool line |
-| `CODEX_AUTH_QUOTA_STATUS_RECOVERY=1` | add `+12% in 3d` to the pool line |
+
 | `CODEX_AUTH_PREWARM=0` | disable startup prewarm when legacy transform is enabled (native mode does not prewarm) |
 | `CODEX_AUTH_TOKEN_REFRESH_SKEW_MS=60000` | refresh OAuth tokens this many ms before expiry |
 | `CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS=60000` | debounce rate-limit toast notifications |
@@ -706,7 +811,7 @@ opencode run "task" --model=openai/gpt-5.6-sol-high
 | `~/.opencode/logs/codex-plugin/` | request/debug logs when enabled |
 | `~/.opencode/cache/` | instruction/catalog and auto-update caches |
 | `~/.local/state/opencode/oc-codex-multi-auth-tui-quota.json` | TUI quota snapshot cache shared by the provider and TUI plugins; `$OPENCODE_STATE_DIR` overrides the directory when set |
-| `~/.local/state/opencode/oc-codex-multi-auth-tui-quota-overview.json` | pool-wide quota snapshot cache, written only when `quotaStatus.mode` is `overview`; same directory resolution as above |
+| `~/.local/state/opencode/oc-codex-multi-auth-tui-quota-overview.json` | pool-wide quota snapshot cache, written only when `quotaStatus.mode` includes `overview` or `resets`; same directory resolution as above |
 | `$XDG_DATA_HOME/opencode/storage/…` (Windows: `%APPDATA%/opencode/storage`) | OpenCode session message/part store (session recovery) |
 | `openai-codex-accounts.json` / `openai-codex-flagged-accounts.json` / `openai-codex-blocked-accounts.json` | legacy migration sources only |
 
