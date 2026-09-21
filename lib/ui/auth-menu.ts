@@ -3,7 +3,7 @@ import { confirm } from "./confirm.js";
 import { getUiRuntimeOptions } from "./runtime.js";
 import { select, type MenuItem } from "./select.js";
 import { paintUiText, formatUiBadge } from "./format.js";
-import { resolveDisplayEmail } from "../account-display.js";
+import { formatSeatSuffix, resolveDisplayEmail } from "../account-display.js";
 
 export type AccountStatus =
 	| "active"
@@ -18,6 +18,7 @@ export type AccountStatus =
 export interface AccountInfo {
 	index: number;
 	accountId?: string;
+	accountUserId?: string;
 	accountLabel?: string;
 	email?: string;
 	addedAt?: number;
@@ -110,7 +111,11 @@ function formatAccountIdSuffix(accountId: string | undefined): string | undefine
 		: trimmed;
 }
 
-function accountTitle(account: AccountInfo, maskEmail = false): string {
+function accountTitle(
+	account: AccountInfo,
+	maskEmail = false,
+	peerAccounts?: readonly AccountInfo[],
+): string {
 	const email = resolveDisplayEmail(account.email, maskEmail);
 	const label = account.accountLabel?.trim();
 	const accountIdSuffix = formatAccountIdSuffix(account.accountId);
@@ -121,6 +126,11 @@ function accountTitle(account: AccountInfo, maskEmail = false): string {
 	if (accountIdSuffix && (!label || !label.includes(accountIdSuffix))) {
 		details.push(`id:${accountIdSuffix}`);
 	}
+	const seatSuffix = formatSeatSuffix(
+		account.accountUserId,
+		peerAccounts?.map((peer) => peer.accountUserId),
+	);
+	if (seatSuffix) details.push(`seat:${seatSuffix}`);
 
 	if (details.length === 0) {
 		return `${account.index + 1}. Account`;
@@ -159,7 +169,7 @@ export async function showAuthMenu(
 					? (ui.v2Enabled ? ` ${formatUiBadge(ui, "disabled", "danger")}` : ` ${ANSI.red}[disabled]${ANSI.reset}`)
 					: "";
 			const statusSuffix = badge ? ` ${badge}` : "";
-			const label = `${accountTitle(account, maskEmail)}${currentBadge}${statusSuffix}${disabledBadge}`;
+			const label = `${accountTitle(account, maskEmail, accounts)}${currentBadge}${statusSuffix}${disabledBadge}`;
 			return {
 				label: ui.v2Enabled ? paintUiText(ui, label, "heading") : label,
 				hint: `used ${formatRelativeTime(account.lastUsed)}`,
@@ -191,12 +201,13 @@ export async function showAuthMenu(
 
 export async function showAccountDetails(
 	account: AccountInfo,
-	options: { maskEmail?: boolean } = {},
+	options: { maskEmail?: boolean; peerAccounts?: readonly AccountInfo[] } = {},
 ): Promise<AccountAction> {
 	const ui = getUiRuntimeOptions();
 	const maskEmail = options.maskEmail ?? false;
+	const peerAccounts = options.peerAccounts;
 	const header =
-		`${accountTitle(account, maskEmail)} ${statusBadge(account.status)}` +
+		`${accountTitle(account, maskEmail, peerAccounts)} ${statusBadge(account.status)}` +
 		(account.enabled === false
 			? (ui.v2Enabled
 				? ` ${formatUiBadge(ui, "disabled", "danger")}`
@@ -227,11 +238,11 @@ export async function showAccountDetails(
 
 		if (!action) return "cancel";
 		if (action === "delete") {
-			const confirmed = await confirm(`Delete ${accountTitle(account, maskEmail)}?`);
+			const confirmed = await confirm(`Delete ${accountTitle(account, maskEmail, peerAccounts)}?`);
 			if (!confirmed) continue;
 		}
 		if (action === "refresh") {
-			const confirmed = await confirm(`Re-authenticate ${accountTitle(account, maskEmail)}?`);
+			const confirmed = await confirm(`Re-authenticate ${accountTitle(account, maskEmail, peerAccounts)}?`);
 			if (!confirmed) continue;
 		}
 		return action;

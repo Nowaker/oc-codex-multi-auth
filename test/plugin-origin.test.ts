@@ -1,0 +1,407 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import {
+	HISTORY_FILE_NAME,
+	describePluginOrigin,
+	findReplacedLocalCheckout,
+	getPluginOriginHistoryPath,
+	isPackageManagerRoot,
+	readPluginOriginHistory,
+	recordPluginOrigin,
+	resolvePluginOrigin,
+	withSighting,
+	type PluginOrigin,
+	type PluginOriginHistory,
+} from "../lib/plugin-origin.js";
+
+async function createTempRoot() {
+	return mkdtemp(join(tmpdir(), "oc-codex-origin-"));
+}
+
+async function createPackage(root: string, name: string, version: string) {
+	await mkdir(root, { recursive: true });
+	await writeFile(join(root, "package.json"), JSON.stringify({ name, version }), "utf-8");
+	return root;
+}
+
+function localCheckout(root: string): PluginOrigin {
+	return { name: "oc-codex-multi-auth", version: "1.0.0", root, isLocalCheckout: true };
+}
+
+function installedPackage(root: string): PluginOrigin {
+	return { name: "oc-codex-multi-auth", version: "2.0.0", root, isLocalCheckout: false };
+}
+
+function historyOf(...sightings: PluginOriginHistory["sightings"]): PluginOriginHistory {
+	return { version: 1, sightings };
+}
+
+describe("plugin-origin", () => {
+	let tempRoot: string | null = null;
+
+	afterEach(async () => {
+		vi.doUnmock("proper-lockfile");
+		vi.doUnmock("node:fs/promises");
+		vi.resetModules();
+		if (tempRoot) {
+			await rm(tempRoot, { recursive: true, force: true });
+			tempRoot = null;
+		}
+	});
+
+	describe("resolvePluginOrigin", () => {
+		it("reads the name and version off the nearest enclosing package", async () => {
+			tempRoot = await createTempRoot();
+			const packageRoot = await createPackage(
+				join(tempRoot, "checkout"),
+				"oc-codex-multi-auth",
+				"6.21.0",
+			);
+			const moduleUrl = pathToFileURL(join(packageRoot, "dist", "lib", "plugin-origin.js")).href;
+
+			expect(resolvePluginOrigin(moduleUrl)).toEqual({
+				name: "oc-codex-multi-auth",
+				version: "6.21.0",
+				root: packageRoot,
+				isLocalCheckout: true,
+			});
+		});
+
+		it("reports a package-manager root as not a local checkout", async () => {
+			tempRoot = await createTempRoot();
+			const packageRoot = await createPackage(
+				join(tempRoot, "node_modules", "oc-codex-multi-auth"),
+				"oc-codex-multi-auth",
+				"6.21.0",
+			);
+			const moduleUrl = pathToFileURL(join(packageRoot, "dist", "index.js")).href;
+
+			expect(resolvePluginOrigin(moduleUrl)?.isLocalCheckout).toBe(false);
+		});
+
+		it("returns null when no enclosing package declares a name", async () => {
+			tempRoot = await createTempRoot();
+			const orphan = join(tempRoot, "a", "b", "c");
+			await mkdir(orphan, { recursive: true });
+
+			expect(resolvePluginOrigin(pathToFileURL(join(orphan, "index.js")).href)).toBeNull();
+			expect(resolvePluginOrigin("not-a-url")).toBeNull();
+		});
+	});
+
+	describe("isPackageManagerRoot", () => {
+		it.each([
+			["/home/dev/node_modules/oc-codex-multi-auth", true],
+			["/home/dev/.cache/opencode/packages/oc-codex-multi-auth@latest", true],
+			["/home/dev/src/oc-codex-multi-auth", false],
+			["/home/dev/workspace/packages/oc-codex-multi-auth", false],
+		])("classifies %s", (root, expected) => {
+			expect(isPackageManagerRoot(root)).toBe(expected);
+		});
+	});
+
+	describe("withSighting", () => {
+		it("keeps the original firstSeen when the same root is seen again", () => {
+			const origin = localCheckout("/src/plugin");
+			const first = withSighting(historyOf(), origin, "2026-01-01T00:00:00.000Z");
+			const second = withSighting(first, origin, "2026-02-01T00:00:00.000Z");
+
+			expect(second.sightings).toEqual([
+				{ ...origin, firstSeen: "2026-01-01T00:00:00.000Z", lastSeen: "2026-02-01T00:00:00.000Z" },
+			]);
+		});
+
+		it("appends a new root instead of replacing the previous one", () => {
+			const checkout = localCheckout("/src/plugin");
+			const installed = installedPackage("/cache/node_modules/oc-codex-multi-auth");
+			const history = withSighting(
+				withSighting(historyOf(), checkout, "2026-01-01T00:00:00.000Z"),
+				installed,
+				"2026-03-01T00:00:00.000Z",
+			);
+
+			expect(history.sightings.map((sighting) => sighting.root)).toEqual([
+				checkout.root,
+				installed.root,
+			]);
+		});
+
+		it("caps the recorded history", () => {
+			let history = historyOf();
+			for (let index = 0; index < 25; index += 1) {
+				history = withSighting(
+					history,
+					localCheckout(`/src/plugin-${index}`),
+					`2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+				);
+			}
+
+			expect(history.sightings).toHaveLength(10);
+			expect(history.sightings.at(-1)?.root).toBe("/src/plugin-24");
+		});
+	});
+
+	describe("readPluginOriginHistory", () => {
+		it("returns an empty history for a missing or unreadable file", async () => {
+			tempRoot = await createTempRoot();
+
+			expect(readPluginOriginHistory(join(tempRoot, "absent.json")).sightings).toEqual([]);
+
+			const malformed = join(tempRoot, "malformed.json");
+			await writeFile(malformed, "{ not json", "utf-8");
+			expect(readPluginOriginHistory(malformed).sightings).toEqual([]);
+		});
+
+		it("drops entries that do not carry a full sighting", async () => {
+			tempRoot = await createTempRoot();
+			const historyPath = join(tempRoot, "origin.json");
+			const valid = {
+				...localCheckout("/src/plugin"),
+				firstSeen: "2026-01-01T00:00:00.000Z",
+				lastSeen: "2026-01-01T00:00:00.000Z",
+			};
+			await writeFile(
+				historyPath,
+				JSON.stringify({ version: 1, sightings: [valid, { root: "/src/other" }, null, 42] }),
+				"utf-8",
+			);
+
+			expect(readPluginOriginHistory(historyPath).sightings).toEqual([valid]);
+		});
+	});
+
+	describe("recordPluginOrigin", () => {
+		it("persists a sighting that reads back unchanged", async () => {
+			tempRoot = await createTempRoot();
+			const historyPath = join(tempRoot, "state", "origin.json");
+			const origin = localCheckout("/src/plugin");
+
+			const written = await recordPluginOrigin(
+				origin,
+				historyPath,
+				() => new Date("2026-05-05T10:00:00.000Z"),
+			);
+
+			expect(written.sightings).toEqual([
+				{ ...origin, firstSeen: "2026-05-05T10:00:00.000Z", lastSeen: "2026-05-05T10:00:00.000Z" },
+			]);
+			expect(readPluginOriginHistory(historyPath)).toEqual(written);
+			await expect(readFile(historyPath, "utf-8")).resolves.toContain("\n");
+		});
+
+		it("leaves no temporary file behind", async () => {
+			tempRoot = await createTempRoot();
+			const historyPath = join(tempRoot, "origin.json");
+
+			await recordPluginOrigin(localCheckout("/src/plugin"), historyPath);
+
+			await expect(readFile(`${historyPath}.${process.pid}.tmp`, "utf-8")).rejects.toMatchObject({
+				code: "ENOENT",
+			});
+		});
+	});
+
+	describe("findReplacedLocalCheckout", () => {
+		const checkoutSighting = {
+			...localCheckout("/src/plugin"),
+			firstSeen: "2026-01-01T00:00:00.000Z",
+			lastSeen: "2026-02-01T00:00:00.000Z",
+		};
+
+		it("reports the checkout that an installed package took over from", () => {
+			const installed = installedPackage("/cache/node_modules/oc-codex-multi-auth");
+
+			expect(findReplacedLocalCheckout(installed, historyOf(checkoutSighting))).toEqual(
+				checkoutSighting,
+			);
+		});
+
+		it("stays silent while a checkout is the live origin", () => {
+			const other = localCheckout("/src/another-plugin");
+
+			expect(findReplacedLocalCheckout(other, historyOf(checkoutSighting))).toBeNull();
+		});
+
+		it("ignores a checkout of a different package", () => {
+			const installed = installedPackage("/cache/node_modules/oc-codex-multi-auth");
+			const unrelated = { ...checkoutSighting, name: "some-other-plugin" };
+
+			expect(findReplacedLocalCheckout(installed, historyOf(unrelated))).toBeNull();
+		});
+
+		it("reports the most recently seen checkout when several are on record", () => {
+			const older = { ...checkoutSighting, root: "/src/old", lastSeen: "2026-01-15T00:00:00.000Z" };
+			const newer = { ...checkoutSighting, root: "/src/new", lastSeen: "2026-04-01T00:00:00.000Z" };
+			const installed = installedPackage("/cache/node_modules/oc-codex-multi-auth");
+
+			expect(findReplacedLocalCheckout(installed, historyOf(older, newer))?.root).toBe("/src/new");
+		});
+	});
+
+	it("describes each origin in terms a reader can act on", () => {
+		expect(describePluginOrigin(localCheckout("/src/plugin"))).toBe(
+			"local checkout at /src/plugin (v1.0.0)",
+		);
+		expect(describePluginOrigin(installedPackage("/cache/pkg"))).toBe("installed package v2.0.0");
+		expect(describePluginOrigin(null)).toBe("unknown");
+	});
+
+	it("keeps the history beside the other plugin state", () => {
+		expect(getPluginOriginHistoryPath("/home/dev")).toBe(
+			join("/home", "dev", ".opencode", "oc-codex-multi-auth-origin.json"),
+		);
+	});
+
+	// The installer runs before anything is built and so cannot import this
+	// module; it spells the same file name itself. Each side would otherwise go
+	// on reporting confidently about a file the other never writes.
+	it("agrees with the installer about where the history lives", async () => {
+		const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		expect(__test.ORIGIN_HISTORY_FILE_NAME).toBe(HISTORY_FILE_NAME);
+		expect(__test.buildPaths("/home/dev").originHistoryPath).toBe(
+			getPluginOriginHistoryPath("/home/dev"),
+		);
+	});
+
+	it("keeps every concurrently recorded origin", async () => {
+		tempRoot = await createTempRoot();
+		const historyPath = join(tempRoot, ".opencode", "oc-codex-multi-auth-origin.json");
+		const origins = Array.from({ length: 8 }, (_unused, index) =>
+			localCheckout(join(tempRoot ?? "", `checkout-${index}`)),
+		);
+
+		await Promise.all(origins.map((origin) => recordPluginOrigin(origin, historyPath)));
+
+		const recorded = readPluginOriginHistory(historyPath).sightings.map(
+			(sighting) => sighting.root,
+		);
+		expect(new Set(recorded)).toEqual(new Set(origins.map((origin) => origin.root)));
+	});
+
+	it("gives up the write when the lease is reclaimed, rather than ending the process", async () => {
+		tempRoot = await createTempRoot();
+		const historyPath = join(tempRoot, ".opencode", "oc-codex-multi-auth-origin.json");
+		let leaseOptions: { onCompromised?: (error: Error) => void } | undefined;
+
+		vi.resetModules();
+		vi.doMock("proper-lockfile", () => ({
+			lock: async (_target: string, options: { onCompromised?: (error: Error) => void }) => {
+				leaseOptions = options;
+				options.onCompromised?.(new Error("lock file was removed"));
+				return async () => {
+					throw new Error("Lock is already released");
+				};
+			},
+		}));
+		const origin = localCheckout(join(tempRoot, "checkout"));
+		const module = await import("../lib/plugin-origin.js");
+
+		await expect(module.recordPluginOrigin(origin, historyPath)).resolves.toEqual(historyOf());
+		expect(module.readPluginOriginHistory(historyPath).sightings).toEqual([]);
+		// Supplying a handler at all is the fix: proper-lockfile's own default is
+		// `(err) => { throw err }`, raised from the timer that refreshes the lease
+		// and therefore reachable by no caller and fatal to the host process.
+		const onCompromised = leaseOptions?.onCompromised;
+		expect(typeof onCompromised).toBe("function");
+		expect(() => onCompromised?.(new Error("reclaimed again"))).not.toThrow();
+	});
+
+	it("leaves newer history alone when the lease is lost while the copy is written", async () => {
+		tempRoot = await createTempRoot();
+		const historyPath = join(tempRoot, ".opencode", "oc-codex-multi-auth-origin.json");
+		const newOwner = {
+			...localCheckout(join(tempRoot, "written-by-the-new-owner")),
+			firstSeen: "2026-01-01T00:00:00.000Z",
+			lastSeen: "2026-01-01T00:00:00.000Z",
+		};
+		await mkdir(join(tempRoot, ".opencode"), { recursive: true });
+		await writeFile(historyPath, JSON.stringify(historyOf(newOwner)), "utf-8");
+
+		let leaseOptions: { onCompromised?: (error: Error) => void } | undefined;
+		vi.resetModules();
+		vi.doMock("proper-lockfile", () => ({
+			lock: async (_target: string, options: { onCompromised?: (error: Error) => void }) => {
+				leaseOptions = options;
+				return async () => {};
+			},
+		}));
+		// Reclaimed precisely inside the window the fix closes: after the merge
+		// has been decided, while the replacement copy is still being written.
+		vi.doMock("node:fs/promises", async () => {
+			const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+			return {
+				...actual,
+				writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+					leaseOptions?.onCompromised?.(new Error("lease reclaimed mid-write"));
+					return actual.writeFile(...args);
+				},
+			};
+		});
+		const module = await import("../lib/plugin-origin.js");
+		const origin = localCheckout(join(tempRoot, "losing-writer"));
+
+		await module.recordPluginOrigin(origin, historyPath);
+
+		const roots = module.readPluginOriginHistory(historyPath).sightings.map((s) => s.root);
+		expect(roots).toEqual([newOwner.root]);
+		expect(roots).not.toContain(origin.root);
+	});
+
+	describe("Windows path casing", () => {
+		it("recognizes package-manager output under any casing, but only on Windows", () => {
+			const cacheRoot = "C:/Users/dev/.cache/opencode/NODE_MODULES/oc-codex-multi-auth";
+
+			expect(isPackageManagerRoot(cacheRoot, "win32")).toBe(true);
+			expect(isPackageManagerRoot(cacheRoot, "linux")).toBe(false);
+			expect(isPackageManagerRoot("/home/dev/src/oc-codex-multi-auth", "win32")).toBe(false);
+		});
+
+		it("keeps one sighting for one directory spelled two ways", () => {
+			const first = withSighting(
+				historyOf(),
+				localCheckout("C:\\Repo\\plugin"),
+				"2026-01-01T00:00:00.000Z",
+				"win32",
+			);
+			const second = withSighting(
+				first,
+				localCheckout("c:\\repo\\plugin"),
+				"2026-02-01T00:00:00.000Z",
+				"win32",
+			);
+
+			expect(second.sightings).toHaveLength(1);
+			expect(second.sightings[0]?.firstSeen).toBe("2026-01-01T00:00:00.000Z");
+			expect(second.sightings[0]?.lastSeen).toBe("2026-02-01T00:00:00.000Z");
+			// Recorded as this run spelled it, so a reader is shown a real path.
+			expect(second.sightings[0]?.root).toBe("c:\\repo\\plugin");
+
+			expect(
+				withSighting(first, localCheckout("c:\\repo\\plugin"), "2026-02-01T00:00:00.000Z", "linux")
+					.sightings,
+			).toHaveLength(2);
+		});
+
+		it("does not call a differently cased spelling of the same root a replacement", () => {
+			const checkout = {
+				...localCheckout("C:\\Repo\\plugin"),
+				firstSeen: "2026-01-01T00:00:00.000Z",
+				lastSeen: "2026-01-01T00:00:00.000Z",
+			};
+			const installed = {
+				...installedPackage("c:\\repo\\plugin"),
+				isLocalCheckout: false,
+			};
+
+			expect(findReplacedLocalCheckout(installed, historyOf(checkout), "win32")).toBeNull();
+			expect(findReplacedLocalCheckout(installed, historyOf(checkout), "linux")?.root).toBe(
+				"C:\\Repo\\plugin",
+			);
+		});
+	});
+});

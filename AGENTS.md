@@ -75,6 +75,8 @@ Package version: see `package.json` (`version` field).
 - Do not hardcode ports other than OAuth callback port `1455`; use existing constants/helpers.
 - Do not remove `store: false` or `reasoning.encrypted_content` from shipped config templates.
 - Do not treat `oc-chatgpt-multi-auth` as current except in migration/cleanup logic.
+- Do not identify a plugin entry by the spelling of its last path segment. Resolve what it points at; a path outside package-manager output - `node_modules`, and the versioned directories of the OpenCode package cache - belongs to whoever wrote it and is never rewritten or removed.
+- Do not run the installer to repair a developer machine's config. It writes that machine's real OpenCode config; `update` refreshes the package cache without touching either file.
 - Do not expose account emails, access tokens, refresh tokens, or raw prompt/response bodies in normal diagnostics.
 - Do not silently delete JSON credentials when keychain operations fail.
 - Do not document boolean env overrides as truthy for `"true"` or `"yes"`. Only `"1"` is truthy.
@@ -91,11 +93,22 @@ npm run test:watch       # vitest watch mode
 npm run lint             # eslint
 ```
 
+Installer, which writes the real `~/.config/opencode/opencode.json` and
+`tui.json` of whoever runs it:
+
+```bash
+npx -y oc-codex-multi-auth@latest          # register plugin entries only
+npx -y oc-codex-multi-auth@latest --full   # also install the explicit model catalog
+npx -y oc-codex-multi-auth@latest update   # refresh the package cache; never reads or writes config
+```
+
+A config that already registers this plugin keeps the entry it has, including
+one pointing at a working checkout of this repository. The published package
+name is added only when nothing in the config resolves to this plugin.
+
 Standalone CLI examples:
 
 ```bash
-npx -y oc-codex-multi-auth@latest
-npx -y oc-codex-multi-auth@latest --full
 oc-codex-multi-auth warm
 oc-codex-multi-auth status --json
 oc-codex-multi-auth doctor
@@ -112,6 +125,7 @@ oc-codex-multi-auth doctor
 - Per-project accounts: `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json`.
 - Global accounts: `~/.opencode/oc-codex-multi-auth-accounts.json`.
 - Flagged accounts: `oc-codex-multi-auth-flagged-accounts.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
+- Credential snapshots: `backups/codex-credential-snapshot-*.json`, written beside the active accounts file. Holds the previous store content, captured before a significant write; retention prunes strictly by that prefix so it never deletes another backup kind.
 - Quota notification state: `oc-codex-multi-auth-quota-notifications.json`, written beside the active accounts file (per project when `perProjectAccounts` is on).
 - Request logs: `~/.opencode/logs/codex-plugin/` when logging is enabled.
 - Model catalog: 13 modern bases / 59 variants; legacy 59 explicit.

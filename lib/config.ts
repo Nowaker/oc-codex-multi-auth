@@ -33,6 +33,7 @@ import {
 	EnvBooleanSchema,
 	EnvNumberSchema,
 	makeEnvEnumSchema,
+	makeEnvIntegerSchema,
 } from "./schemas.js";
 
 const CONFIG_PATH = join(homedir(), ".opencode", "openai-codex-auth-config.json");
@@ -104,6 +105,8 @@ const DEFAULT_CONFIG: PluginConfig = {
 	toastDurationMs: 5_000,
 	accountToasts: true,
 	perProjectAccounts: true,
+	credentialSnapshots: true,
+	credentialSnapshotsMaxCount: 10,
 	sessionRecovery: true,
 	autoResume: true,
 	autoUpdate: true,
@@ -578,6 +581,11 @@ function parseNumberEnv(value: string | undefined): number | undefined {
 	return result.success ? result.data : undefined;
 }
 
+function parseIntegerEnv(value: string | undefined, min: number): number | undefined {
+	const result = makeEnvIntegerSchema(min).safeParse(value);
+	return result.success ? result.data : undefined;
+}
+
 function parseEnumEnv<T extends string>(
 	value: string | undefined,
 	allowed: ReadonlySet<T>,
@@ -1041,6 +1049,43 @@ export function getPerProjectAccounts(pluginConfig: PluginConfig): boolean {
 		pluginConfig.perProjectAccounts,
 		true,
 	);
+}
+
+/**
+ * Whether the credential store is snapshotted before a significant write.
+ *
+ * On by default: the snapshots are the only recourse if the accounts file is
+ * ever replaced wholesale, and they are worth little unless they are recent
+ * enough to hold refresh tokens that still work.
+ */
+export function getCredentialSnapshots(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_CREDENTIAL_SNAPSHOTS",
+		pluginConfig.credentialSnapshots,
+		true,
+	);
+}
+
+/**
+ * How many credential snapshots to keep. `0` keeps every snapshot; turning the
+ * feature off is {@link getCredentialSnapshots}' job, not a magic zero.
+ */
+export function getCredentialSnapshotsMaxCount(pluginConfig: PluginConfig): number {
+	// This env override is strict where the other number settings clamp: a
+	// value the file schema would reject (non-integer, or below the floor)
+	// falls back to the config file / default instead of being silently
+	// repaired. Flooring "-5" to 0 would select keep-everything — the
+	// unbounded snapshot growth the floor exists to rule out — and truncating
+	// "2.5" would honour a count the user never wrote.
+	const envValue = parseIntegerEnv(
+		process.env.CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT,
+		0,
+	);
+	if (envValue !== undefined) return envValue;
+	const configValue = pluginConfig.credentialSnapshotsMaxCount;
+	return configValue !== undefined && Number.isInteger(configValue) && configValue >= 0
+		? configValue
+		: 10;
 }
 
 export function getParallelProbing(pluginConfig: PluginConfig): boolean {

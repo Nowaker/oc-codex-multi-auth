@@ -217,14 +217,18 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 			if (!target) {
 				throw new Error(`No account at position ${index + 1}.`);
 			}
-			const label = formatCommandAccountLabel(target, index);
+			const label = formatCommandAccountLabel(target, index, {
+				peerAccounts: storage.accounts,
+			});
 			const displayLabel = formatCommandAccountLabel(target, index, {
 				maskEmail,
+				peerAccounts: storage.accounts,
 			});
 			const identity = buildJsonAccountIdentity(index, {
 				includeSensitive: includeSensitiveOutput,
 				account: target,
 				label,
+				peerAccounts: storage.accounts,
 			});
 
 			try {

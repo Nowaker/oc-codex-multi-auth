@@ -144,6 +144,7 @@ export function createCodexWarmTool(ctx: ToolContext): ToolDefinition {
 				const account = storage.accounts[result.index];
 				const label = formatCommandAccountLabel(account, result.index, {
 					maskEmail,
+					peerAccounts: storage.accounts,
 				});
 				if (result.status === "warmed") {
 					lines.push(`  ${getStatusMarker(ui, "ok")} ${label}: Window started`);

@@ -58,6 +58,8 @@ export const PluginConfigSchema = z.object({
 	toastDurationMs: z.number().min(1000).optional(),
 	accountToasts: z.boolean().optional(),
 	perProjectAccounts: z.boolean().optional(),
+	credentialSnapshots: z.boolean().optional(),
+	credentialSnapshotsMaxCount: z.number().int().min(0).optional(),
 	sessionRecovery: z.boolean().optional(),
 	autoResume: z.boolean().optional(),
 	autoUpdate: z.boolean().optional(),
@@ -637,6 +639,24 @@ export const EnvNumberSchema = z
 		const parsed = Number(trimmed);
 		return Number.isFinite(parsed) ? parsed : undefined;
 	});
+
+/**
+ * Factory for an integer env-var parser with an inclusive lower bound.
+ *
+ * Same fallback contract as {@link EnvNumberSchema} — unacceptable input
+ * becomes undefined so the caller falls back to the config file / default —
+ * but it additionally rejects non-integers and values below `min` instead of
+ * leaving them for a resolver to clamp. Clamping is the wrong default when
+ * the bound is load-bearing: `CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT=-5`
+ * floored to `0` would mean "keep every snapshot", the unbounded-growth case
+ * the bound exists to rule out.
+ */
+export function makeEnvIntegerSchema(min: number) {
+	return EnvNumberSchema.transform((value): number | undefined => {
+		if (value === undefined) return undefined;
+		return Number.isInteger(value) && value >= min ? value : undefined;
+	});
+}
 
 /**
  * Factory for a string-enum env-var parser.

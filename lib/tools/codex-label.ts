@@ -163,6 +163,7 @@ export function createCodexLabelTool(ctx: ToolContext): ToolDefinition {
 
 					const accountLabel = formatCommandAccountLabel(account, targetIndex, {
 						maskEmail,
+						peerAccounts: accounts,
 					});
 					return { kind: "ok", accountLabel, previousLabel };
 				},

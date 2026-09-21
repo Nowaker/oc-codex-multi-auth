@@ -4006,6 +4006,234 @@ describe("OpenAIOAuthPlugin", () => {
 			}
 		});
 	});
+
+	// Every member of a ChatGPT Business workspace shares its `accountId`, so
+	// rendering that alone gave distinct members one identical `id:` and read as
+	// a single account duplicated. These drive the REAL `codex-list`, and so the
+	// real `formatCommandAccountLabel` closure behind every `codex-*` tool.
+	describe("seat identity across account-display surfaces", () => {
+		const setMaskEmail = async (value: boolean) => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCodexTuiMaskEmail).mockReturnValue(value);
+		};
+
+		const WORKSPACE_ID = "05cd9f040000000000989a40";
+
+		// The rendered account rows, stripped of their leading number. The
+		// number alone always differs, so comparing whole rows would pass even
+		// when every identity on them is identical - which is the bug.
+		const identityRows = (output: string): string[] =>
+			output
+				.split("\n")
+				.filter((line) => /^\d+ /.test(line))
+				.map((line) => line.replace(/^\d+ +/, "").trim());
+
+		it("codex-list: distinguishes two seats sharing one workspace account id", async () => {
+			await setMaskEmail(false);
+			// Same email AND same workspace id on both rows, so the seat is the
+			// only thing that can tell them apart.
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "user_aaaaaa111111",
+				},
+				{
+					refreshToken: "r2",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "user_bbbbbb222222",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			expect(output).toContain("111111");
+			expect(output).toContain("222222");
+			const [first, second] = identityRows(output);
+			expect(first).not.toBe(second);
+		});
+
+		// The reported case, with the reviewer's own example ids. Six characters
+		// is a tail, not an identity: `member-000001` and `other-000001` are
+		// different seats that end the same way. A fixed six-character seat
+		// renders both as `000001` and puts the display back to claiming two
+		// accounts are one - the exact false reading this suffix exists to stop.
+		it("codex-list: distinguishes member ids that share a six-character tail", async () => {
+			await setMaskEmail(false);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "member-000001",
+				},
+				{
+					refreshToken: "r2",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "other-000001",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			const [first, second] = identityRows(output);
+			expect(first).not.toBe(second);
+			// Grown past six to the shortest tail that separates them.
+			expect(output).toContain("ber-000001");
+			expect(output).toContain("her-000001");
+		});
+
+		// Email and workspace label have no length bound, so anything that
+		// shares a fixed-width cell with them can be pushed off its right edge.
+		// The seat must survive an email long enough to truncate the label.
+		it("codex-list: keeps both seats legible when a long email truncates the label", async () => {
+			await setMaskEmail(false);
+			const longEmail =
+				"extremely.long.account.display.name@very-long-corporate-subdomain.example.com";
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: longEmail,
+					accountId: WORKSPACE_ID,
+					accountUserId: "user_aaaaaa111111",
+				},
+				{
+					refreshToken: "r2",
+					email: longEmail,
+					accountId: WORKSPACE_ID,
+					accountUserId: "user_bbbbbb222222",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			// The label really is truncated here, so the assertions below are
+			// exercising the overflow case rather than a comfortable fit.
+			expect(output).toContain("…");
+			expect(output).toContain("111111");
+			expect(output).toContain("222222");
+			const [first, second] = identityRows(output);
+			expect(first).not.toBe(second);
+		});
+
+		// The seat column is sized to the seats it holds rather than to a fixed
+		// number. These two seats are the same length and differ only in their
+		// last character, so any column narrower than they are truncates both to
+		// the same string - a seat that is present but no longer distinguishing.
+		it("codex-list: sizes the seat column so it never truncates a seat", async () => {
+			await setMaskEmail(false);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "xAAAAAB",
+				},
+				{
+					refreshToken: "r2",
+					email: "shared@example.com",
+					accountId: WORKSPACE_ID,
+					accountUserId: "yAAAAAC",
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			expect(output).toContain("AAAAAB");
+			expect(output).toContain("AAAAAC");
+			const [first, second] = identityRows(output);
+			expect(first).not.toBe(second);
+		});
+
+		it("codex-list: renders no seat for an account with no member id", async () => {
+			await setMaskEmail(false);
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					email: "solo@example.com",
+					accountId: WORKSPACE_ID,
+				},
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			expect(output).toContain("solo@example.com");
+			expect(output).not.toContain("seat:");
+		});
+
+		// A SYNTHETIC single-divergence shape - see the measured profile below
+		// for what the backend actually issues. Four seats differing only at
+		// index 0 across a 38-character shared tail: a tail-based seat renders
+		// all 39 of those characters, and the column is sized to what it holds,
+		// so the row balloons past 150 characters and spends 38 of them
+		// repeating the workspace id already in the Label cell.
+		it("codex-list: keeps the seat column narrow for ids that differ only at the head", async () => {
+			await setMaskEmail(false);
+			const workspaceUuid = "05cd9f04-d56a-4256-9934-9cb827989a40";
+			mockStorage.accounts = ["9", "X", "E", "W"].map((seat, position) => ({
+				refreshToken: `r${position}`,
+				email: "shared@example.com",
+				accountId: workspaceUuid,
+				accountUserId: `${seat}__${workspaceUuid}`,
+			}));
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			const rows = identityRows(output);
+			expect(rows).toHaveLength(4);
+			expect(new Set(rows).size).toBe(4);
+			// The seat is an excerpt, not the id repeated into a second column.
+			expect(output).not.toContain(`9__${workspaceUuid}`);
+			// 119 characters with a 6-wide seat column, 152 with a 39-wide one.
+			for (const line of output.split("\n").filter((line) => /^\d+ /.test(line))) {
+				expect(line.length, line).toBeLessThan(130);
+			}
+		});
+
+		// The profile measured structurally against a real nine-seat Business
+		// pool: 67-character ids, five shared leading characters, no shared
+		// tail, and pairwise first divergences in clusters 26 characters apart.
+		// Asserted as distinct and narrow rather than as a particular excerpt -
+		// which strategy reaches it is an implementation detail, and pinning one
+		// is how the fixture above came to encode a wrong reading of the data.
+		it("codex-list: keeps rows distinct and narrow on the measured real-pool id shape", async () => {
+			await setMaskEmail(false);
+			const w1 = "05cd9f04-d56a-4256-9934-9cb827989a40";
+			const w2 = "0ce0db3a-1111-2222-3333-444444ff8839";
+			const w3 = "15aaaaaa-2222-3333-4444-555555aa1111";
+			const w4 = "25bbbbbb-3333-4444-5555-666666bb2222";
+			const w5 = "35cccccc-4444-5555-6666-777777cc3333";
+			const pool: Array<[string, string]> = [
+				["A", w1],
+				["B", w1],
+				["C", w1],
+				["D", w1],
+				["E", w2],
+				["A", w2],
+				["B", w3],
+				["F", w4],
+				["C", w5],
+			];
+			mockStorage.accounts = pool.map(([head, workspace], position) => ({
+				refreshToken: `r${position}`,
+				email: "shared@example.com",
+				accountId: workspace,
+				accountUserId: `user_${head}0123456789abcdefghijklmno${workspace}`,
+			}));
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			const rows = identityRows(output);
+			expect(rows).toHaveLength(9);
+			expect(new Set(rows).size).toBe(9);
+			for (const line of output.split("\n").filter((line) => /^\d+ /.test(line))) {
+				expect(line.length, line).toBeLessThan(130);
+			}
+		});
+	});
 });
 
 describe("OpenAIOAuthPlugin edge cases", () => {
@@ -5361,10 +5589,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		// The runtime label must be built with masking enabled. If the
 		// `{ maskEmail }` option is dropped from this call site, this fails.
+		// Matched by containment so a later option added alongside it - the
+		// seat-disambiguating `peerAccounts` - does not read as a regression.
 		expect(vi.mocked(accountsModule.formatAccountLabel)).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.any(Number),
-			{ maskEmail: true },
+			expect.objectContaining({ maskEmail: true }),
 		);
 	});
 

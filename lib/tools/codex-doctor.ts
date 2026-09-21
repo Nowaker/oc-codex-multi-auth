@@ -38,6 +38,12 @@ import {
 	type RoutingVisibilitySnapshot,
 } from "../runtime.js";
 import {
+	describePluginOrigin,
+	findReplacedLocalCheckout,
+	getPluginOrigin,
+	readPluginOriginHistory,
+} from "../plugin-origin.js";
+import {
 	findAccountIndexByIdentity,
 	type RefreshAccountIdentity,
 } from "./refresh-account.js";
@@ -151,6 +157,18 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 				action: `A recent re-login landed on a disabled slot; re-enable it in oc-codex-multi-auth-accounts.json if intended (slots: ${disabledWithFreshCredential
 					.map((index) => index + 1)
 					.join(", ")}).`,
+			});
+		}
+		const origin = getPluginOrigin();
+		const replacedCheckout = origin
+			? findReplacedLocalCheckout(origin, readPluginOriginHistory())
+			: null;
+		if (replacedCheckout) {
+			findings.push({
+				severity: "warning",
+				code: "plugin-origin-replaced",
+				summary: `This plugin now loads from the installed package, but ran from ${replacedCheckout.root} until ${replacedCheckout.lastSeen}.`,
+				action: `Point the OpenCode plugin entry back at ${replacedCheckout.root} if your own build should still be loaded.`,
 			});
 		}
 		findings.push(...extraFindings);
@@ -367,6 +385,7 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 					technicalSnapshot: deep
 						? {
 								storagePath: getStoragePath(),
+								pluginOrigin: getPluginOrigin(),
 								runtimeFailures: {
 									failedRequests: runtime.failedRequests,
 									rateLimitedResponses: runtime.rateLimitedResponses,
@@ -463,6 +482,14 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 					lines.push(
 						formatUiKeyValue(
 							ui,
+							"Running from",
+							describePluginOrigin(getPluginOrigin()),
+							"muted",
+						),
+					);
+					lines.push(
+						formatUiKeyValue(
+							ui,
 							"Runtime failures",
 							`failed=${runtime.failedRequests}, rateLimited=${runtime.rateLimitedResponses}, authRefreshFailed=${runtime.authRefreshFailures}, server=${runtime.serverErrors}, network=${runtime.networkErrors}`,
 							"muted",
@@ -520,6 +547,7 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 				lines.push("");
 				lines.push("Technical snapshot:");
 				lines.push(`  Storage: ${getStoragePath()}`);
+				lines.push(`  Running from: ${describePluginOrigin(getPluginOrigin())}`);
 				lines.push(
 					`  Runtime failures: failed=${runtime.failedRequests}, rateLimited=${runtime.rateLimitedResponses}, authRefreshFailed=${runtime.authRefreshFailures}, server=${runtime.serverErrors}, network=${runtime.networkErrors}`,
 				);

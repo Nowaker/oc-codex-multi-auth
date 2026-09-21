@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join, resolve } from "node:path";
 
 vi.mock("node:fs", () => ({
 	readFileSync: vi.fn(),
@@ -6,6 +7,7 @@ vi.mock("node:fs", () => ({
 	existsSync: vi.fn(),
 	mkdirSync: vi.fn(),
 	rmSync: vi.fn(),
+	realpathSync: vi.fn(),
 }));
 
 describe("auto-update-checker", () => {
@@ -302,6 +304,21 @@ describe("auto-update-checker", () => {
 			await expect(checkAndNotify(showToast)).resolves.toBeUndefined();
 			expect(showToast).not.toHaveBeenCalled();
 		});
+
+		it("offers nothing for a build loaded from a local checkout", async () => {
+			vi.mocked(globalThis.fetch).mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: "5.0.0" }),
+			} as Response);
+			const showToast = vi.fn().mockResolvedValue(undefined);
+			const scheduleCacheClear = vi.fn(() => true);
+
+			await checkAndNotify(showToast, { localCheckout: true, scheduleCacheClear });
+
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+			expect(showToast).not.toHaveBeenCalled();
+			expect(scheduleCacheClear).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("clearUpdateCache", () => {
@@ -329,31 +346,100 @@ describe("auto-update-checker", () => {
 	});
 
 	describe("clearManagedOpenCodePluginCache", () => {
+		const cacheRoot = join("/tmp", "opencode-cache");
+		const resolveRealPath = (path: string) => path;
+		const packagesPath = join(cacheRoot, "packages", "oc-codex-multi-auth@latest");
+		const nodeModulesPath = join(cacheRoot, "node_modules", "oc-codex-multi-auth");
+		const checkoutPath = join("/home", "dev", "src", "oc-codex-multi-auth");
+
 		it("removes managed OpenCode package cache paths", () => {
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 
-			const cleared = clearManagedOpenCodePluginCache([
-				"C:\\cache\\packages\\oc-codex-multi-auth@latest",
-				"C:\\cache\\node_modules\\oc-codex-multi-auth",
-			]);
+			const cleared = clearManagedOpenCodePluginCache([packagesPath, nodeModulesPath], {
+				cacheRoot,
+				resolveRealPath,
+			});
 
 			expect(cleared).toBe(true);
-			expect(fs.rmSync).toHaveBeenCalledWith(
-				"C:\\cache\\packages\\oc-codex-multi-auth@latest",
-				{ recursive: true, force: true },
-			);
-			expect(fs.rmSync).toHaveBeenCalledWith(
-				"C:\\cache\\node_modules\\oc-codex-multi-auth",
-				{ recursive: true, force: true },
-			);
+			expect(fs.rmSync).toHaveBeenCalledWith(packagesPath, { recursive: true, force: true });
+			expect(fs.rmSync).toHaveBeenCalledWith(nodeModulesPath, { recursive: true, force: true });
 		});
 
 		it("returns false when no managed cache paths exist", () => {
 			vi.mocked(fs.existsSync).mockReturnValue(false);
 
-			const cleared = clearManagedOpenCodePluginCache([
-				"C:\\cache\\packages\\oc-codex-multi-auth@latest",
-			]);
+			const cleared = clearManagedOpenCodePluginCache([packagesPath], {
+				cacheRoot,
+				resolveRealPath,
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses a cache entry that resolves onto a linked working checkout", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+
+			const cleared = clearManagedOpenCodePluginCache([nodeModulesPath], {
+				cacheRoot,
+				resolveRealPath: (path) => (path === nodeModulesPath ? checkoutPath : path),
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses every path when the cache root itself resolves through a symlink", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+			// `~/.cache/opencode -> ~`: the resolved root is the whole home
+			// directory, so a realpath containment check would call anything under
+			// ~ "inside the cache".
+			const linkedRoot = join("/home", "dev", ".cache", "opencode");
+			const managedPath = join(linkedRoot, "node_modules", "oc-codex-multi-auth");
+
+			const cleared = clearManagedOpenCodePluginCache([managedPath], {
+				cacheRoot: linkedRoot,
+				resolveRealPath: (path) =>
+					path === resolve(linkedRoot) ? join("/home", "dev") : path,
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses a path outside the OpenCode cache directory", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+
+			const cleared = clearManagedOpenCodePluginCache([checkoutPath], {
+				cacheRoot,
+				resolveRealPath,
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses the cache directory itself", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+
+			const cleared = clearManagedOpenCodePluginCache([cacheRoot], {
+				cacheRoot,
+				resolveRealPath,
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses every path when the cache directory cannot be resolved", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+
+			const cleared = clearManagedOpenCodePluginCache([packagesPath], {
+				cacheRoot,
+				resolveRealPath: () => {
+					throw new Error("ENOENT");
+				},
+			});
 
 			expect(cleared).toBe(false);
 			expect(fs.rmSync).not.toHaveBeenCalled();
