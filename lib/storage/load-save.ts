@@ -25,7 +25,12 @@ import { AnyAccountStorageSchema, getValidationErrors } from "../schemas.js";
 import { renameWithWindowsRetry } from "./atomic-write.js";
 import { formatStorageErrorHint, StorageError } from "./errors.js";
 import { normalizeAccountStorage } from "./normalize.js";
-import { getConfigDir, isWithinDirectory } from "./paths.js";
+import { getConfigDir } from "./paths.js";
+import {
+  assertTestRunNeverTouchesRealHome,
+  TEST_HOME_ESCAPE_CODE,
+} from "./test-home-guard.js";
+import { trySnapshotCredentialStoreBeforeWrite } from "./credential-snapshots.js";
 import {
   getCurrentLegacyProjectStoragePath,
   getCurrentProjectRoot,
@@ -173,52 +178,6 @@ async function checkWorktreeLockForCurrentStorage(
       error: String(error),
     });
   }
-}
-
-/**
- * Refuse to touch account storage inside the developer's real home while the
- * test suite is running.
- *
- * `vitest.config.ts` redirects HOME to a sandbox before any module loads, but a
- * test that restores the captured real HOME, or a future regression in that
- * config, would otherwise read or overwrite live ChatGPT credentials.
- * `os.userInfo()` reads the passwd entry instead of `$HOME`, so it still names
- * the real home after the redirect and gives the check something the sandbox
- * cannot spoof. Inert outside vitest.
- *
- * The sandbox and the temp directory are exempt, and both exemptions are
- * load-bearing rather than convenience: on Windows `os.tmpdir()` normally sits
- * inside the user profile, so there every legitimate sandbox path is also a
- * real-home path and a bare home-prefix test would reject the entire suite.
- * Neither exemption can reach the production store, which lives under the real
- * home's `.opencode`.
- */
-function assertTestRunNeverTouchesRealHome(path: string): void {
-  if (!process.env.VITEST) return;
-
-  let realHome: string;
-  try {
-    realHome = os.userInfo().homedir;
-  } catch {
-    return;
-  }
-  if (!realHome || !isWithinDirectory(realHome, path)) return;
-
-  // A root exempts what lies beneath it only while it does not itself swallow
-  // the real home. Without that clause `OC_CODEX_TEST_HOME=/` or `TMPDIR=$HOME`
-  // would disarm the guard completely.
-  const exempts = (root: string | undefined): boolean =>
-    !!root && !isWithinDirectory(root, realHome) && isWithinDirectory(root, path);
-
-  if (exempts(process.env.OC_CODEX_TEST_HOME)) return;
-  if (exempts(os.tmpdir())) return;
-
-  throw new StorageError(
-    `Refusing to touch account storage inside the real home directory during a test run: ${path}`,
-    "TEST_HOME_ESCAPE",
-    path,
-    "A test resolved account storage against the developer's real home. Point HOME at a temp directory for the whole vitest process (see vitest.config.ts) instead of overriding it per test.",
-  );
 }
 
 async function ensureGitignore(storagePath: string): Promise<void> {
@@ -608,6 +567,12 @@ async function writeAccountsToPathUnlocked(path: string, storage: AccountStorage
     // Normalize before persisting so every write path enforces dedup semantics
     // (exact identity dedupe plus legacy email dedupe for identity-less records).
     const normalizedStorage = normalizeAccountStorage(storage) ?? storage;
+    // Preserve what is on disk now, before it is replaced. Compared against
+    // the normalized payload rather than the caller's, so a difference
+    // normalization erases never costs a snapshot. We are already inside
+    // `withStorageLock`, so the captured state is exactly the state this write
+    // supersedes.
+    await trySnapshotCredentialStoreBeforeWrite(path, normalizedStorage);
     const content = JSON.stringify(normalizedStorage, null, 2);
     await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 
@@ -733,6 +698,13 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   await checkWorktreeLockForCurrentStorage("save");
 
   if (isKeychainOptInEnabled()) {
+    // Credential snapshots are scoped to the JSON backend and do not cover
+    // keychain mode. That is enforced inside the snapshotter itself rather
+    // than by the absence of a call here, so neither the JSON fallback below
+    // nor `clearAccounts` can reintroduce a plaintext copy of the token set -
+    // see `snapshotCredentialStoreBeforeWrite`. Keychain users' recovery path
+    // stays `codex-export` plus the keychain's own backing store.
+    //
     // Normalize before serializing so the keychain receives the same shape
     // the JSON backend would have written. Using the same JSON format keeps
     // migration and rollback symmetric: a rolled-back JSON file is valid
@@ -814,6 +786,10 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * keychain delete and log at `error`. Both copies remain in sync so the
  * caller can retry safely. The operation is still best-effort (never
  * throws) to preserve the existing contract above the storage layer.
+ *
+ * @throws StorageError (code `TEST_HOME_ESCAPE`) - the single exception to
+ *   best-effort, and inert outside vitest. The guard refuses the deletion, so
+ *   absorbing it would return success for a clear that never happened.
  */
 export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
@@ -821,8 +797,23 @@ export async function clearAccounts(): Promise<void> {
     try {
       const path = getStoragePath();
       assertTestRunNeverTouchesRealHome(path);
+      // Deleting the store outright needs no significance test - `null` says
+      // there is no successor document to compare against. The snapshotter
+      // still applies its own config and keychain gates.
+      await trySnapshotCredentialStoreBeforeWrite(path, null);
       await fs.unlink(path);
     } catch (error) {
+      // The test-home guard is not a storage failure to absorb. It fires only
+      // under vitest, and it exists to fail a run that escaped its sandbox; it
+      // throws before the unlink, so swallowing it here would report a
+      // successful clear for a deletion that deliberately did not happen -
+      // fail-closed downgraded to fail-open on the one path that destroys the
+      // store. The same re-throw covers the snapshotter, which surfaces this
+      // code through `trySnapshotCredentialStoreBeforeWrite` for the same
+      // reason.
+      if (error instanceof StorageError && error.code === TEST_HOME_ESCAPE_CODE) {
+        throw error;
+      }
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
         jsonCleared = false;

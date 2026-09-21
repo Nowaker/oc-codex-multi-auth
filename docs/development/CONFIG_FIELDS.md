@@ -248,6 +248,8 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `toastDurationMs` | `5000` | `CODEX_AUTH_TOAST_DURATION_MS` | Toast visibility duration |
 | `accountToasts` | `true` | `CODEX_AUTH_ACCOUNT_TOASTS` | Gates only the informational "Using \<account\> (N/N)" selection toast; warning/error toasts are unaffected |
 | `perProjectAccounts` | `true` | `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | Project-scoped account pools |
+| `credentialSnapshots` | `true` | `CODEX_AUTH_CREDENTIAL_SNAPSHOTS` | Copy the previous account store into `backups/` before a significant change |
+| `credentialSnapshotsMaxCount` | `10` | `CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT` | Snapshots kept; `0` keeps all of them, and disabling is `credentialSnapshots`' job |
 | `sessionRecovery` | `true` | `CODEX_AUTH_SESSION_RECOVERY` | Auto-recover common API errors |
 | `autoResume` | `true` | `CODEX_AUTH_AUTO_RESUME` | Auto-resume after thinking-block recovery |
 | `autoUpdate` | `true` | `CODEX_AUTH_AUTO_UPDATE` | Daily npm update check + cache refresh |
@@ -266,7 +268,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 
 ### Numeric bounds
 
-`lib/schemas.ts` validates the config file with Zod. An out-of-bounds file value fails validation for that key, the loader logs a validation warning, and the key is dropped, so the default applies. It is never clamped to the nearest bound. Environment numeric overrides take a different path through `resolveNumberSetting` in `lib/config.ts`, which applies only a lower floor and no upper bound.
+`lib/schemas.ts` validates the config file with Zod. An out-of-bounds file value fails validation for that key, the loader logs a validation warning, and the key is dropped, so the default applies. It is never clamped to the nearest bound. Environment numeric overrides take a different path through `resolveNumberSetting` in `lib/config.ts`, which applies only a lower floor and no upper bound. The exception is `CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT`, which is strict instead of clamped: an env value that is not a non-negative integer is rejected outright and the config file / default applies, because flooring a negative value to `0` would silently select keep-everything.
 
 | field | config-file bounds (Zod) | env bounds (resolver) |
 |-------|--------------------------|-----------------------|
@@ -277,6 +279,7 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `streamStallTimeoutMs` | at least 1000 | 1000 |
 | `quotaNotifications.intervalMs` | at least 30000 | clamped up to 30000 |
 | `retryBudgetOverrides.*` | integer, at least 0 | (file only) |
+| `credentialSnapshotsMaxCount` | integer, at least 0 | integer, at least 0 (rejected, not clamped) |
 
 So `parallelProbingMaxConcurrency: 9` in the file falls back to the default `2`, while `CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY=9` is accepted with no ceiling.
 
