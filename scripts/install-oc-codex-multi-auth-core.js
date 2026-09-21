@@ -212,8 +212,28 @@ function pluginEntrySpecifier(entry) {
 	return null;
 }
 
-/** The path an entry names, exactly as the config spells it. */
-function pluginEntryPath(specifier) {
+/**
+ * Spellings that can only mean a location on disk: absolute paths, `~`,
+ * `./`/`../`, Windows drive letters, and UNC shares. Anything else that merely
+ * contains a separator (`@scope/name`, git URLs, `npm:` aliases) is ambiguous
+ * and counts as a path only when it resolves on this machine.
+ */
+function isExplicitPathSpecifier(specifier) {
+	return (
+		/^[a-zA-Z]:[\\/]/.test(specifier) ||
+		/^[\\/]/.test(specifier) ||
+		/^~[\\/]/.test(specifier) ||
+		/^\.\.?[\\/]/.test(specifier)
+	);
+}
+
+/**
+ * The path an entry names, exactly as the config spells it - and only when the
+ * specifier actually is a path. A `/` alone does not make one: registry and
+ * URL spellings can end in `oc-codex-multi-auth` without naming this package's
+ * checkout, so an ambiguous specifier counts only when it resolves on disk.
+ */
+function pluginEntryPath(specifier, baseDirectory) {
 	const trimmed = specifier.trim();
 	if (!trimmed) return null;
 	if (/^file:\/\//i.test(trimmed)) {
@@ -223,8 +243,10 @@ function pluginEntryPath(specifier) {
 			return null;
 		}
 	}
+	if (isExplicitPathSpecifier(trimmed)) return trimmed;
 	if (!trimmed.includes("/") && !trimmed.includes("\\")) return null;
-	return trimmed;
+	const inspectionPath = resolveInspectionPath(trimmed, baseDirectory);
+	return inspectionPath && existsSync(inspectionPath) ? trimmed : null;
 }
 
 function pluginPathSegments(entryPath) {
@@ -351,7 +373,7 @@ function classifyPluginEntry(entry, options = {}) {
 	const specifier = pluginEntrySpecifier(entry);
 	if (specifier === null) return { kind: UNRELATED_ENTRY, name: null };
 
-	const entryPath = pluginEntryPath(specifier);
+	const entryPath = pluginEntryPath(specifier, baseDirectory);
 	if (entryPath === null) {
 		const bare = specifier.trim().toLowerCase();
 		const name = getManagedPackageNames().find(
@@ -375,7 +397,12 @@ function classifyPluginEntry(entry, options = {}) {
 
 	return isPackageManagerPath(entryPath, { platform, cacheDirectory, inspectionPath })
 		? { kind: MANAGED_PACKAGE_ENTRY, name: managedName }
-		: { kind: LOCAL_CHECKOUT_ENTRY, name: managedName, path: inspectionPath ?? entryPath };
+		: {
+			kind: LOCAL_CHECKOUT_ENTRY,
+			name: managedName,
+			path: inspectionPath ?? entryPath,
+			resolvesOnDisk: Boolean(inspectionPath && existsSync(inspectionPath)),
+		};
 }
 
 /**
@@ -391,9 +418,12 @@ function normalizePluginList(list, onNotice, options = {}) {
 	const classifications = entries.map((entry) => classifyPluginEntry(entry, options));
 	// A checkout of this package already IS the registration, so a published
 	// entry beside it is a second copy of the same plugin for OpenCode to load.
-	// Only a checkout of the CURRENT package counts: the former name is valid
-	// for cleanup, never as the registration the installer exists to ensure.
-	const checkoutRegistered = classifications.some(
+	// `options.checkoutRegistered` carries the same fact across config files: a
+	// checkout registered only in opencode.json still suppresses the published
+	// name in tui.json, and vice versa. Only a checkout of the CURRENT package
+	// counts: the former name is valid for cleanup, never as the registration
+	// the installer exists to ensure.
+	const checkoutRegistered = options.checkoutRegistered === true || classifications.some(
 		(classification) =>
 			classification.kind === LOCAL_CHECKOUT_ENTRY && classification.name === PACKAGE_NAME,
 	);
@@ -405,9 +435,16 @@ function normalizePluginList(list, onNotice, options = {}) {
 
 		if (classification.kind === LOCAL_CHECKOUT_ENTRY) {
 			kept.push(entry);
-			onNotice?.(
-				`Keeping the local ${classification.name} checkout registered at ${classification.path}`,
-			);
+			if (classification.resolvesOnDisk === false) {
+				onNotice?.(
+					`Warning: keeping ${classification.path} registered, but it does not resolve on disk; ` +
+						"the plugin may not load until the path exists again.",
+				);
+			} else {
+				onNotice?.(
+					`Keeping the local ${classification.name} checkout registered at ${classification.path}`,
+				);
+			}
 			return;
 		}
 
@@ -1421,6 +1458,10 @@ async function removePluginFromCachePackage(paths, dryRun) {
 	if (!existsSync(paths.cachePackageJson)) {
 		return;
 	}
+	if (!isEvictableCachePath(paths.cachePackageJson, paths.cacheDir)) {
+		log(`Warning: refusing to update ${paths.cachePackageJson}: it does not resolve inside the OpenCode cache.`);
+		return;
+	}
 
 	let cacheData;
 	try {
@@ -1462,12 +1503,41 @@ async function removePluginFromCachePackage(paths, dryRun) {
 	await writeFileAtomic(paths.cachePackageJson, formatJson(cacheData));
 }
 
+/**
+ * Mirror of `isEvictableCachePath` in lib/auto-update-checker.ts. A recursive
+ * delete must never act on a path that only spells like cache: the cache root
+ * itself must not resolve through a symlink (`~/.cache/opencode -> ~` would
+ * otherwise call the whole home directory "inside the cache"), and the
+ * resolved target must stay inside the resolved root.
+ */
+function isEvictableCachePath(cachePath, cacheRoot) {
+	const absolutePath = resolve(cachePath);
+	const absoluteRoot = resolve(cacheRoot);
+	if (!isInsideDirectory(absolutePath, absoluteRoot, process.platform)) return false;
+	try {
+		const realRoot = realpathSync(absoluteRoot);
+		const rootIsSymlinked = process.platform === "win32"
+			? realRoot.toLowerCase() !== absoluteRoot.toLowerCase()
+			: realRoot !== absoluteRoot;
+		if (rootIsSymlinked) return false;
+		return isInsideDirectory(realpathSync(absolutePath), realRoot, process.platform);
+	} catch {
+		return false;
+	}
+}
+
 async function clearCache(paths, dryRun, skipCacheClear) {
 	if (skipCacheClear) {
 		log("Skipping cache clear (--no-cache-clear).");
 		await removePluginFromCachePackage(paths, dryRun);
 		return;
 	}
+
+	const cacheTargets = [
+		...paths.cacheNodeModulesPaths,
+		...paths.cachePackagePaths,
+		paths.cacheBunLock,
+	];
 
 	if (dryRun) {
 		for (const cacheNodeModulesPath of paths.cacheNodeModulesPaths) {
@@ -1478,13 +1548,17 @@ async function clearCache(paths, dryRun, skipCacheClear) {
 		}
 		log(`[dry-run] Would remove ${paths.cacheBunLock}`);
 	} else {
-		for (const cacheNodeModulesPath of paths.cacheNodeModulesPaths) {
-			await removeWithWindowsRetry(cacheNodeModulesPath, { recursive: true, force: true });
+		for (const cacheTarget of cacheTargets) {
+			if (!existsSync(cacheTarget)) continue;
+			if (!isEvictableCachePath(cacheTarget, paths.cacheDir)) {
+				log(`Warning: refusing to remove ${cacheTarget}: it does not resolve inside the OpenCode cache.`);
+				continue;
+			}
+			await removeWithWindowsRetry(cacheTarget, {
+				recursive: cacheTarget !== paths.cacheBunLock,
+				force: true,
+			});
 		}
-		for (const cachePackagePath of paths.cachePackagePaths) {
-			await removeWithWindowsRetry(cachePackagePath, { recursive: true, force: true });
-		}
-		await removeWithWindowsRetry(paths.cacheBunLock, { force: true });
 	}
 
 	await removePluginFromCachePackage(paths, dryRun);
@@ -1553,9 +1627,6 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 		}
 	}
 
-	let nextConfig = pluginOnly
-		? { $schema: template.$schema, plugin: [PACKAGE_NAME] }
-		: template;
 	let existingConfig;
 	if (existsSync(paths.configPath)) {
 		try {
@@ -1564,21 +1635,6 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 				throw new Error("config root must be a JSON object");
 			}
 			existingConfig = existing;
-			const merged = { ...existing };
-			merged.plugin = normalizePluginList(existing.plugin, log, {
-				baseDirectory: paths.configDir,
-				cacheDirectory: paths.cacheDir,
-			});
-			if (!pluginOnly) {
-				const provider = (existing.provider && typeof existing.provider === "object")
-					? { ...existing.provider }
-					: {};
-				provider.openai = mergeOpenaiProvider(existing.provider?.openai, template.provider?.openai, {
-					modelKeysToRemove,
-				});
-				merged.provider = provider;
-			}
-			nextConfig = merged;
 		} catch (error) {
 			if (pluginOnly) {
 				throw new Error(
@@ -1587,13 +1643,11 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 			}
 			log(`Warning: Could not parse existing config (${formatErrorForLog(error)}). Replacing with template.`);
 			existingConfig = undefined;
-			nextConfig = template;
 		}
 	} else {
 		log("No existing config found. Creating new global config.");
 	}
 
-	let nextTuiConfig = mergeTuiConfig(undefined);
 	let existingTuiConfig;
 	if (existsSync(paths.tuiConfigPath)) {
 		try {
@@ -1602,10 +1656,6 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 				throw new Error("TUI config root must be a JSON object");
 			}
 			existingTuiConfig = existing;
-			nextTuiConfig = mergeTuiConfig(existing, log, {
-				baseDirectory: paths.configDir,
-				cacheDirectory: paths.cacheDir,
-			});
 		} catch (error) {
 			if (pluginOnly) {
 				throw new Error(
@@ -1614,11 +1664,52 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 			}
 			log(`Warning: Could not parse existing TUI config (${formatErrorForLog(error)}). Replacing with minimal TUI config.`);
 			existingTuiConfig = undefined;
-			nextTuiConfig = mergeTuiConfig(undefined);
 		}
 	} else {
 		log("No existing TUI config found. Creating new global TUI config.");
 	}
+
+	// A checkout of this package registered in either file already loads the
+	// plugin, so the published name must not be written beside it anywhere -
+	// otherwise the checkout in opencode.json and the published package in
+	// tui.json both load.
+	const pluginListOptions = {
+		baseDirectory: paths.configDir,
+		cacheDirectory: paths.cacheDir,
+	};
+	const checkoutRegistered = [existingConfig?.plugin, existingTuiConfig?.plugin]
+		.flatMap((list) => (Array.isArray(list) ? list : []))
+		.some((entry) => {
+			const classification = classifyPluginEntry(entry, pluginListOptions);
+			return (
+				classification.kind === LOCAL_CHECKOUT_ENTRY &&
+				classification.name === PACKAGE_NAME
+			);
+		});
+	const normalizeOptions = { ...pluginListOptions, checkoutRegistered };
+
+	let nextConfig;
+	if (existingConfig !== undefined) {
+		const merged = { ...existingConfig };
+		merged.plugin = normalizePluginList(existingConfig.plugin, log, normalizeOptions);
+		if (!pluginOnly) {
+			const provider = (existingConfig.provider && typeof existingConfig.provider === "object")
+				? { ...existingConfig.provider }
+				: {};
+			provider.openai = mergeOpenaiProvider(existingConfig.provider?.openai, template.provider?.openai, {
+				modelKeysToRemove,
+			});
+			merged.provider = provider;
+		}
+		nextConfig = merged;
+	} else {
+		nextConfig = pluginOnly
+			? { $schema: template.$schema, plugin: [PACKAGE_NAME] }
+			: template;
+		nextConfig.plugin = normalizePluginList(nextConfig.plugin, log, normalizeOptions);
+	}
+
+	const nextTuiConfig = mergeTuiConfig(existingTuiConfig, log, normalizeOptions);
 
 	const configChanged = existingConfig === undefined || formatJson(existingConfig) !== formatJson(nextConfig);
 	const tuiConfigChanged = existingTuiConfig === undefined || formatJson(existingTuiConfig) !== formatJson(nextTuiConfig);

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 type OpenAiTemplate = {
@@ -13,7 +14,10 @@ type OpenAiTemplate = {
 };
 
 async function createTempHome() {
-	return mkdtemp(join(tmpdir(), "oc-codex-install-"));
+	// macOS reaches os.tmpdir() through the /var -> /private/var symlink; the
+	// cache guard refuses a cache root that resolves through a symlink, so the
+	// fake home has to be canonical for eviction tests to exercise it.
+	return realpathSync(await mkdtemp(join(tmpdir(), "oc-codex-install-")));
 }
 
 describe("install-oc-codex-multi-auth script", () => {
@@ -895,6 +899,37 @@ describe("install-oc-codex-multi-auth script", () => {
 		expect(cachedPackageJson.dependencies.other).toBe("^1.0.0");
 	});
 
+	it("refuses to clear cache targets when the OpenCode cache directory resolves through a symlink", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const realCacheDir = join(tempHome, "real-opencode-cache");
+		const cacheDirLink = join(tempHome, ".cache", "opencode");
+		const managedCache = join(realCacheDir, "node_modules", "oc-codex-multi-auth");
+		const realBunLock = join(realCacheDir, "bun.lock");
+
+		await mkdir(configDir, { recursive: true });
+		await mkdir(managedCache, { recursive: true });
+		await mkdir(dirname(cacheDirLink), { recursive: true });
+		await writeFile(join(managedCache, "keep.txt"), "keep", "utf-8");
+		await writeFile(realBunLock, "lockfile", "utf-8");
+		await symlink(realCacheDir, cacheDirLink, "dir");
+
+		await expect(
+			runInstaller(["update"], {
+				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+			}),
+		).resolves.toMatchObject({ action: "update", exitCode: 0 });
+
+		// The recursive delete must not follow the link into the real directory.
+		expect(await readFile(join(managedCache, "keep.txt"), "utf-8")).toBe("keep");
+		expect(await readFile(realBunLock, "utf-8")).toBe("lockfile");
+		const stdout = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(stdout).toContain("does not resolve inside the OpenCode cache");
+	});
+
 	it("rejects full-mode merges when modern and legacy templates overlap", async () => {
 		vi.resetModules();
 		const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
@@ -972,6 +1007,8 @@ describe("install-oc-codex-multi-auth script", () => {
 	it.each(["EPERM", "EBUSY"])("retries update cache removal after transient Windows %s errors", async (code) => {
 		vi.resetModules();
 		tempHome = await createTempHome();
+		const firstCachePath = join(tempHome, ".cache", "opencode", "node_modules", "oc-codex-multi-auth");
+		await mkdir(firstCachePath, { recursive: true });
 		const rmMock = vi.fn()
 			.mockRejectedValueOnce(Object.assign(new Error("locked"), { code }))
 			.mockResolvedValue(undefined);
@@ -991,7 +1028,6 @@ describe("install-oc-codex-multi-auth script", () => {
 			}),
 		).resolves.toMatchObject({ action: "update", exitCode: 0 });
 
-		const firstCachePath = join(tempHome, ".cache", "opencode", "node_modules", "oc-codex-multi-auth");
 		expect(rmMock).toHaveBeenNthCalledWith(1, firstCachePath, { recursive: true, force: true });
 		expect(rmMock).toHaveBeenNthCalledWith(2, firstCachePath, { recursive: true, force: true });
 	});
@@ -1319,6 +1355,129 @@ describe("install-oc-codex-multi-auth script", () => {
 			const saved = JSON.parse(await readFile(configPath, "utf-8")) as { plugin: string[] };
 			expect(saved.plugin).toEqual(["oc-codex-multi-auth"]);
 			await expect(readdir(cachePackage)).rejects.toMatchObject({ code: "ENOENT" });
+		});
+
+		it("does not let a foreign specifier spelling this package's name retire the published entry", async () => {
+			vi.resetModules();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+			// Scoped and URL spellings are registry specifiers, not paths: they
+			// compare by exact canonical name, never by their last segment.
+			expect(
+				__test.normalizePluginList(["oc-codex-multi-auth", "@evil/oc-codex-multi-auth"]),
+			).toEqual(["oc-codex-multi-auth", "@evil/oc-codex-multi-auth"]);
+			expect(
+				__test.normalizePluginList(["https://github.com/example/oc-codex-multi-auth"]),
+			).toEqual(["https://github.com/example/oc-codex-multi-auth", "oc-codex-multi-auth"]);
+			expect(
+				__test.normalizePluginList(["oc-codex-multi-auth", "npm:oc-codex-multi-auth"]),
+			).toEqual(["oc-codex-multi-auth", "npm:oc-codex-multi-auth"]);
+		});
+
+		it("treats a slash-bearing specifier as a checkout only when it resolves on disk", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const configDir = join(tempHome, ".config", "opencode");
+			await mkdir(configDir, { recursive: true });
+			await createCheckout(configDir, "oc-codex-multi-auth", join("vendor", "oc-codex-multi-auth"));
+			const emptyDir = join(tempHome, "elsewhere", "opencode");
+			await mkdir(emptyDir, { recursive: true });
+
+			expect(
+				__test.normalizePluginList(["vendor/oc-codex-multi-auth"], undefined, {
+					baseDirectory: configDir,
+				}),
+			).toEqual(["vendor/oc-codex-multi-auth"]);
+			expect(
+				__test.normalizePluginList(["vendor/oc-codex-multi-auth"], undefined, {
+					baseDirectory: emptyDir,
+				}),
+			).toEqual(["vendor/oc-codex-multi-auth", "oc-codex-multi-auth"]);
+		});
+
+		it("warns that a preserved checkout path does not resolve on disk", async () => {
+			vi.resetModules();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const gone = "/definitely-absent/oc-codex-multi-auth";
+			const notices: string[] = [];
+
+			expect(
+				__test.normalizePluginList(["oc-codex-multi-auth", gone], (notice) =>
+					notices.push(notice),
+				),
+			).toEqual([gone]);
+			expect(notices.join("\n")).toContain("does not resolve on disk");
+			expect(notices.join("\n")).toContain("may not load until the path exists again");
+		});
+
+		it("suppresses the published name in tui.json when only opencode.json registers a checkout", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const checkout = await createCheckout(tempHome, "oc-codex-multi-auth", "my-codex-fork");
+			const configDir = join(tempHome, ".config", "opencode");
+			const configPath = join(configDir, "opencode.json");
+			const tuiConfigPath = join(configDir, "tui.json");
+
+			await mkdir(configDir, { recursive: true });
+			await writeFile(
+				configPath,
+				JSON.stringify({ plugin: [checkout] }, null, 2),
+				"utf-8",
+			);
+			await writeFile(
+				tuiConfigPath,
+				JSON.stringify({ plugin: ["oc-codex-multi-auth"] }, null, 2),
+				"utf-8",
+			);
+
+			await expect(
+				runInstaller(["install", "--plugin-only", "--no-cache-clear"], {
+					env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+				}),
+			).resolves.toMatchObject({ action: "install", exitCode: 0 });
+
+			const savedConfig = JSON.parse(await readFile(configPath, "utf-8")) as {
+				plugin: string[];
+			};
+			const savedTui = JSON.parse(await readFile(tuiConfigPath, "utf-8")) as {
+				plugin: string[];
+			};
+			expect(savedConfig.plugin).toEqual([checkout]);
+			expect(savedTui.plugin).toEqual([]);
+		});
+
+		it("does not add the published name to tui.json when a checkout is registered in opencode.json", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const checkout = await createCheckout(tempHome, "oc-codex-multi-auth", "my-codex-fork");
+			const configDir = join(tempHome, ".config", "opencode");
+			const configPath = join(configDir, "opencode.json");
+			const tuiConfigPath = join(configDir, "tui.json");
+
+			await mkdir(configDir, { recursive: true });
+			await writeFile(
+				configPath,
+				JSON.stringify({ plugin: [checkout] }, null, 2),
+				"utf-8",
+			);
+
+			await expect(
+				runInstaller(["install", "--plugin-only", "--no-cache-clear"], {
+					env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+				}),
+			).resolves.toMatchObject({ action: "install", exitCode: 0 });
+
+			const savedConfig = JSON.parse(await readFile(configPath, "utf-8")) as {
+				plugin: string[];
+			};
+			const savedTui = JSON.parse(await readFile(tuiConfigPath, "utf-8")) as {
+				plugin: string[];
+			};
+			expect(savedConfig.plugin).toEqual([checkout]);
+			expect(savedTui.plugin).toEqual([]);
 		});
 	});
 });
