@@ -29,10 +29,13 @@ lib/
 ├── oauth-constants.ts      # OAuth port/path constants
 ├── oauth-success.ts        # OAuth success HTML source copied during build
 ├── parallel-probe.ts       # parallel account probes, first success wins
+├── plan-allotment.ts       # ChatGPT plan_type -> allotment weight/multiplier/price
 ├── proactive-refresh.ts    # token refresh before expiry
 ├── prompts/                # Codex/OpenCode prompts and ETag caches
+├── quota-display.ts        # free/used wording for every human-readable quota percentage
 ├── quota-notification-state.ts # cross-process threshold/delivery state file
 ├── quota-notifications.ts  # aggregate quota poller and threshold transitions
+├── quota-overview.ts       # pure pool-wide status line formatting + weighted total
 ├── recovery.ts             # recovery barrel / compatibility entry
 ├── recovery/               # session recovery hook, storage, constants, types
 ├── refresh-queue.ts        # queued token refresh (race prevention)
@@ -45,7 +48,8 @@ lib/
 ├── storage/                # atomic writes, paths, migrations, keychain, backup/import/export
 ├── table-formatter.ts      # CLI table formatting
 ├── tools/                  # 24 codex-* tool factories + registry
-├── tui-quota-cache.ts      # shared quota snapshot cache
+├── tui-quota-cache.ts      # shared quota snapshot cache (active account + pool overview)
+├── tui-quota-overview.ts   # pool-wide quota gathering, caching, and live-account merge
 ├── tui-status.ts           # prompt quota status formatting
 ├── types.ts                # TypeScript interfaces
 ├── types/                  # dependency type shims
@@ -82,6 +86,9 @@ lib/
 | Test-home write guard | `storage/test-home-guard.ts` | refuses storage writes inside the real home during a vitest run |
 | Tool registry | `tools/index.ts` | `ToolContext`, `createToolRegistry` |
 | TUI quota status | `tui-status.ts`, `tui-quota-cache.ts`, `codex-usage.ts` | prompt quota display and usage cache |
+| Quota percentage wording | `quota-display.ts` | `quotaDisplay` free/used rendering shared by the TUI, `codex-limits`, the standalone CLI, and notifications; presentation only, so exhaustion and tone stay on the remaining percentage |
+| Pool-wide status line | `quota-overview.ts`, `tui-quota-overview.ts` | `quotaStatus.mode` `overview` / `resets` renders every account on one constant line; `quota-overview.ts` is a pure formatter (ordering, `accounts`/`aggregate`/`count` layouts, degradation ladder, reset-credit line), `tui-quota-overview.ts` gathers/caches the pool and merges the request path's live reading of the serving account |
+| Plan allotments | `plan-allotment.ts` | `plan_type` -> weight/multiplier/price, used to weight the pool total and to render `5x` badges; see `docs/plan-allotments.md` |
 | Error types | `errors.ts`, `error-sentinels.ts` | StorageError and structured sentinel errors |
 | Health monitoring | `health.ts` | account health status |
 | Account display / masking | `account-display.ts` | label-preferred rendering, `maskEmail` behavior |

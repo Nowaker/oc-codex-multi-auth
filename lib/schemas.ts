@@ -10,6 +10,8 @@ import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 // Plugin Configuration Schema
 // ============================================================================
 
+export const QuotaStatusScreenSchema = z.enum(["active", "overview", "resets"]);
+
 export const PluginConfigSchema = z.object({
 	codexMode: z.boolean().optional(),
 	requestTransformMode: z.enum(["native", "legacy"]).optional(),
@@ -18,6 +20,7 @@ export const PluginConfigSchema = z.object({
 	codexTuiGlyphMode: z.enum(["ascii", "unicode", "auto"]).optional(),
 	maskEmail: z.boolean().optional(),
 	maskEmailInQuotaDetails: z.boolean().optional(),
+	quotaDisplay: z.enum(["free", "used"]).optional(),
 	beginnerSafeMode: z.boolean().optional(),
 	fastSession: z.boolean().optional(),
 	fastSessionStrategy: z.enum(["hybrid", "always"]).optional(),
@@ -73,6 +76,37 @@ export const PluginConfigSchema = z.object({
 		intervalMs: z.number().min(30_000).optional(),
 		notifyEveryCheck: z.boolean().optional(),
 		thresholds: z.array(z.number().min(0).max(100)).optional(),
+	}).optional(),
+	quotaStatus: z.object({
+		mode: z.union([
+			QuotaStatusScreenSchema,
+			z.array(QuotaStatusScreenSchema),
+		]).optional(),
+		rotateMs: z.number().min(1_000).optional(),
+		layout: z.enum(["accounts", "aggregate", "count"]).optional(),
+		accountNames: z.enum(["number", "label", "none"]).optional(),
+		order: z.enum([
+			"number",
+			"most-used",
+			"least-used",
+			"renewing-earliest",
+			"renewing-latest",
+		]).optional(),
+		multipliers: z.boolean().optional(),
+		allotment: z.boolean().optional(),
+		// The boolean spelling is what an earlier build of this feature took,
+		// and a config still holding it must not fail validation: this schema
+		// rejects the whole file as one unit, so one stale value here would
+		// silently reset every other plugin setting to its default.
+		resetTimes: z.union([
+			z.enum(["never", "low", "always"]),
+			z.boolean(),
+		]).optional(),
+		resetCredits: z.boolean().optional(),
+		recovery: z.boolean().optional(),
+		accounts: z.boolean().optional(),
+		rows: z.number().int().min(1).max(4).optional(),
+		showFor: z.enum(["always", "codex-models"]).optional(),
 	}).optional(),
 });
 

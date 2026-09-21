@@ -11,6 +11,11 @@ import {
 } from "./error-sentinels.js";
 import { logWarn } from "./logger.js";
 import {
+	DEFAULT_QUOTA_DISPLAY_MODE,
+	formatNamedQuotaPercent,
+	type QuotaDisplayMode,
+} from "./quota-display.js";
+import {
 	isQuotaWindowExhausted,
 	MAX_QUOTA_RESET_HORIZON_MS,
 } from "./quota-windows.js";
@@ -213,11 +218,16 @@ export function formatUsageLimitTitle(
 	return `${formatUsageWindowLabel(windowMinutes)} limit`;
 }
 
-export function formatUsageLimitSummary(window: LimitWindow): string {
+export function formatUsageLimitSummary(
+	window: LimitWindow,
+	mode: QuotaDisplayMode = DEFAULT_QUOTA_DISPLAY_MODE,
+): string {
 	const left = getUsageLeftPercent(window.usedPercent);
 	const reset = formatUsageReset(window.resetAtMs);
-	if (left !== undefined && reset) return `${left}% left (resets ${reset})`;
-	if (left !== undefined) return `${left}% left`;
+	const percent =
+		left !== undefined ? formatNamedQuotaPercent(left, mode) : undefined;
+	if (percent && reset) return `${percent} (resets ${reset})`;
+	if (percent) return percent;
 	if (reset) return `resets ${reset}`;
 	return "unavailable";
 }
@@ -225,6 +235,7 @@ export function formatUsageLimitSummary(window: LimitWindow): string {
 export function toUsageLimitPayload(
 	name: string,
 	window: LimitWindow,
+	mode: QuotaDisplayMode = DEFAULT_QUOTA_DISPLAY_MODE,
 ): UsageLimitPayload {
 	return {
 		name,
@@ -233,7 +244,7 @@ export function toUsageLimitPayload(
 			typeof window.usedPercent === "number" ? window.usedPercent : null,
 		leftPercent: getUsageLeftPercent(window.usedPercent) ?? null,
 		resetAtMs: window.resetAtMs ?? null,
-		summary: formatUsageLimitSummary(window),
+		summary: formatUsageLimitSummary(window, mode),
 	};
 }
 
@@ -463,6 +474,7 @@ export async function persistUsageQuotaRecovery(account: AccountMetadataV3): Pro
  */
 export function parseCodexUsagePayload(
 	payload: UsagePayload | null | undefined,
+	mode: QuotaDisplayMode = DEFAULT_QUOTA_DISPLAY_MODE,
 ): CodexUsageSummary {
 	const source: UsagePayload =
 		typeof payload === "object" && payload !== null ? payload : {};
@@ -496,14 +508,18 @@ export function parseCodexUsagePayload(
 	for (const window of [primary, secondary]) {
 		if (!hasUsageWindow(window)) continue;
 		limits.push(
-			toUsageLimitPayload(formatUsageLimitTitle(window.windowMinutes), window),
+			toUsageLimitPayload(
+				formatUsageLimitTitle(window.windowMinutes),
+				window,
+				mode,
+			),
 		);
 	}
 	if (hasUsageWindow(codeReview)) {
-		limits.push(toUsageLimitPayload("Code review", codeReview));
+		limits.push(toUsageLimitPayload("Code review", codeReview, mode));
 	}
 	for (const limit of additionalLimits) {
-		limits.push(toUsageLimitPayload(limit.name, limit.window));
+		limits.push(toUsageLimitPayload(limit.name, limit.window, mode));
 	}
 
 	return {

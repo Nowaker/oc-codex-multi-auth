@@ -1,14 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+	fitStatusLines,
 	formatPromptStatusText,
 	formatQuotaDetailsText,
+	formatQuotaOverviewStatusLines,
+	formatQuotaOverviewStatusText,
+	formatQuotaResetsStatusLines,
 	resolvePromptReasoningVariant,
+	resolveQuotaOverviewTone,
 	resolveQuotaPromptTone,
+	wrapStatusCandidate,
 	type CompactQuotaStatus,
 	type PromptStatusConfig,
 	type PromptStatusMessage,
 } from "../lib/tui-status.js";
+import type {
+	QuotaOverviewAccount,
+	QuotaOverviewOptions,
+} from "../lib/quota-overview.js";
 
 const sep = ` ${String.fromCharCode(183)} `;
 const quota: CompactQuotaStatus = {
@@ -674,5 +684,318 @@ describe("tui quota status hostile inputs", () => {
 		};
 		const text = formatQuotaDetailsText(status);
 		expect(text).not.toMatch(/NaN|Infinity/);
+	});
+});
+
+describe("pool-wide prompt status", () => {
+	const NOW = Date.UTC(2026, 8, 17, 12, 0, 0);
+	const DAY = 24 * 60 * 60 * 1000;
+	const pool: QuotaOverviewAccount[] = [
+		{
+			index: 1,
+			planType: "self_serve_business_prolite",
+			windows: [{ leftPercent: 87 }],
+		},
+		{
+			index: 2,
+			planType: "pro",
+			resetCredits: 1,
+			windows: [{ leftPercent: 0, resetAtMs: NOW + 3 * DAY }],
+		},
+		{ index: 3, planType: "plus", windows: [{ leftPercent: 88 }] },
+	];
+	const options: QuotaOverviewOptions = {
+		mode: "used",
+		layout: "accounts",
+		names: "number",
+		order: "number",
+		multipliers: true,
+		allotment: false,
+		resetTimes: "low",
+		resetCredits: true,
+		recovery: false,
+		now: NOW,
+	};
+
+	it("shows every account when the terminal has room", () => {
+		expect(
+			formatQuotaOverviewStatusText({ accounts: pool, options, width: 200 }),
+		).toBe("80%: #1 5x 13%, #2 20x 100% 3d 1r, #3 1x 12%");
+	});
+
+	it("keeps the breakdown on a terminal the tiered budget would have given up on", () => {
+		// 120 columns caps the single-account budget at 64 characters; the pool
+		// line is 44 and must survive.
+		expect(
+			formatQuotaOverviewStatusText({ accounts: pool, options, width: 120 }),
+		).toContain("#3");
+	});
+
+	it("gives up the account numbers before the percentages behind them", () => {
+		// Three figures in account order say more than `3 accounts` does, and
+		// cost four characters more.
+		const text = formatQuotaOverviewStatusText({
+			accounts: pool,
+			options,
+			width: 60,
+		});
+		expect(text).toBe("80%: 13%, 100%, 12%");
+		expect(text.length).toBeLessThanOrEqual(24);
+	});
+
+	it("degrades to the count when position would name the wrong account", () => {
+		// One account nobody could read leaves a hole in the line, so the
+		// unnamed form is not offered and the count is the next rung down.
+		const text = formatQuotaOverviewStatusText({
+			accounts: [...pool, { index: 4, planType: "plus", windows: [] }],
+			options,
+			width: 60,
+		});
+		expect(text).toBe("80%: 4 accounts");
+	});
+
+	it("leaves the model label its room on an 80-column terminal", () => {
+		// Measured against the real TUI: this slot shares its row with the
+		// model label ("Build - Big Pickle OpenCode Zen", 31 characters) inside
+		// the prompt border. A 48-character line was ellipsized through its
+		// middle AND wrapped the label onto a second row, so 80 columns must
+		// buy no more than 40.
+		const crowded: QuotaOverviewAccount[] = [
+			{ index: 1, planType: "pro", windows: [{ leftPercent: 8, resetAtMs: NOW + 6 * DAY }] },
+			{ index: 2, planType: "self_serve_business_prolite", windows: [{ leftPercent: 0, resetAtMs: NOW + 3 * DAY }] },
+			{ index: 3, planType: "team", windows: [{ leftPercent: 62 }] },
+			{ index: 4, planType: "plus", windows: [{ leftPercent: 100 }] },
+			{ index: 5, planType: "pro", windows: [{ leftPercent: 45 }] },
+		];
+		const text = formatQuotaOverviewStatusText({
+			accounts: crowded,
+			options: { ...options, mode: "free" },
+			width: 80,
+		});
+		expect(text.length).toBeLessThanOrEqual(40);
+		expect(text).not.toContain("...");
+	});
+
+	it("abbreviates the count rather than giving up on it", () => {
+		const text = formatQuotaOverviewStatusText({
+			accounts: pool,
+			options,
+			width: 20,
+		});
+		expect(text).toBe("80%: 3 acct.");
+	});
+
+	it("falls back to the bare total when nothing else fits", () => {
+		expect(
+			formatQuotaOverviewStatusText({ accounts: pool, options, width: 4 }),
+		).toBe("80%");
+	});
+
+	it("uses the measured space in preference to the whole terminal", () => {
+		// The same 200-column terminal, once with and once without a measured
+		// budget. A sidebar and a model label can leave this slot 14 columns on
+		// a wide terminal, and the measurement is what stops the renderer
+		// ellipsizing a 44-character line through its middle.
+		expect(
+			formatQuotaOverviewStatusText({ accounts: pool, options, width: 200 }),
+		).toBe("80%: #1 5x 13%, #2 20x 100% 3d 1r, #3 1x 12%");
+		expect(
+			formatQuotaOverviewStatusText({
+				accounts: pool,
+				options,
+				width: 200,
+				availableChars: 14,
+			}),
+		).toBe("80%: 3 acct.");
+	});
+
+	it("stays conservative when the width is unknown", () => {
+		const text = formatQuotaOverviewStatusText({ accounts: pool, options });
+		expect(text.length).toBeLessThanOrEqual(32);
+	});
+
+	it("renders nothing for a pool with no readable quota", () => {
+		expect(
+			formatQuotaOverviewStatusText({ accounts: [], options, width: 200 }),
+		).toBe("");
+	});
+
+	it("uses a second row before it gives up any detail", () => {
+		// 30 columns on one row loses the badges and the reset; across two it
+		// keeps the whole line.
+		expect(
+			formatQuotaOverviewStatusLines({
+				accounts: pool,
+				options,
+				availableChars: 30,
+				maxRows: 2,
+			}),
+		).toEqual(["80%: #1 5x 13%,", "#2 20x 100% 3d 1r, #3 1x 12%"]);
+	});
+
+	it("keeps a one-row line on one row", () => {
+		expect(
+			formatQuotaOverviewStatusLines({
+				accounts: pool,
+				options,
+				availableChars: 60,
+				maxRows: 2,
+			}),
+		).toEqual(["80%: #1 5x 13%, #2 20x 100% 3d 1r, #3 1x 12%"]);
+	});
+
+	it("renders the reset-credit line only once the pool is spent", () => {
+		const spent: QuotaOverviewAccount[] = [
+			{
+				index: 1,
+				planType: "plus",
+				email: "damian@nowaker.net",
+				resetCredits: 1,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 6 * DAY }],
+			},
+			{
+				index: 2,
+				planType: "plus",
+				email: "work@example.com",
+				resetCredits: 2,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 4 * DAY }],
+			},
+		];
+		expect(
+			formatQuotaResetsStatusLines({ accounts: spent, options, availableChars: 80 }),
+		).toEqual([
+			"Free resets: 6d 1r #1, 4d 2r #2",
+		]);
+		expect(
+			formatQuotaResetsStatusLines({ accounts: pool, options, availableChars: 80 }),
+		).toEqual([]);
+	});
+
+	it("shortens the reset-credit line rather than overflowing", () => {
+		const spent: QuotaOverviewAccount[] = [
+			{
+				index: 1,
+				planType: "plus",
+				email: "damian@nowaker.net",
+				resetCredits: 1,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 6 * DAY }],
+			},
+			{
+				index: 3,
+				planType: "plus",
+				email: "work@example.com",
+				resetCredits: 1,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 4 * DAY }],
+			},
+		];
+		expect(
+			formatQuotaResetsStatusLines({ accounts: spent, options, availableChars: 30 }),
+		).toEqual(["Resets: 6d 1r #1, 4d 1r #3"]);
+		expect(
+			formatQuotaResetsStatusLines({ accounts: spent, options, availableChars: 11 }),
+		).toEqual(["Resets: 2"]);
+	});
+
+	it("names no account on the resets line when names are switched off", () => {
+		const spent: QuotaOverviewAccount[] = [
+			{
+				index: 1,
+				planType: "plus",
+				email: "damian@nowaker.net",
+				resetCredits: 1,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 6 * DAY }],
+			},
+			{
+				index: 2,
+				planType: "plus",
+				email: "work@example.com",
+				resetCredits: 2,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 4 * DAY }],
+			},
+		];
+		expect(
+			formatQuotaResetsStatusLines({
+				accounts: spent,
+				options: { ...options, names: "none" },
+				availableChars: 80,
+			}),
+		).toEqual(["Free resets: 6d 1r, 4d 2r"]);
+	});
+});
+
+describe("wrapStatusCandidate", () => {
+	it("breaks only at the separators the line already has", () => {
+		expect(wrapStatusCandidate("20%: #1 87%, #2 0%, #3 88%", 16, 2)).toEqual([
+			"20%: #1 87%,",
+			"#2 0%, #3 88%",
+		]);
+	});
+
+	it("leaves a line that already fits alone", () => {
+		expect(wrapStatusCandidate("20%: 3 accounts", 20, 2)).toEqual([
+			"20%: 3 accounts",
+		]);
+	});
+
+	it("refuses a line that would need more rows than it has", () => {
+		expect(
+			wrapStatusCandidate("20%: #1 87%, #2 0%, #3 88%", 12, 2),
+		).toBeUndefined();
+		expect(wrapStatusCandidate("20%: #1 87%, #2 0%, #3 88%", 12, 3)).toEqual([
+			"20%: #1 87%,",
+			"#2 0%,",
+			"#3 88%",
+		]);
+	});
+
+	it("refuses a single segment that cannot fit a row at all", () => {
+		expect(wrapStatusCandidate("20%: #1 87%, #2 0%", 8, 4)).toBeUndefined();
+	});
+
+	it("never wraps when it is only allowed one row", () => {
+		expect(wrapStatusCandidate("20%: #1 87%, #2 0%", 12, 1)).toBeUndefined();
+	});
+});
+
+describe("fitStatusLines", () => {
+	it("takes the first rung that fits, wrapped or not", () => {
+		expect(fitStatusLines(["aaaa, bbbb", "cc"], 5, 2)).toEqual(["aaaa,", "bbbb"]);
+		expect(fitStatusLines(["aaaa, bbbb", "cc"], 5, 1)).toEqual(["cc"]);
+	});
+
+	it("falls back to the shortest rung rather than rendering nothing", () => {
+		expect(fitStatusLines(["aaaaaa", "bbbb"], 2, 1)).toEqual(["bbbb"]);
+	});
+
+	it("renders nothing for an empty ladder", () => {
+		expect(fitStatusLines([], 40, 2)).toEqual([]);
+	});
+});
+
+describe("resolveQuotaOverviewTone", () => {
+	const account = (leftPercent: number): QuotaOverviewAccount => ({
+		index: 1,
+		planType: "plus",
+		windows: [{ leftPercent }],
+	});
+
+	it("stays normal while one account still has room", () => {
+		expect(resolveQuotaOverviewTone([account(0), account(80)])).toBe("normal");
+	});
+
+	it("warns only once the whole pool is low", () => {
+		expect(resolveQuotaOverviewTone([account(0), account(20)])).toBe("warning");
+	});
+
+	it("turns red once nothing in the pool has room", () => {
+		expect(resolveQuotaOverviewTone([account(0), account(5)])).toBe("danger");
+	});
+
+	it("reports a stale reading as stale whatever the numbers say", () => {
+		expect(resolveQuotaOverviewTone([account(90)], true)).toBe("stale");
+	});
+
+	it("reports an unreadable pool as unknown", () => {
+		expect(resolveQuotaOverviewTone([])).toBe("unknown");
 	});
 });

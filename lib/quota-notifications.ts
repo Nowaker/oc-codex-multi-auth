@@ -1,4 +1,14 @@
-import { getQuotaNotifications, loadPluginConfig, type QuotaNotificationsConfig } from "./config.js";
+import {
+	getQuotaDisplay,
+	getQuotaNotifications,
+	loadPluginConfig,
+	type QuotaNotificationsConfig,
+} from "./config.js";
+import {
+	DEFAULT_QUOTA_DISPLAY_MODE,
+	formatNamedQuotaPercent,
+	type QuotaDisplayMode,
+} from "./quota-display.js";
 import {
 	deduplicateUsageAccountIndices,
 	ensureCodexUsageAccessToken,
@@ -247,16 +257,26 @@ export function transitionQuotaState(
  * account; the pool's earlier reset, when there is one, gets its own clause so
  * nothing reads as "this percentage recovers then".
  */
-function formatQuotaWindow(label: string, window: AggregatedQuotaWindow): string {
+function formatQuotaWindow(
+	label: string,
+	window: AggregatedQuotaWindow,
+	mode: QuotaDisplayMode,
+): string {
 	if (window.remainingPercent === undefined) return `${label}: unavailable`;
 	const reset = formatUsageReset(window.resetAtMs) ?? "unavailable";
 	const earliest = formatUsageReset(window.earliestResetAtMs);
 	const poolClause = earliest ? ` | another account resets ${earliest}` : "";
-	return `${label}: ${window.remainingPercent}% | resets ${reset}${poolClause}`;
+	// Named, not bare: a notification is read without the line's context, so
+	// `80%` alone cannot say whether it is headroom or consumption.
+	const percent = formatNamedQuotaPercent(window.remainingPercent, mode);
+	return `${label}: ${percent} | resets ${reset}${poolClause}`;
 }
 
-export function formatQuotaNotification(usage: AggregatedQuotaUsage): string {
-	return `${formatQuotaWindow("5h", usage.fiveHour)}\n${formatQuotaWindow("Weekly", usage.weekly)}`;
+export function formatQuotaNotification(
+	usage: AggregatedQuotaUsage,
+	mode: QuotaDisplayMode = DEFAULT_QUOTA_DISPLAY_MODE,
+): string {
+	return `${formatQuotaWindow("5h", usage.fiveHour, mode)}\n${formatQuotaWindow("Weekly", usage.weekly, mode)}`;
 }
 
 interface DeliveryClaim {
@@ -435,7 +455,10 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 			disposed || expectedGeneration !== generation
 				? false
 				: await dependencies
-					.notify("Codex quota status", formatQuotaNotification(usage))
+					.notify(
+						"Codex quota status",
+						formatQuotaNotification(usage, getQuotaDisplay(loadPluginConfig())),
+					)
 					.catch((error: unknown) => {
 						logDebug(`Failed to deliver quota notification: ${(error as Error).message}`);
 						return false;

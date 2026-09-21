@@ -14,6 +14,8 @@ import type { CompactQuotaLimit } from "./tui-status.js";
 
 export const TUI_QUOTA_CACHE_VERSION = 1;
 export const TUI_QUOTA_CACHE_FILE = "oc-codex-multi-auth-tui-quota.json";
+export const TUI_QUOTA_OVERVIEW_CACHE_FILE =
+	"oc-codex-multi-auth-tui-quota-overview.json";
 const TUI_QUOTA_CACHE_WRITE_SKIP_MS = 500;
 // A snapshot older than one TUI refresh interval is due for a live re-fetch:
 // the shared cache is only pushed while requests flow, so after an idle gap it
@@ -61,9 +63,17 @@ function getDefaultOpenCodeStateDir(): string {
 	return join(homedir(), ".local", "state", "opencode");
 }
 
-export function getTuiQuotaCachePath(stateDir?: string): string {
+function resolveStateDir(stateDir?: string): string {
 	const envStateDir = process.env.OPENCODE_STATE_DIR?.trim();
-	return join(stateDir?.trim() || envStateDir || getDefaultOpenCodeStateDir(), TUI_QUOTA_CACHE_FILE);
+	return stateDir?.trim() || envStateDir || getDefaultOpenCodeStateDir();
+}
+
+export function getTuiQuotaCachePath(stateDir?: string): string {
+	return join(resolveStateDir(stateDir), TUI_QUOTA_CACHE_FILE);
+}
+
+export function getTuiQuotaOverviewCachePath(stateDir?: string): string {
+	return join(resolveStateDir(stateDir), TUI_QUOTA_OVERVIEW_CACHE_FILE);
 }
 
 function parseFiniteIntHeader(
@@ -285,6 +295,23 @@ export async function readTuiQuotaSnapshot(
 	}
 }
 
+function createTemporaryPath(target: string, now: number): string {
+	return `${target}.${process.pid}.${now}.${Math.random().toString(36).slice(2)}.tmp`;
+}
+
+async function writeSnapshotFile(
+	target: string,
+	temporary: string,
+	snapshot: unknown,
+): Promise<void> {
+	await fs.mkdir(dirname(target), { recursive: true });
+	await fs.writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, {
+		encoding: "utf-8",
+		mode: 0o600,
+	});
+	await renameWithWindowsRetry(temporary, target);
+}
+
 export async function writeTuiQuotaSnapshot(
 	snapshot: TuiQuotaSnapshot,
 	cachePath?: string,
@@ -301,16 +328,8 @@ export async function writeTuiQuotaSnapshot(
 		return;
 	}
 
-	const temporary =
-		`${target}.${process.pid}.${now}.${Math.random().toString(36).slice(2)}.tmp`;
-	const writePromise = (async () => {
-		await fs.mkdir(dirname(target), { recursive: true });
-		await fs.writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, {
-			encoding: "utf-8",
-			mode: 0o600,
-		});
-		await renameWithWindowsRetry(temporary, target);
-	})();
+	const temporary = createTemporaryPath(target, now);
+	const writePromise = writeSnapshotFile(target, temporary, snapshot);
 	recentTuiQuotaWrites.set(target, {
 		key: writeKey,
 		at: now,
@@ -338,6 +357,111 @@ export async function clearTuiQuotaSnapshot(cachePath?: string): Promise<void> {
 		await fs.unlink(target);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+		throw error;
+	}
+}
+
+export type TuiQuotaOverviewAccount = {
+	fingerprint: string;
+	/** 1-based, matching how `codex-list` and `codex-switch` number accounts. */
+	index: number;
+	/** ChatGPT email, for the surfaces that name an account rather than number it. */
+	email?: string;
+	/** `codex-label` label when one is set, else whatever identity storage has. */
+	label?: string;
+	planType?: string;
+	/** Banked rate-limit resets redeemable now. */
+	resetCredits?: number;
+	limits: TuiQuotaLimit[];
+};
+
+/**
+ * The pool-wide quota snapshot, held apart from the single-account one.
+ *
+ * The two are written on different schedules by different code paths - the
+ * request path pushes one account per response, while the pool is polled - and
+ * folding them into one file would make every request rewrite a document
+ * describing accounts that request never touched. A separate file also leaves
+ * the existing snapshot's shape, validator and tests untouched, so a build
+ * that has never heard of the overview reads its own cache unchanged.
+ */
+export type TuiQuotaOverviewSnapshot = {
+	version: typeof TUI_QUOTA_CACHE_VERSION;
+	fetchedAt: number;
+	accounts: TuiQuotaOverviewAccount[];
+};
+
+function isTuiQuotaOverviewAccount(
+	value: unknown,
+): value is TuiQuotaOverviewAccount {
+	return (
+		isRecord(value) &&
+		typeof value.fingerprint === "string" &&
+		value.fingerprint.trim().length > 0 &&
+		typeof value.index === "number" &&
+		Number.isFinite(value.index) &&
+		(value.email === undefined || typeof value.email === "string") &&
+		(value.label === undefined || typeof value.label === "string") &&
+		(value.planType === undefined || typeof value.planType === "string") &&
+		isOptionalFiniteNumber(value.resetCredits) &&
+		Array.isArray(value.limits) &&
+		value.limits.every(isTuiQuotaLimit)
+	);
+}
+
+export function isTuiQuotaOverviewSnapshot(
+	value: unknown,
+): value is TuiQuotaOverviewSnapshot {
+	return (
+		isRecord(value) &&
+		value.version === TUI_QUOTA_CACHE_VERSION &&
+		typeof value.fetchedAt === "number" &&
+		Number.isFinite(value.fetchedAt) &&
+		Array.isArray(value.accounts) &&
+		value.accounts.every(isTuiQuotaOverviewAccount)
+	);
+}
+
+/** Drop disabled windows, for the reasons in {@link sanitizeTuiQuotaSnapshot}. */
+export function sanitizeTuiQuotaOverviewSnapshot(
+	snapshot: TuiQuotaOverviewSnapshot,
+): TuiQuotaOverviewSnapshot {
+	return {
+		...snapshot,
+		accounts: snapshot.accounts.map((account) => ({
+			...account,
+			limits: account.limits.filter((limit) => !isDisabledQuotaLimit(limit)),
+		})),
+	};
+}
+
+export async function readTuiQuotaOverviewSnapshot(
+	cachePath?: string,
+): Promise<TuiQuotaOverviewSnapshot | undefined> {
+	try {
+		const raw = await fs.readFile(
+			cachePath ?? getTuiQuotaOverviewCachePath(),
+			"utf-8",
+		);
+		const parsed = JSON.parse(raw) as unknown;
+		return isTuiQuotaOverviewSnapshot(parsed)
+			? sanitizeTuiQuotaOverviewSnapshot(parsed)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export async function writeTuiQuotaOverviewSnapshot(
+	snapshot: TuiQuotaOverviewSnapshot,
+	cachePath?: string,
+): Promise<void> {
+	const target = cachePath ?? getTuiQuotaOverviewCachePath();
+	const temporary = createTemporaryPath(target, Date.now());
+	try {
+		await writeSnapshotFile(target, temporary, snapshot);
+	} catch (error) {
+		await fs.unlink(temporary).catch(() => undefined);
 		throw error;
 	}
 }

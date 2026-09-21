@@ -10,6 +10,17 @@ import {
 	type RetryProfile,
 } from "./request/retry-budget.js";
 import { logWarn } from "./logger.js";
+import {
+	DEFAULT_QUOTA_DISPLAY_MODE,
+	QUOTA_DISPLAY_MODES,
+	type QuotaDisplayMode,
+} from "./quota-display.js";
+import type {
+	QuotaOverviewLayout,
+	QuotaOverviewNames,
+	QuotaOverviewOrder,
+	QuotaOverviewResetTimes,
+} from "./quota-overview.js";
 import { stripEffortSuffix } from "./request/helpers/effort-suffix.js";
 import {
 	isWindowsLockError,
@@ -31,6 +42,7 @@ const TUI_GLYPH_MODES = new Set(["ascii", "unicode", "auto"]);
 const REQUEST_TRANSFORM_MODES = new Set(["native", "legacy"]);
 const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const RETRY_PROFILES = new Set(["conservative", "balanced", "aggressive"]);
+const QUOTA_DISPLAY_MODE_SET: ReadonlySet<string> = new Set(QUOTA_DISPLAY_MODES);
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -73,6 +85,7 @@ const DEFAULT_CONFIG: PluginConfig = {
 	codexTuiGlyphMode: "ascii",
 	maskEmail: false,
 	maskEmailInQuotaDetails: false,
+	quotaDisplay: DEFAULT_QUOTA_DISPLAY_MODE,
 	beginnerSafeMode: false,
 	fastSession: false,
 	fastSessionStrategy: "hybrid",
@@ -698,6 +711,23 @@ export function getCodexTuiMaskEmailInQuotaDetails(
 	);
 }
 
+/**
+ * Whether quota percentages are worded as headroom or as consumption.
+ *
+ * Defaults to `free`, which is how Codex itself reports a quota. Only the
+ * wording changes: exhaustion, rotation blocks, notification thresholds and
+ * the status line's warning/danger colouring all stay keyed on the remaining
+ * percentage.
+ */
+export function getQuotaDisplay(pluginConfig: PluginConfig): QuotaDisplayMode {
+	return resolveStringSetting(
+		"CODEX_AUTH_QUOTA_DISPLAY",
+		pluginConfig.quotaDisplay,
+		DEFAULT_QUOTA_DISPLAY_MODE,
+		QUOTA_DISPLAY_MODE_SET,
+	);
+}
+
 export function getFastSession(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_FAST_SESSION",
@@ -1177,5 +1207,162 @@ export function getQuotaNotifications(
 		intervalMs,
 		notifyEveryCheck: config?.notifyEveryCheck ?? false,
 		thresholds,
+	};
+}
+
+/** One thing the prompt status line can be showing at a given moment. */
+export type QuotaStatusScreen = "active" | "overview" | "resets";
+
+/** Whether the line appears for every model or only for the ones it describes. */
+export type QuotaStatusAudience = "always" | "codex-models";
+
+const QUOTA_STATUS_SCREENS: readonly QuotaStatusScreen[] = [
+	"active",
+	"overview",
+	"resets",
+];
+const QUOTA_STATUS_AUDIENCES: readonly QuotaStatusAudience[] = [
+	"always",
+	"codex-models",
+];
+const QUOTA_OVERVIEW_LAYOUTS: readonly QuotaOverviewLayout[] = [
+	"accounts",
+	"aggregate",
+	"count",
+];
+const QUOTA_OVERVIEW_NAMES: readonly QuotaOverviewNames[] = [
+	"number",
+	"label",
+	"none",
+];
+const QUOTA_OVERVIEW_ORDERS: readonly QuotaOverviewOrder[] = [
+	"number",
+	"most-used",
+	"least-used",
+	"renewing-earliest",
+	"renewing-latest",
+];
+const QUOTA_OVERVIEW_RESET_TIMES: readonly QuotaOverviewResetTimes[] = [
+	"never",
+	"low",
+	"always",
+];
+const DEFAULT_QUOTA_STATUS_ROTATE_MS = 5_000;
+const MIN_QUOTA_STATUS_ROTATE_MS = 1_000;
+const MAX_QUOTA_STATUS_ROWS = 4;
+
+export interface QuotaStatusConfig {
+	/**
+	 * The screens to show, in the order they take turns. `active` names the
+	 * account serving requests, which is how the status line has always
+	 * worked; `overview` describes the whole pool; `resets` lists the banked
+	 * reset credits worth redeeming once nothing has headroom left. More than
+	 * one screen alternates every {@link rotateMs}.
+	 */
+	screens: QuotaStatusScreen[];
+	rotateMs: number;
+	/** One segment per account, one per distinct percentage, or just a count. */
+	layout: QuotaOverviewLayout;
+	/** `#1`, the account's own name, or nothing at all. */
+	accountNames: QuotaOverviewNames;
+	order: QuotaOverviewOrder;
+	/** `5x` / `20x` plan allotment badges. */
+	multipliers: boolean;
+	/** `66% of 65x`: what the pool the percentage is taken over adds up to. */
+	allotment: boolean;
+	/** Which accounts get a `3d` countdown: none, the low ones, or all. */
+	resetTimes: QuotaOverviewResetTimes;
+	/** `1r` for banked rate-limit resets redeemable now. */
+	resetCredits: boolean;
+	/** `+12% in 3d`: how far the pool total moves at the next reset. */
+	recovery: boolean;
+	/**
+	 * Rows the line may occupy. A ceiling rather than a height: a rendering
+	 * that fits on one row still takes one, so raising this costs nothing until
+	 * the terminal is narrow enough for the line to need the room.
+	 */
+	rows: number;
+	showFor: QuotaStatusAudience;
+}
+
+function pickEnum<T extends string>(
+	value: unknown,
+	allowed: readonly T[],
+	fallback: T,
+): T {
+	return allowed.find((entry) => entry === value) ?? fallback;
+}
+
+/**
+ * The screens to rotate through, from either a single value or a list.
+ *
+ * Unknown names are dropped rather than failing: this is presentation, and a
+ * typo should cost the line its extra screen, not the session its status.
+ * Duplicates are collapsed so a list cannot make one screen come up twice as
+ * often as the others.
+ */
+function resolveQuotaStatusScreens(value: unknown): QuotaStatusScreen[] {
+	const requested = Array.isArray(value) ? value : [value];
+	const screens: QuotaStatusScreen[] = [];
+	for (const entry of requested) {
+		const screen = QUOTA_STATUS_SCREENS.find((candidate) => candidate === entry);
+		if (screen && !screens.includes(screen)) screens.push(screen);
+	}
+	return screens.length > 0 ? screens : ["active"];
+}
+
+/**
+ * How the prompt status line describes the account pool.
+ *
+ * Every default here is the behaviour an install already has, so adding
+ * `"mode": "overview"` and nothing else changes the line's subject without
+ * changing anything about how it is written. The switches only apply to the
+ * pool screens; they are resolved unconditionally anyway so a reader of this
+ * config sees what `overview` would render without having to enable it first.
+ *
+ * Presentation preference belongs to a person rather than to a shell, so none
+ * of this is overridable by environment variable - the config file is the only
+ * place it is read from.
+ */
+export function getQuotaStatus(pluginConfig: PluginConfig): QuotaStatusConfig {
+	const config = pluginConfig.quotaStatus;
+	const resetTimes = config?.resetTimes;
+	const rotateMs = config?.rotateMs;
+	return {
+		screens: resolveQuotaStatusScreens(config?.mode),
+		rotateMs:
+			typeof rotateMs === "number" && Number.isFinite(rotateMs)
+				? Math.max(MIN_QUOTA_STATUS_ROTATE_MS, rotateMs)
+				: DEFAULT_QUOTA_STATUS_ROTATE_MS,
+		// Per-account by default: someone switching to `overview` is asking
+		// where each account stands, and the count alone is the one form that
+		// does not answer that.
+		layout:
+			QUOTA_OVERVIEW_LAYOUTS.find((entry) => entry === config?.layout) ??
+			(config?.accounts === false ? "count" : "accounts"),
+		accountNames: pickEnum(
+			config?.accountNames,
+			QUOTA_OVERVIEW_NAMES,
+			"number",
+		),
+		order: pickEnum(config?.order, QUOTA_OVERVIEW_ORDERS, "number"),
+		multipliers: config?.multipliers ?? false,
+		allotment: config?.allotment ?? false,
+		// `low` by default: a spent account is the one an account list is read
+		// to find, and "when does it come back" is the next question every
+		// time, while the same countdown beside a healthy account is noise.
+		resetTimes:
+			typeof resetTimes === "boolean"
+				? resetTimes
+					? "low"
+					: "never"
+				: pickEnum(resetTimes, QUOTA_OVERVIEW_RESET_TIMES, "low"),
+		resetCredits: config?.resetCredits ?? false,
+		recovery: config?.recovery ?? false,
+		rows:
+			typeof config?.rows === "number" && Number.isFinite(config.rows)
+				? Math.min(MAX_QUOTA_STATUS_ROWS, Math.max(1, Math.trunc(config.rows)))
+				: 1,
+		showFor: pickEnum(config?.showFor, QUOTA_STATUS_AUDIENCES, "always"),
 	};
 }

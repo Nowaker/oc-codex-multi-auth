@@ -931,14 +931,15 @@ async function loadWarmRuntime(env) {
 }
 
 async function loadLimitsRuntime(env) {
-	const [storageMod, usageMod, shutdownMod, loggerMod] = await loadDistModules(
-		["storage.js", "codex-usage.js", "shutdown.js", "logger.js"],
-		"limits",
-	);
+	const [storageMod, usageMod, shutdownMod, loggerMod, configMod] =
+		await loadDistModules(
+			["storage.js", "codex-usage.js", "shutdown.js", "logger.js", "config.js"],
+			"limits",
+		);
 	// Fetching usage can refresh (and therefore persist) a token, so the same
 	// process-owns-termination rule as `warm` applies.
 	shutdownMod.setShutdownOwnsProcess(true);
-	return { storageMod, usageMod, shutdownMod, loggerMod };
+	return { storageMod, usageMod, shutdownMod, loggerMod, configMod };
 }
 
 export async function runWarmCommand(parsed, options = {}) {
@@ -1102,7 +1103,8 @@ export async function runLimitsCommand(parsed, options = {}) {
 		return { exitCode: 1, action: "limits", storagePath };
 	}
 
-	const { storageMod, usageMod, loggerMod } = runtime;
+	const { storageMod, usageMod, loggerMod, configMod } = runtime;
+	const quotaDisplay = configMod.getQuotaDisplay(configMod.loadPluginConfig());
 	// Point dist storage at the resolved accounts file so a refreshed token is
 	// persisted to the SAME file the rest of the toolchain reads.
 	storageMod.setStoragePathDirect(storagePath);
@@ -1182,6 +1184,7 @@ export async function runLimitsCommand(parsed, options = {}) {
 					accessToken,
 					organizationId: account.organizationId,
 				}),
+				quotaDisplay,
 			);
 			const quotaExhaustedResetAtMs = usageMod.getUsageQuotaExhaustedResetAtMs([
 				usage.primary,

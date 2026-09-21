@@ -22,6 +22,7 @@ docs/
 ├── getting-started.md                  # install + first-run guide
 ├── tools-and-cli.md                    # 24 codex-* tools + standalone CLI
 ├── configuration.md                    # full config reference
+├── plan-allotments.md                  # ChatGPT plan -> allotment multiplier map
 ├── troubleshooting.md                  # operational debugging guide
 ├── faq.md                              # short common answers
 ├── privacy.md                          # data handling notes

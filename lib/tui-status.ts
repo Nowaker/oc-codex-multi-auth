@@ -2,6 +2,19 @@ import type { Config } from "@opencode-ai/sdk/v2";
 import { maskEmailForDisplay } from "./account-display.js";
 import { getEffortSuffix } from "./request/helpers/effort-suffix.js";
 import { formatPlanType } from "./auth/plan-tier.js";
+import {
+	formatQuotaOverviewCandidates,
+	formatQuotaResetsCandidates,
+	resolveQuotaOverviewTonePercent,
+	type QuotaOverviewAccount,
+	type QuotaOverviewOptions,
+} from "./quota-overview.js";
+import {
+	DEFAULT_QUOTA_DISPLAY_MODE,
+	formatNamedQuotaPercent,
+	formatQuotaPercent,
+	type QuotaDisplayMode,
+} from "./quota-display.js";
 
 export type ReasoningVariant =
 	| "none"
@@ -279,10 +292,11 @@ function formatQuotaLimit(
 	limit: CompactQuotaLimit,
 	resetLimit: CompactQuotaLimit | undefined,
 	includeReset: boolean,
+	mode: QuotaDisplayMode,
 ): string | undefined {
 	if (!isPercent(limit.leftPercent)) return undefined;
 	const label = limit.label.trim() || "quota";
-	const base = `${label} ${limit.leftPercent}%`;
+	const base = `${label} ${formatQuotaPercent(limit.leftPercent, mode)}`;
 	const reset =
 		includeReset && limit === resetLimit ? formatResetTime(limit.resetAtMs) : undefined;
 	return reset ? `${base} resets ${reset}` : base;
@@ -347,19 +361,23 @@ function findResetLimitForStatus(
 function formatQuotaParts(
 	quota: CompactQuotaStatus,
 	includeReset: boolean,
+	mode: QuotaDisplayMode,
 ): string[] {
 	if (quota.type !== "ready") return [];
 	const resetLimit = includeReset
 		? findResetLimitForStatus(quota.limits)
 		: undefined;
 	return quota.limits
-		.map((limit) => formatQuotaLimit(limit, resetLimit, includeReset))
+		.map((limit) => formatQuotaLimit(limit, resetLimit, includeReset, mode))
 		.filter((part): part is string => Boolean(part));
 }
 
-function formatQuota(quota: CompactQuotaStatus): string | undefined {
+function formatQuota(
+	quota: CompactQuotaStatus,
+	mode: QuotaDisplayMode,
+): string | undefined {
 	if (quota.type === "ready") {
-		const parts = formatQuotaParts(quota, true);
+		const parts = formatQuotaParts(quota, true, mode);
 		return parts.length > 0 ? parts.join(STATUS_SEPARATOR) : undefined;
 	}
 	if (quota.type === "missing") return "no auth";
@@ -400,14 +418,16 @@ export function formatPromptStatusText(params: {
 	quota: CompactQuotaStatus;
 	width?: number;
 	maskEmail?: boolean;
+	quotaDisplay?: QuotaDisplayMode;
 }): string {
 	const variant = params.variant;
+	const mode = params.quotaDisplay ?? DEFAULT_QUOTA_DISPLAY_MODE;
 	const accountForms = formatAccountHints(params.quota, params.maskEmail);
-	const quotaParts = formatQuotaParts(params.quota, true);
-	const quotaPartsWithoutReset = formatQuotaParts(params.quota, false);
+	const quotaParts = formatQuotaParts(params.quota, true, mode);
+	const quotaPartsWithoutReset = formatQuotaParts(params.quota, false, mode);
 	const quota = quotaParts.length > 0
 		? quotaParts.join(STATUS_SEPARATOR)
-		: formatQuota(params.quota);
+		: formatQuota(params.quota, mode);
 	const primaryQuota = quotaParts[0] ?? quota;
 	const quotaWithoutReset = quotaPartsWithoutReset.length > 0
 		? quotaPartsWithoutReset.join(STATUS_SEPARATOR)
@@ -437,12 +457,194 @@ export function formatPromptStatusText(params: {
 	return candidates.find((candidate) => candidate.length <= maxChars) ?? "";
 }
 
+/**
+ * Columns this line may not spend, because something else on the row owns
+ * them: the prompt border and padding, and the model label sitting to the
+ * left of this slot ("Build - Big Pickle OpenCode Zen" is 31 characters).
+ */
+const OVERVIEW_STATUS_RESERVED_CHARS = 40;
+
+/**
+ * Character budget for the pool-wide line.
+ *
+ * Two bounds, whichever is tighter. The share cap keeps a wide terminal from
+ * handing the whole row to this line; the reserve keeps a narrow one from
+ * overrunning the model label beside it. The reserve is what binds at ordinary
+ * widths, and it has to: unlike the single-account line above - which is short
+ * enough that its budget is never the thing that stops it - this line grows
+ * with the size of the pool and reaches its budget on every render.
+ *
+ * Overflow is NOT absorbed by the renderer's truncation. At 80 columns a
+ * 48-character line was ellipsized through its middle, destroying account
+ * numbers and reset times either side of the cut, AND pushed the model label
+ * into a second row. The reserve is sized so that does not happen: 40 at 80
+ * columns, which is what measurably fits beside a 31-character label.
+ */
+function maxOverviewStatusChars(width: number | undefined): number {
+	if (!width || !Number.isFinite(width)) return 32;
+	return Math.max(
+		Math.min(12, width),
+		Math.min(
+			Math.floor(width * 0.6),
+			width - OVERVIEW_STATUS_RESERVED_CHARS,
+		),
+	);
+}
+
+/**
+ * Columns available to this line, preferring what the renderer measured.
+ *
+ * `width` is the whole terminal, which is the wrong number whenever anything
+ * else is on the row - a sidebar, the model label - and it is wrong by however
+ * much those take. A measured value comes from the laid-out node itself and
+ * needs no reserve at all, so it is used verbatim.
+ */
+function resolveOverviewChars(
+	width: number | undefined,
+	availableChars: number | undefined,
+): number {
+	if (
+		typeof availableChars === "number" &&
+		Number.isFinite(availableChars) &&
+		availableChars > 0
+	) {
+		return Math.floor(availableChars);
+	}
+	return maxOverviewStatusChars(width);
+}
+
+/**
+ * Break one rendering across rows, at the separators it already has.
+ *
+ * Only `, ` boundaries are used, so a row never ends mid-account: a line cut
+ * between `#2` and its percentage is worse than no second row at all. A
+ * candidate with any single segment wider than the row cannot be laid out this
+ * way and is rejected, which sends the caller to the next rung down.
+ */
+export function wrapStatusCandidate(
+	candidate: string,
+	maxChars: number,
+	maxRows: number,
+): string[] | undefined {
+	if (candidate.length <= maxChars) return [candidate];
+	if (maxRows <= 1 || maxChars <= 0) return undefined;
+	const segments = candidate.split(", ");
+	const rows: string[] = [];
+	let row = "";
+	for (const [position, segment] of segments.entries()) {
+		const piece = position === segments.length - 1 ? segment : `${segment},`;
+		if (piece.length > maxChars) return undefined;
+		if (row.length === 0) {
+			row = piece;
+			continue;
+		}
+		const joined = `${row} ${piece}`;
+		if (joined.length <= maxChars) {
+			row = joined;
+			continue;
+		}
+		rows.push(row);
+		if (rows.length >= maxRows) return undefined;
+		row = piece;
+	}
+	if (row.length > 0) rows.push(row);
+	return rows.length > 0 && rows.length <= maxRows ? rows : undefined;
+}
+
+/**
+ * Lay a candidate ladder out in the space available, in up to `maxRows` rows.
+ *
+ * The ladder is walked once, and the first rung that fits wins - whether it
+ * fits on one row or has to be broken across two. Trying every rung on one row
+ * before allowing a second would shed detail the reader has room for.
+ */
+export function fitStatusLines(
+	candidates: readonly string[],
+	maxChars: number,
+	maxRows: number,
+): string[] {
+	for (const candidate of candidates) {
+		const rows = wrapStatusCandidate(candidate, maxChars, maxRows);
+		if (rows) return rows;
+	}
+	const last = candidates.at(-1);
+	return last ? [last] : [];
+}
+
+/**
+ * Render the whole account pool, degrading through
+ * {@link formatQuotaOverviewCandidates} until one form fits.
+ */
+export function formatQuotaOverviewStatusLines(params: {
+	accounts: readonly QuotaOverviewAccount[];
+	options: QuotaOverviewOptions;
+	width?: number;
+	availableChars?: number;
+	maxRows?: number;
+}): string[] {
+	return fitStatusLines(
+		formatQuotaOverviewCandidates(params.accounts, params.options),
+		resolveOverviewChars(params.width, params.availableChars),
+		params.maxRows ?? 1,
+	);
+}
+
+export function formatQuotaOverviewStatusText(params: {
+	accounts: readonly QuotaOverviewAccount[];
+	options: QuotaOverviewOptions;
+	width?: number;
+	availableChars?: number;
+}): string {
+	return formatQuotaOverviewStatusLines(params)[0] ?? "";
+}
+
+/** The banked-reset line, laid out the same way as the pool line. */
+export function formatQuotaResetsStatusLines(params: {
+	accounts: readonly QuotaOverviewAccount[];
+	options: QuotaOverviewOptions;
+	width?: number;
+	availableChars?: number;
+	maxRows?: number;
+}): string[] {
+	const candidates = formatQuotaResetsCandidates(params.accounts, {
+		maskEmail: params.options.maskEmail,
+		names: params.options.names,
+		now: params.options.now,
+	});
+	if (candidates.length === 0) return [];
+	return fitStatusLines(
+		candidates,
+		resolveOverviewChars(params.width, params.availableChars),
+		params.maxRows ?? 1,
+	);
+}
+
 export type QuotaPromptTone =
 	| "normal"
 	| "warning"
 	| "danger"
 	| "stale"
 	| "unknown";
+
+/**
+ * Colour the pool by its healthiest account.
+ *
+ * A pool is only in trouble when nothing in it has room left, so the account
+ * with the most headroom decides the colour: keying on the worst account would
+ * paint the line red for a spent seat that rotation has already stopped
+ * selecting while six healthy ones serve every request.
+ */
+export function resolveQuotaOverviewTone(
+	accounts: readonly QuotaOverviewAccount[],
+	stale = false,
+): QuotaPromptTone {
+	if (stale) return "stale";
+	const best = resolveQuotaOverviewTonePercent(accounts);
+	if (best === undefined) return "unknown";
+	if (best <= DANGER_LIMIT_LEFT_PERCENT) return "danger";
+	if (best <= WARNING_LIMIT_LEFT_PERCENT) return "warning";
+	return "normal";
+}
 
 export function resolveQuotaPromptTone(
 	quota: CompactQuotaStatus,
@@ -568,19 +770,22 @@ function formatUpdatedAge(fetchedAt: number | undefined, now: number): string {
 	return `${days}d ago`;
 }
 
-function formatDetailsLimit(limit: CompactQuotaLimit): string {
+function formatDetailsLimit(
+	limit: CompactQuotaLimit,
+	mode: QuotaDisplayMode,
+): string {
 	const label = limit.label.trim() || "quota";
-	const left = isPercent(limit.leftPercent)
-		? `${limit.leftPercent}% left`
+	const percent = isPercent(limit.leftPercent)
+		? formatNamedQuotaPercent(limit.leftPercent, mode)
 		: "unavailable";
 	const reset = formatReset(limit.resetAtMs);
-	return reset ? `${label}: ${left}, resets ${reset}` : `${label}: ${left}`;
+	return reset ? `${label}: ${percent}, resets ${reset}` : `${label}: ${percent}`;
 }
 
 export function formatQuotaDetailsText(
 	quota: CompactQuotaStatus,
 	now = Date.now(),
-	options: { maskEmail?: boolean } = {},
+	options: { maskEmail?: boolean; quotaDisplay?: QuotaDisplayMode } = {},
 ): string {
 	if (quota.type === "loading") return "Quota is loading.";
 	if (quota.type === "missing") return "No Codex OAuth account is configured.";
@@ -598,7 +803,9 @@ export function formatQuotaDetailsText(
 		lines.push(`Account: ${accountHint}`);
 	}
 	for (const limit of quota.limits) {
-		lines.push(formatDetailsLimit(limit));
+		lines.push(
+			formatDetailsLimit(limit, options.quotaDisplay ?? DEFAULT_QUOTA_DISPLAY_MODE),
+		);
 	}
 	// Named through formatPlanType like the stored copy, so one seat does not
 	// print "Business" in codex-list and "team" here in the same session.

@@ -55,6 +55,7 @@ describe("default quota fetch path", () => {
 	const directories: string[] = [];
 
 	beforeEach(async () => {
+		vi.stubEnv("CODEX_AUTH_QUOTA_DISPLAY", "free");
 		vi.clearAllMocks();
 		persistUsageQuotaExhaustion.mockResolvedValue(false);
 		persistUsageQuotaRecovery.mockResolvedValue(false);
@@ -64,6 +65,7 @@ describe("default quota fetch path", () => {
 	});
 
 	afterEach(async () => {
+		vi.unstubAllEnvs();
 		setStoragePathDirect(null);
 		await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 	});
@@ -132,7 +134,7 @@ describe("default quota fetch path", () => {
 			await vi.waitFor(() => {
 				expect(notify).toHaveBeenCalledWith(
 					"Codex quota status",
-					"5h: 10% | resets unavailable\nWeekly: 90% | resets unavailable",
+					"5h: 10% left | resets unavailable\nWeekly: 90% left | resets unavailable",
 				);
 			});
 		} finally {
@@ -334,7 +336,7 @@ describe("default quota fetch path", () => {
 			await vi.waitFor(() => {
 				expect(notify).toHaveBeenCalledWith(
 					"Codex quota status",
-					"5h: 80% | resets unavailable\nWeekly: 80% | resets unavailable",
+					"5h: 80% left | resets unavailable\nWeekly: 80% left | resets unavailable",
 				);
 			});
 		} finally {
