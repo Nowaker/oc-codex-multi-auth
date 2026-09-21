@@ -128,7 +128,28 @@ opencode debug config
 opencode auth login
 ```
 
-The default installer only normalizes the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the cached plugin copy. Catalog modes also merge their selected `provider.openai` definitions. Changed config files are backed up before writing.
+The default installer only registers the plugin entry in `~/.config/opencode/opencode.json`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the cached plugin copy. Catalog modes also merge their selected `provider.openai` definitions. Changed config files are backed up before writing.
+
+### Running from a local checkout
+
+You can point OpenCode at a clone of this repository instead of the published
+package, which is how the project is developed:
+
+```json
+{ "plugin": ["file:///path/to/oc-codex-multi-auth"] }
+```
+
+The installer leaves that entry exactly as written. It identifies an entry by
+the package it resolves to rather than by how the path is spelled, so a clone
+is recognized under any directory name, whether it is referenced as a path, a
+`file://` URL, or its build output. `oc-codex-multi-auth` is appended only when
+no entry in the config resolves to this plugin, so the installer never replaces
+a checkout with the published package or registers both at once.
+
+Stale references the installer itself produced are still retired: the bare
+package name repeated, version-pinned entries, the former
+`oc-chatgpt-multi-auth` name, and paths into `node_modules` or the OpenCode
+package cache.
 
 ### Standalone CLI (no agent / no token cost)
 
@@ -508,7 +529,7 @@ opencode auth login
 <summary><b>Common symptoms</b></summary>
 
 - Plugin does not load: rerun `npx -y oc-codex-multi-auth@latest`, then restart OpenCode
-- Config looks wrong: run `opencode debug config` and confirm `"plugin": ["oc-codex-multi-auth"]`
+- Config looks wrong: run `opencode debug config` and confirm `"plugin": ["oc-codex-multi-auth"]`, or the path to your checkout when running one
 - OAuth callback fails: free port `1455`, then rerun `opencode auth login`
 - Browser launch is blocked: use the remote/headless login path from [docs/getting-started.md](docs/getting-started.md#remote-or-headless-login)
 - Wrong account is selected: run `codex-list`, then `codex-switch`

@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createLogger } from "./logger.js";
 
@@ -118,12 +118,60 @@ function getManagedCachePaths(): string[] {
   ]);
 }
 
-export function clearManagedOpenCodePluginCache(paths = getManagedCachePaths()): boolean {
+function isInsideDirectory(candidate: string, directory: string): boolean {
+  const relativePath = relative(directory, candidate);
+  return relativePath !== "" && !relativePath.startsWith("..") && !isAbsolute(relativePath);
+}
+
+export interface EvictionScope {
+  cacheRoot?: string;
+  resolveRealPath?: (path: string) => string;
+}
+
+/**
+ * Cache eviction deletes recursively, so it must never act on a path that only
+ * looks like cache. Resolving symlinks before the containment check is the part
+ * that matters: a developer who links their working checkout into the cache
+ * would otherwise have it deleted on exit by a name match alone.
+ *
+ * The cache root itself must not resolve through a symlink either. When
+ * `~/.cache/opencode` is a link to `~`, comparing realpaths makes the whole
+ * home directory "inside the cache" and containment proves nothing.
+ */
+export function isEvictableCachePath(cachePath: string, scope: EvictionScope = {}): boolean {
+  const { cacheRoot = OPENCODE_CACHE_DIR, resolveRealPath = realpathSync } = scope;
+  const absolutePath = resolve(cachePath);
+  const absoluteRoot = resolve(cacheRoot);
+  if (!isInsideDirectory(absolutePath, absoluteRoot)) return false;
+
+  try {
+    const realRoot = resolveRealPath(absoluteRoot);
+    const rootIsSymlinked =
+      process.platform === "win32"
+        ? realRoot.toLowerCase() !== absoluteRoot.toLowerCase()
+        : realRoot !== absoluteRoot;
+    if (rootIsSymlinked) return false;
+    return isInsideDirectory(resolveRealPath(absolutePath), realRoot);
+  } catch {
+    return false;
+  }
+}
+
+export function clearManagedOpenCodePluginCache(
+  paths = getManagedCachePaths(),
+  scope: EvictionScope = {},
+): boolean {
   let cleared = false;
 
   for (const cachePath of paths) {
     try {
       if (!existsSync(cachePath)) continue;
+      if (!isEvictableCachePath(cachePath, scope)) {
+        log.warn("Refused to clear a plugin cache path that resolves outside the OpenCode cache", {
+          path: cachePath,
+        });
+        continue;
+      }
       rmSync(cachePath, { recursive: true, force: true });
       cleared = true;
       log.info("Cleared OpenCode plugin cache for update", { path: cachePath });
