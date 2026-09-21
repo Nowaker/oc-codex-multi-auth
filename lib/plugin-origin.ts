@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { lock } from "proper-lockfile";
 import { createLogger } from "./logger.js";
@@ -36,12 +36,22 @@ const PACKAGE_ROOT_LOOKUP_DEPTH = 3;
 const HISTORY_LOCK_STALE_MS = 10_000;
 const HISTORY_LOCK_UPDATE_MS = 2_000;
 const HISTORY_LOCK_RETRIES = {
-	retries: 6,
-	factor: 1.6,
-	minTimeout: 25,
-	maxTimeout: 400,
+	retries: 10,
+	factor: 1.8,
+	minTimeout: 50,
+	maxTimeout: 500,
 	randomize: true,
 } as const;
+
+const MANAGED_PACKAGE_NAMES = new Set(["oc-codex-multi-auth", "oc-chatgpt-multi-auth"]);
+
+function isManagedPackageName(name: string): boolean {
+	return MANAGED_PACKAGE_NAMES.has(name.toLowerCase());
+}
+
+function defaultCacheDirectory(home: string = homedir()): string {
+	return join(home, ".cache", "opencode");
+}
 
 export interface PluginOrigin {
 	name: string;
@@ -100,15 +110,32 @@ function pathSegments(path: string): string[] {
 	return path.replaceAll("\\", "/").replace(/\/+$/, "").split("/").filter(Boolean);
 }
 
+function foldPathCase(value: string, platform: NodeJS.Platform): string {
+	return platform === "win32" || platform === "darwin" ? value.toLowerCase() : value;
+}
+
+function isInsideDirectory(
+	candidate: string,
+	directory: string,
+	platform: NodeJS.Platform,
+): boolean {
+	const relativePath = relative(
+		foldPathCase(resolve(directory), platform),
+		foldPathCase(resolve(candidate), platform),
+	);
+	return relativePath !== "" && !relativePath.startsWith("..") && !isAbsolute(relativePath);
+}
+
 /**
  * How two spellings of a root are told apart. Windows reaches one directory
- * under several of them, so comparing verbatim there would let `C:\Repo` and
- * `c:\repo` occupy two slots in a bounded history and evict a genuinely
+ * under several of them, and so does a default-case-insensitive APFS volume,
+ * so comparing verbatim there would let `C:\Repo` and `c:\repo` - or `/Repo`
+ * and `/repo` - occupy two slots in a bounded history and evict a genuinely
  * different origin between them.
  */
 function rootComparisonKey(root: string, platform: NodeJS.Platform = process.platform): string {
 	const normalized = root.replaceAll("\\", "/").replace(/\/+$/, "");
-	return platform === "win32" ? normalized.toLowerCase() : normalized;
+	return foldPathCase(normalized, platform);
 }
 
 /**
@@ -119,15 +146,19 @@ function rootComparisonKey(root: string, platform: NodeJS.Platform = process.pla
 export function isPackageManagerRoot(
 	root: string,
 	platform: NodeJS.Platform = process.platform,
+	cacheDirectory: string = defaultCacheDirectory(),
 ): boolean {
-	const segments = pathSegments(root).map((segment) =>
-		platform === "win32" ? segment.toLowerCase() : segment,
-	);
-	return segments.some(
-		(segment, index) =>
-			segment === "node_modules" ||
-			(segments[index - 1] === "packages" && segment.includes("@")),
-	);
+	const segments = pathSegments(root).map((segment) => foldPathCase(segment, platform));
+	if (
+		segments.some(
+			(segment, index) =>
+				segment === "node_modules" ||
+				(segments[index - 1] === "packages" && segment.includes("@")),
+		)
+	) {
+		return true;
+	}
+	return isInsideDirectory(root, cacheDirectory, platform);
 }
 
 export function resolvePluginOrigin(moduleUrl: string): PluginOrigin | null {
@@ -143,7 +174,7 @@ export function resolvePluginOrigin(moduleUrl: string): PluginOrigin | null {
 
 	const manifest = readPackageManifest(root);
 	const name = manifestName(manifest);
-	if (!name) return null;
+	if (!name || !isManagedPackageName(name)) return null;
 	const version = typeof manifest?.version === "string" ? manifest.version : "0.0.0";
 
 	return { name, version, root, isLocalCheckout: !isPackageManagerRoot(root) };
@@ -331,7 +362,7 @@ export function findReplacedLocalCheckout(
 		history.sightings
 			.filter(
 				(sighting) =>
-					sighting.name === origin.name &&
+					isManagedPackageName(sighting.name) &&
 					sighting.isLocalCheckout &&
 					rootComparisonKey(sighting.root, platform) !== currentKey,
 			)

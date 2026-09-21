@@ -2177,14 +2177,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					: null;
 
 			const pluginOrigin = getPluginOrigin();
-			if (pluginOrigin?.isLocalCheckout) {
-				logInfo(`Running from ${describePluginOrigin(pluginOrigin)}`);
-			}
-			if (pluginOrigin && !startupOriginRecorded && !underTestRunner) {
+			if (pluginOrigin && !startupOriginRecorded) {
 				startupOriginRecorded = true;
-				recordPluginOrigin(pluginOrigin).catch((err) => {
-					logDebug(`Failed to record plugin origin: ${err instanceof Error ? err.message : String(err)}`);
-				});
+				if (pluginOrigin.isLocalCheckout) {
+					logInfo(`Running from ${describePluginOrigin(pluginOrigin)}`);
+				}
+				if (!underTestRunner) {
+					recordPluginOrigin(pluginOrigin).catch((err) => {
+						logDebug(`Failed to record plugin origin: ${err instanceof Error ? err.message : String(err)}`);
+					});
+				}
 			}
 
 			checkAndNotify(async (message, variant) => {
