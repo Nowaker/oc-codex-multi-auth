@@ -125,13 +125,20 @@ describe("default quota fetch path", () => {
 		const onCredentialsPersisted = vi.fn();
 		const notify = vi.fn().mockResolvedValue(true);
 
-		await monitorWith({ onCredentialsPersisted, notify }).runNow();
-
+		// Delivery is the scheduled poll's job; a forced check only probes.
+		const monitor = monitorWith({ onCredentialsPersisted, notify, initialDelayMs: 0 });
+		monitor.start();
+		try {
+			await vi.waitFor(() => {
+				expect(notify).toHaveBeenCalledWith(
+					"Codex quota status",
+					"5h: 10% | resets unavailable\nWeekly: 90% | resets unavailable",
+				);
+			});
+		} finally {
+			monitor.dispose();
+		}
 		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
-		expect(notify).toHaveBeenCalledWith(
-			"Codex quota status",
-			"5h: 10% | resets unavailable\nWeekly: 90% | resets unavailable",
-		);
 	});
 
 	it("persists an exhausted subscription quota and invalidates cached routing", async () => {
@@ -320,12 +327,19 @@ describe("default quota fetch path", () => {
 		});
 		const notify = vi.fn().mockResolvedValue(true);
 
-		await monitorWith({ loadStorage: async () => twoAccounts, notify }).runNow();
-
+		// Delivery is the scheduled poll's job; a forced check only probes.
+		const monitor = monitorWith({ loadStorage: async () => twoAccounts, notify, initialDelayMs: 0 });
+		monitor.start();
+		try {
+			await vi.waitFor(() => {
+				expect(notify).toHaveBeenCalledWith(
+					"Codex quota status",
+					"5h: 80% | resets unavailable\nWeekly: 80% | resets unavailable",
+				);
+			});
+		} finally {
+			monitor.dispose();
+		}
 		expect(fetchCodexUsage).toHaveBeenCalledOnce();
-		expect(notify).toHaveBeenCalledWith(
-			"Codex quota status",
-			"5h: 80% | resets unavailable\nWeekly: 80% | resets unavailable",
-		);
 	});
 });

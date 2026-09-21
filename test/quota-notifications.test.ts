@@ -509,14 +509,56 @@ describe("quota monitor lifecycle", () => {
 		expect(notify).not.toHaveBeenCalled();
 	});
 
+	it("fetches on demand without delivering, leaving a crossing for the poll to announce", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
+		tempDirectories.push(directory);
+		const storagePath = join(directory, "accounts.json");
+		setStoragePathDirect(storagePath);
+		const notify = vi.fn().mockResolvedValue(true);
+		const fetchSummary = vi.fn().mockResolvedValue(accountUsage({
+			fiveHourUsed: 50,
+			weeklyUsed: 80,
+		}));
+		const monitor = createQuotaMonitor({
+			loadConfig: () => ({ enabled: true, intervalMs: 60_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadStorage: async () => ({
+				version: 3,
+				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+				activeIndex: 0,
+			}),
+			fetchSummary,
+			notify,
+			notificationsSupported: () => true,
+			initialDelayMs: 0,
+		});
+
+		// The request-path re-probe (probeUpstreamBlockLifted) calls runNow()
+		// inside a wait that can run for days. notifyEveryCheck opts into the
+		// POLL's cadence, so the probe must refresh usage and nothing else: no
+		// alert, and no state write that would consume the crossing the next
+		// scheduled check is meant to announce.
+		await monitor.runNow();
+
+		expect(fetchSummary).toHaveBeenCalledOnce();
+		expect(notify).not.toHaveBeenCalled();
+		expect(await readQuotaNotificationState(getQuotaNotificationStatePath(storagePath))).toBeUndefined();
+
+		monitor.start();
+		try {
+			await vi.waitFor(() => expect(notify).toHaveBeenCalledOnce());
+		} finally {
+			monitor.dispose();
+		}
+	});
+
 	it("notifies when only the weekly window crosses a threshold", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
 		tempDirectories.push(directory);
-		setStoragePathDirect(join(directory, "accounts.json"));
-		let weeklyUsed = 50;
+		const storagePath = join(directory, "accounts.json");
+		setStoragePathDirect(storagePath);
 		const notify = vi.fn().mockResolvedValue(true);
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 60_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage: async () => ({
 				version: 3,
 				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
@@ -524,21 +566,30 @@ describe("quota monitor lifecycle", () => {
 			}),
 			fetchSummary: async () => accountUsage({
 				fiveHourUsed: 50,
-				weeklyUsed,
+				weeklyUsed: 80,
 			}),
 			notify,
 			notificationsSupported: () => true,
+			initialDelayMs: 0,
 		});
+		// Seed the prior observation at 50% so the poll sees the weekly window
+		// cross 25 downward rather than reading 20% for the first time.
+		await updateQuotaNotificationState(getQuotaNotificationStatePath(storagePath), () => ({
+			state: { fiveHour: { lastPercent: 50 }, weekly: { lastPercent: 50 }, updatedAt: 0 },
+			result: undefined,
+		}));
 
-		await monitor.runNow();
-		weeklyUsed = 80;
-		await monitor.runNow();
-
-		expect(notify).toHaveBeenCalledOnce();
-		expect(notify).toHaveBeenCalledWith(
-			"Codex quota status",
-			"5h: 50% | resets unavailable\nWeekly: 20% | resets unavailable",
-		);
+		monitor.start();
+		try {
+			await vi.waitFor(() => {
+				expect(notify).toHaveBeenCalledWith(
+					"Codex quota status",
+					"5h: 50% | resets unavailable\nWeekly: 20% | resets unavailable",
+				);
+			});
+		} finally {
+			monitor.dispose();
+		}
 	});
 
 	it("notifies after every successful check when configured", async () => {
@@ -548,7 +599,7 @@ describe("quota monitor lifecycle", () => {
 		const notify = vi.fn().mockResolvedValue(true);
 		let now = 1_000;
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 100, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
 			loadStorage: async () => ({
 				version: 3,
 				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
@@ -561,13 +612,17 @@ describe("quota monitor lifecycle", () => {
 			notify,
 			notificationsSupported: () => true,
 			now: () => now,
+			initialDelayMs: 0,
 		});
 
-		await monitor.runNow();
-		now += 1_000;
-		await monitor.runNow();
-
-		expect(notify).toHaveBeenCalledTimes(2);
+		monitor.start();
+		try {
+			await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+			now += 100;
+			await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(2));
+		} finally {
+			monitor.dispose();
+		}
 	});
 
 	it("delivers only once per interval across monitor instances", async () => {
@@ -575,13 +630,14 @@ describe("quota monitor lifecycle", () => {
 		tempDirectories.push(directory);
 		setStoragePathDirect(join(directory, "accounts.json"));
 		const notify = vi.fn().mockResolvedValue(true);
+		const loadStorage = vi.fn().mockResolvedValue({
+			version: 3 as const,
+			accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
+			activeIndex: 0,
+		});
 		const dependencies = {
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
-			loadStorage: async () => ({
-				version: 3 as const,
-				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
-				activeIndex: 0,
-			}),
+			loadConfig: () => ({ enabled: true, intervalMs: 60_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadStorage,
 			fetchSummary: async () => accountUsage({
 				fiveHourUsed: 50,
 				weeklyUsed: 50,
@@ -589,13 +645,23 @@ describe("quota monitor lifecycle", () => {
 			notify,
 			notificationsSupported: () => true,
 			now: () => 1_000,
+			initialDelayMs: 0,
 		};
+		const first = createQuotaMonitor(dependencies);
+		const second = createQuotaMonitor(dependencies);
 
-		await Promise.all([
-			createQuotaMonitor(dependencies).runNow(),
-			createQuotaMonitor(dependencies).runNow(),
-		]);
-
+		first.start();
+		second.start();
+		try {
+			await vi.waitFor(() => expect(loadStorage).toHaveBeenCalledTimes(2));
+			await vi.waitFor(() => expect(notify).toHaveBeenCalledOnce());
+			// The losing monitor's claim must still settle: it has to observe the
+			// winner's lastDeliveredAt instead of delivering a second alert.
+			await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+		} finally {
+			first.dispose();
+			second.dispose();
+		}
 		expect(notify).toHaveBeenCalledOnce();
 	});
 
@@ -691,11 +757,15 @@ describe("quota monitor lifecycle", () => {
 				return true;
 			},
 			notificationsSupported: () => true,
+			initialDelayMs: 0,
 		});
 
-		await monitor.runNow();
-
-		expect(leaseWasFree).toBe(true);
+		monitor.start();
+		try {
+			await vi.waitFor(() => expect(leaseWasFree).toBe(true));
+		} finally {
+			monitor.dispose();
+		}
 	});
 
 	it("re-arms a crossed threshold when delivery fails", async () => {
@@ -704,7 +774,7 @@ describe("quota monitor lifecycle", () => {
 		setStoragePathDirect(join(directory, "accounts.json"));
 		const notify = vi.fn().mockResolvedValue(false);
 		const dependencies = {
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 500, notifyEveryCheck: false, thresholds: [25, 10, 0] }),
 			loadStorage: async () => ({
 				version: 3 as const,
 				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
@@ -714,17 +784,25 @@ describe("quota monitor lifecycle", () => {
 			notify,
 			notificationsSupported: () => true,
 			now: () => 1_000,
+			initialDelayMs: 0,
 		};
 		const monitor = createQuotaMonitor(dependencies);
 
-		await monitor.runNow();
-		await monitor.runNow();
-
-		// Both checks saw weekly at 20%: the first crossing was never delivered,
-		// so the second must try again rather than treat it as already alerted.
-		expect(notify).toHaveBeenCalledTimes(2);
-		expect(await readQuotaNotificationState(getQuotaNotificationStatePath(join(directory, "accounts.json"))))
-			.toMatchObject({ weekly: {}, lastDeliveredAt: undefined });
+		monitor.start();
+		try {
+			// Both checks see weekly at 20%: the first crossing was never
+			// delivered, so the second must try again rather than treat it as
+			// already alerted.
+			await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(2));
+		} finally {
+			monitor.dispose();
+		}
+		// The claim release can still be in flight when the second attempt
+		// returns, so wait for the reverted state to land on disk.
+		await vi.waitFor(async () => {
+			expect(await readQuotaNotificationState(getQuotaNotificationStatePath(join(directory, "accounts.json"))))
+				.toMatchObject({ weekly: {}, lastDeliveredAt: undefined });
+		});
 	});
 
 	it("writes state beside the accounts file the check actually read", async () => {
@@ -736,7 +814,7 @@ describe("quota monitor lifecycle", () => {
 		setStoragePathDirect(accountsA);
 
 		const monitor = createQuotaMonitor({
-			loadConfig: () => ({ enabled: true, intervalMs: 1_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
+			loadConfig: () => ({ enabled: true, intervalMs: 60_000, notifyEveryCheck: true, thresholds: [25, 10, 0] }),
 			loadStorage: async () => ({
 				version: 3,
 				accounts: [{ refreshToken: "token", addedAt: 0, lastUsed: 0 }],
@@ -749,11 +827,17 @@ describe("quota monitor lifecycle", () => {
 			},
 			notify: vi.fn().mockResolvedValue(true),
 			notificationsSupported: () => true,
+			initialDelayMs: 0,
 		});
 
-		await monitor.runNow();
-
-		expect(await readQuotaNotificationState(getQuotaNotificationStatePath(accountsA))).toBeTruthy();
+		monitor.start();
+		try {
+			await vi.waitFor(async () => {
+				expect(await readQuotaNotificationState(getQuotaNotificationStatePath(accountsA))).toBeTruthy();
+			});
+		} finally {
+			monitor.dispose();
+		}
 		expect(await readQuotaNotificationState(getQuotaNotificationStatePath(accountsB))).toBeUndefined();
 	});
 

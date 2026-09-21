@@ -326,7 +326,11 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 		}
 	};
 
-	const check = async (config: QuotaNotificationsConfig, expectedGeneration: number): Promise<void> => {
+	const check = async (
+		config: QuotaNotificationsConfig,
+		expectedGeneration: number,
+		deliverNotifications = true,
+	): Promise<void> => {
 		const storage = await dependencies.loadStorage();
 		if (!storage || storage.accounts.length === 0 || disposed || expectedGeneration !== generation) return;
 		// Resolved next to the load that produced `storage`, not after the
@@ -367,12 +371,16 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 		}
 		if (summaries.length === 0 || disposed || expectedGeneration !== generation) return;
 		const canDeliver =
+			deliverNotifications &&
 			config.enabled &&
 			(config.notifyEveryCheck || config.thresholds.length > 0) &&
 			dependencies.notificationsSupported();
 		// Credit protection has already persisted any exhausted accounts while
 		// gathering summaries. Do not create notification-state files unless a
-		// notification can actually be delivered.
+		// notification can actually be delivered. A forced check never delivers:
+		// it is a request-driven probe, so writing the threshold/delivery state
+		// would also consume a crossing the next scheduled poll is meant to
+		// announce.
 		if (!canDeliver) return;
 
 		const now = dependencies.now();
@@ -482,8 +490,10 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 			// Both switches govern the UNATTENDED poll. A forced check is an
 			// on-demand request from a caller that is blocked on the answer, so
 			// honouring them here would let `runNow()` return without asking
-			// upstream anything at all.
-			if (force || keepPolling) await check(config, expectedGeneration);
+			// upstream anything at all. For the same reason a forced check is a
+			// probe, not an alert: `notifyEveryCheck` opts into the poll's
+			// cadence, not one notification per re-probe during a long wait.
+			if (force || keepPolling) await check(config, expectedGeneration, !force);
 		} catch (error) {
 			logDebug(`Quota monitor tick failed: ${(error as Error).message}`);
 		} finally {
