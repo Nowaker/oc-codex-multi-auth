@@ -1,10 +1,26 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+vi.mock("../lib/codex-usage.js", async (importActual) => {
+	const actual = await importActual<typeof import("../lib/codex-usage.js")>();
+	return {
+		...actual,
+		ensureCodexUsageAccessToken: vi.fn(),
+		fetchCodexUsage: vi.fn(),
+	};
+});
+
+import {
+	createUsageAccountFingerprint,
+	ensureCodexUsageAccessToken,
+	fetchCodexUsage,
+} from "../lib/codex-usage.js";
+import { isPoolFullySpent } from "../lib/quota-overview.js";
 import {
 	getTuiQuotaOverviewCachePath,
+	isFreshTuiQuotaSnapshot,
 	isTuiQuotaOverviewSnapshot,
 	readTuiQuotaOverviewSnapshot,
 	sanitizeTuiQuotaOverviewSnapshot,
@@ -97,6 +113,8 @@ describe("overview cache round trip", () => {
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "oc-overview-"));
+		vi.mocked(ensureCodexUsageAccessToken).mockReset();
+		vi.mocked(fetchCodexUsage).mockReset();
 	});
 
 	afterEach(async () => {
@@ -153,6 +171,95 @@ describe("overview cache round trip", () => {
 				loadStorage: async () => null,
 			}),
 		).toBeUndefined();
+	});
+
+	it("keeps a failed account's last reading and ages the merged snapshot", async () => {
+		const path = join(dir, TUI_QUOTA_OVERVIEW_CACHE_FILE);
+		const accountA = {
+			refreshToken: "refresh-a",
+			accountId: "account-a",
+			enabled: true,
+		};
+		const accountB = {
+			refreshToken: "refresh-b",
+			accountId: "account-b",
+			enabled: true,
+		};
+		// The previous poll read account B at 90% headroom: dropping it would
+		// judge the pool on the spent account alone and report it fully spent.
+		const previous = snapshot({
+			accounts: [
+				{
+					fingerprint: createUsageAccountFingerprint(accountA as never),
+					index: 1,
+					planType: "plus",
+					limits: [
+						{
+							label: "weekly",
+							leftPercent: 0,
+							usedPercent: 100,
+							windowMinutes: 10080,
+							resetAtMs: NOW + 86_400_000,
+						},
+					],
+				},
+				{
+					fingerprint: createUsageAccountFingerprint(accountB as never),
+					index: 2,
+					planType: "plus",
+					limits: [
+						{
+							label: "weekly",
+							leftPercent: 90,
+							usedPercent: 10,
+							windowMinutes: 10080,
+							resetAtMs: NOW + 86_400_000,
+						},
+					],
+				},
+			],
+		});
+		await writeTuiQuotaOverviewSnapshot(previous, path);
+
+		vi.mocked(ensureCodexUsageAccessToken).mockResolvedValue({
+			accessToken: "access-token",
+			refreshed: false,
+			persisted: false,
+		});
+		vi.mocked(fetchCodexUsage).mockImplementation(async (params) => {
+			if (params.accountId === "account-b") throw new Error("transient");
+			return {
+				rate_limit: {
+					primary_window: {
+						used_percent: 50,
+						limit_window_seconds: 18_000,
+					},
+				},
+			};
+		});
+
+		const later = NOW + 60 * 60 * 1000;
+		const result = await fetchTuiQuotaOverview({
+			cachePath: path,
+			now: later,
+			loadStorage: async () =>
+				({
+					version: 3,
+					accounts: [accountA, accountB],
+					activeIndex: 0,
+				}) as never,
+		});
+
+		expect(result?.accounts).toHaveLength(2);
+		expect(result?.accounts[1]?.index).toBe(2);
+		expect(result?.accounts[1]?.limits[0]?.leftPercent).toBe(90);
+		expect(result && isPoolFullySpent(toQuotaOverviewAccounts(result))).toBe(
+			false,
+		);
+		// The carried-over reading keeps the older fetch time, so the line is
+		// rendered stale rather than passing it off as current.
+		expect(result?.fetchedAt).toBe(NOW);
+		expect(result && isFreshTuiQuotaSnapshot(result, later)).toBe(false);
 	});
 });
 

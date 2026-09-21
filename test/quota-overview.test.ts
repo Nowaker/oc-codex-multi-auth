@@ -606,6 +606,40 @@ describe("formatQuotaOverviewCandidates", () => {
 		}
 	});
 
+	it("refuses to drop the names when the account numbers skip one", () => {
+		// A deduplicated or disabled seat leaves a pool reading #1 and #3: an
+		// unnamed `60%, 10%` would pin #3's figure on a #2 that is not there.
+		const gapped: QuotaOverviewAccount[] = [
+			{ index: 1, planType: "plus", windows: [{ leftPercent: 60 }] },
+			{ index: 3, planType: "plus", windows: [{ leftPercent: 10 }] },
+		];
+		const candidates = formatQuotaOverviewCandidates(
+			gapped,
+			options({ layout: "accounts", names: "none", resetTimes: "never" }),
+		);
+		// An explicit names:"none" is the user's choice; the ladder must not
+		// reach it on its own when position would misattribute. With the
+		// default number names, the breakdown keeps its `#n` and the count is
+		// the next thing down.
+		const named = formatQuotaOverviewCandidates(
+			gapped,
+			options({ layout: "accounts", resetTimes: "never" }),
+		);
+		expect(candidates[0]).toBe("35%: 60%, 10%");
+		expect(named).toContain("35%: #1 60%, #3 10%");
+		expect(named.some((candidate) => /: \d+%/.test(candidate))).toBe(false);
+		expect(named).toContain("35%: 2 accounts");
+	});
+
+	it("counts the whole pool, not just the accounts that could be read", () => {
+		const candidates = formatQuotaOverviewCandidates(
+			[...pool, { index: 4, planType: "plus", windows: [] }],
+			options(),
+		);
+		expect(candidates).toContain("20%: 4 accounts");
+		expect(candidates).not.toContain("20%: 3 accounts");
+	});
+
 	it("shortens a long name to the number before giving up on names", () => {
 		const candidates = formatQuotaOverviewCandidates(
 			spentPool,
@@ -675,6 +709,30 @@ describe("formatQuotaResetsCandidates", () => {
 		expect(
 			formatQuotaResetsCandidates(spentPool, { now: NOW, maskEmail: true })[0],
 		).toBe("Free resets: 4d 2r wo***@example.com, 3d 1r da***@nowaker.net");
+	});
+
+	it("numbers the accounts when the pool line is configured that way", () => {
+		const candidates = formatQuotaResetsCandidates(spentPool, {
+			now: NOW,
+			names: "number",
+		});
+		expect(candidates[0]).toBe("Free resets: 4d 2r #2, 3d 1r #1");
+		for (const candidate of candidates) {
+			expect(candidate).not.toContain("@");
+		}
+	});
+
+	it("names no account when the pool line is configured nameless", () => {
+		const candidates = formatQuotaResetsCandidates(spentPool, {
+			now: NOW,
+			names: "none",
+		});
+		expect(candidates[0]).toBe("Free resets: 4d 2r, 3d 1r");
+		expect(candidates.at(-1)).toBe("Resets: 2");
+		for (const candidate of candidates) {
+			expect(candidate).not.toContain("@");
+			expect(candidate).not.toContain("#");
+		}
 	});
 });
 

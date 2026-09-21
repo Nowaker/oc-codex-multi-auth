@@ -300,12 +300,12 @@ describe("quota notifications follow the display mode", () => {
 			weekly: { remainingPercent: 72 },
 		};
 		expect(formatQuotaNotification(usage, "free").split("\n")).toEqual([
-			"5h: 10% | resets unavailable",
-			"Weekly: 72% | resets unavailable",
+			"5h: 10% left | resets unavailable",
+			"Weekly: 72% left | resets unavailable",
 		]);
 		expect(formatQuotaNotification(usage, "used").split("\n")).toEqual([
-			"5h: 90% | resets unavailable",
-			"Weekly: 28% | resets unavailable",
+			"5h: 90% used | resets unavailable",
+			"Weekly: 28% used | resets unavailable",
 		]);
 	});
 
@@ -313,11 +313,11 @@ describe("quota notifications follow the display mode", () => {
 		const usage = { fiveHour: {}, weekly: { remainingPercent: 0 } };
 		expect(formatQuotaNotification(usage, "free").split("\n")).toEqual([
 			"5h: unavailable",
-			"Weekly: 0% | resets unavailable",
+			"Weekly: 0% left | resets unavailable",
 		]);
 		expect(formatQuotaNotification(usage, "used").split("\n")).toEqual([
 			"5h: unavailable",
-			"Weekly: 100% | resets unavailable",
+			"Weekly: 100% used | resets unavailable",
 		]);
 	});
 });
