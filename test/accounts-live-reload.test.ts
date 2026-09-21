@@ -381,6 +381,39 @@ describe("accounts live reload", () => {
 		expect(load).toHaveBeenCalledTimes(2);
 		expect(captured.context?.cachedAccountManagerRef.current?.getAccountsSnapshot()[0]?.enabled).toBe(false);
 	});
+	it("keeps serving the incumbent when a mid-request reload loads as empty", async () => {
+		const manager = captured.context?.cachedAccountManagerRef.current;
+		if (!manager) throw new Error("Missing manager");
+		const account = manager.getCurrentAccount();
+		if (!account) throw new Error("Missing account");
+		manager.markQuotaExhausted(account, Date.now() + 86_400_000, "gpt-5.1");
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("data: [DONE]\n\n", {
+			status: 200, headers: { "content-type": "text/event-stream" },
+		}));
+		let enteredWait: () => void = () => {};
+		const waiting = new Promise<void>((resolve) => { enteredWait = resolve; });
+		const minWait = manager.getMinWaitTimeForFamily.bind(manager);
+		vi.spyOn(manager, "getMinWaitTimeForFamily").mockImplementation((...args) => {
+			enteredWait();
+			return minWait(...args);
+		});
+		const response = request("https://api.openai.com/v1/responses", {
+			method: "POST", body: JSON.stringify({ model: "gpt-5.1", stream: true, input: [] }),
+		});
+		await waiting;
+		// What a re-probe leaves behind mid-wait: the cache invalidated, then a
+		// loadAccounts() read that loses a cross-process race resolves as an
+		// empty manager. Installing it would poison the pool for every request.
+		captured.context?.invalidateAccountManagerCache();
+		const empty = new AccountManager(undefined, { ...storage(true), accounts: [] });
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(empty);
+		await vi.advanceTimersByTimeAsync(5000);
+		await drainReads();
+		expect((await response).status).toBe(200);
+		const installed = captured.context?.cachedAccountManagerRef.current;
+		expect(installed).not.toBe(empty);
+		expect(installed?.getAccountCount()).toBe(1);
+	});
 	it("adopts an external change that genuinely removes the last account", async () => {
 		const previous = captured.context?.cachedAccountManagerRef.current;
 		const reloaded = nextReload();
