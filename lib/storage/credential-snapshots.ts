@@ -1,8 +1,10 @@
 /**
- * Pre-write snapshots of the credential store.
+ * Pre-write snapshots of the credential stores.
  *
- * The store is a single JSON file holding every account's live refresh token.
- * Anything that replaces it wholesale — a bad merge, a test run that escaped
+ * The stores are the JSON files holding live refresh tokens: the V3 account
+ * store and the flagged-accounts file beside it, which retains quarantined
+ * records' refresh tokens so they can be restored later. Anything that
+ * replaces either wholesale — a bad merge, a test run that escaped
  * its sandbox, a partial restore — takes the tokens with it, and a backup old
  * enough to predate the last few refreshes restores accounts whose refresh
  * tokens have since been rotated and are therefore dead. This module keeps a
@@ -39,8 +41,19 @@ import {
   TEST_HOME_ESCAPE_CODE,
 } from "./test-home-guard.js";
 import type { AccountStorageV3 } from "./migrations.js";
+import type { FlaggedAccountStorageV1 } from "./flagged.js";
 
 const log = createLogger("credential-snapshots");
+
+/**
+ * The documents this module diffs: the V3 account store and the V1
+ * flagged-account store. Both are `{ version, accounts }` JSON documents, and
+ * the significance projection below reads them generically, so the union is a
+ * name for the contract rather than a shape the code depends on. The import
+ * is type-only on purpose — `flagged.ts` calls back into this module at
+ * runtime.
+ */
+export type CredentialStoreDocument = AccountStorageV3 | FlaggedAccountStorageV1;
 
 /**
  * Filename prefix owned exclusively by this module.
@@ -155,7 +168,7 @@ function significantProjection(document: unknown): string {
 
 export function isSignificantStorageChange(
   previousContent: string,
-  next: AccountStorageV3,
+  next: CredentialStoreDocument,
 ): boolean {
   let previous: unknown;
   try {
@@ -169,6 +182,11 @@ export function isSignificantStorageChange(
   return significantProjection(previous) !== significantProjection(next);
 }
 
+/**
+ * POSIX-only hardening. Windows has no POSIX mode bits for `fs.chmod` to set,
+ * so the restriction is skipped there outright rather than reported as
+ * applied — snapshots on Windows rely on the profile directory's ACLs.
+ */
 async function restrictDirectoryMode(directory: string): Promise<void> {
   if (process.platform === "win32") return;
   try {
@@ -252,7 +270,7 @@ export async function pruneCredentialSnapshots(
  */
 export async function snapshotCredentialStoreBeforeWrite(
   storagePath: string,
-  next: AccountStorageV3 | null,
+  next: CredentialStoreDocument | null,
 ): Promise<void> {
   const config = loadPluginConfig();
   if (!getCredentialSnapshots(config)) return;
@@ -311,7 +329,7 @@ export async function snapshotCredentialStoreBeforeWrite(
  */
 export async function trySnapshotCredentialStoreBeforeWrite(
   storagePath: string,
-  next: AccountStorageV3 | null,
+  next: CredentialStoreDocument | null,
 ): Promise<void> {
   try {
     await snapshotCredentialStoreBeforeWrite(storagePath, next);

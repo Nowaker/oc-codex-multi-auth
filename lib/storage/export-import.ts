@@ -13,6 +13,7 @@ import { ACCOUNT_LIMITS } from "../constants.js";
 import { createLogger } from "../logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { createTimestampedBackupPath, writePreImportBackupFile } from "./backup.js";
+import { isCredentialSnapshotFileName } from "./credential-snapshots.js";
 import { StorageError } from "./errors.js";
 import {
   clampIndex,
@@ -205,6 +206,17 @@ export async function importAccounts(
   const { resolvedPath, normalized } = await readAndNormalizeImportFile(filePath);
   const backupMode = options.backupMode ?? "timestamped";
   const backupPrefix = options.preImportBackupPrefix ?? "codex-pre-import-backup";
+
+  // The credential-snapshot namespace is reserved: a pre-import backup named
+  // under it would be silently deleted by snapshot retention.
+  if (
+    backupMode !== "none" &&
+    isCredentialSnapshotFileName(basename(createTimestampedBackupPath(backupPrefix)))
+  ) {
+    throw new Error(
+      `Refusing preImportBackupPrefix "${backupPrefix}": it collides with the reserved credential-snapshot namespace`,
+    );
+  }
 
   const {
     imported: importedCount,

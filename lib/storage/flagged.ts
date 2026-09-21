@@ -18,8 +18,14 @@ import {
 import { createLogger } from "../logger.js";
 import { extractAccountUserId } from "../auth/token-utils.js";
 import { renameWithWindowsRetry } from "./atomic-write.js";
+import { trySnapshotCredentialStoreBeforeWrite } from "./credential-snapshots.js";
+import { StorageError } from "./errors.js";
 import { getWorkspaceIdentityKey, isRecord } from "./identity.js";
 import { getStoragePath, getCurrentProjectStorageKey, withStorageLock } from "./state.js";
+import {
+  assertTestRunNeverTouchesRealHome,
+  TEST_HOME_ESCAPE_CODE,
+} from "./test-home-guard.js";
 import {
   isKeychainOptInEnabled,
   readFlaggedFromKeychain,
@@ -252,6 +258,7 @@ async function loadFlaggedAccountsUnlocked(
 
 async function saveFlaggedAccountsUnlocked(storage: FlaggedAccountStorageV1): Promise<void> {
   const path = getFlaggedAccountsPath();
+  assertTestRunNeverTouchesRealHome(path);
   const normalized = normalizeFlaggedStorage(storage);
   const content = JSON.stringify(normalized, null, 2);
 
@@ -281,6 +288,13 @@ async function saveFlaggedAccountsUnlocked(storage: FlaggedAccountStorageV1): Pr
 
   try {
     await fs.mkdir(dirname(path), { recursive: true });
+    // This file retains live refresh tokens for quarantined accounts, so it
+    // gets the same pre-write snapshot as the main account store — under the
+    // same significance, retention, and test-home rules — before the rename
+    // replaces what is on disk. Compared against the normalized payload for
+    // the same reason `writeAccountsToPathUnlocked` does: a difference
+    // normalization erases never costs a snapshot.
+    await trySnapshotCredentialStoreBeforeWrite(path, normalized);
     await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
     await renameWithWindowsRetry(tempPath, path);
   } catch (error) {
@@ -324,9 +338,20 @@ export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Pro
 
 export async function clearFlaggedAccounts(): Promise<void> {
   return withStorageLock(async () => {
+    const path = getFlaggedAccountsPath();
     try {
-      await fs.unlink(getFlaggedAccountsPath());
+      assertTestRunNeverTouchesRealHome(path);
+      // Deleting the store outright is unconditionally significant - `null`
+      // says there is no successor document to compare against.
+      await trySnapshotCredentialStoreBeforeWrite(path, null);
+      await fs.unlink(path);
     } catch (error) {
+      // Same fail-loud rule as `clearAccounts`: the test-home guard exists to
+      // fail a run that escaped its sandbox, so absorbing it here would
+      // report a clear that deliberately did not happen.
+      if (error instanceof StorageError && error.code === TEST_HOME_ESCAPE_CODE) {
+        throw error;
+      }
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
         log.error("Failed to clear flagged account storage", { error: String(error) });

@@ -143,6 +143,10 @@ describe("credential snapshots: significance", () => {
 				})),
 		],
 		[
+			"cooldownReason",
+			(storage) => withAccount(storage, 0, (a) => ({ ...a, cooldownReason: "auth-failure" })),
+		],
+		[
 			"quota exhaustion stamps",
 			(storage) =>
 				withAccount(storage, 0, (a) => ({
@@ -150,6 +154,11 @@ describe("credential snapshots: significance", () => {
 					quotaExhaustedUntil: Date.now() + 60_000,
 					quotaExhaustedStampAt: Date.now(),
 				})),
+		],
+		[
+			"quotaExhaustedClearedAt",
+			(storage) =>
+				withAccount(storage, 0, (a) => ({ ...a, quotaExhaustedClearedAt: Date.now() })),
 		],
 		["activeIndex", (storage) => ({ ...storage, activeIndex: 1 })],
 		[

@@ -22,6 +22,7 @@ import {
 	EnvBooleanSchema,
 	EnvNumberSchema,
 	makeEnvEnumSchema,
+	makeEnvIntegerSchema,
 } from "./schemas.js";
 
 const CONFIG_PATH = join(homedir(), ".opencode", "openai-codex-auth-config.json");
@@ -567,6 +568,11 @@ function parseNumberEnv(value: string | undefined): number | undefined {
 	return result.success ? result.data : undefined;
 }
 
+function parseIntegerEnv(value: string | undefined, min: number): number | undefined {
+	const result = makeEnvIntegerSchema(min).safeParse(value);
+	return result.success ? result.data : undefined;
+}
+
 function parseEnumEnv<T extends string>(
 	value: string | undefined,
 	allowed: ReadonlySet<T>,
@@ -1035,12 +1041,21 @@ export function getCredentialSnapshots(pluginConfig: PluginConfig): boolean {
  * feature off is {@link getCredentialSnapshots}' job, not a magic zero.
  */
 export function getCredentialSnapshotsMaxCount(pluginConfig: PluginConfig): number {
-	return resolveNumberSetting(
-		"CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT",
-		pluginConfig.credentialSnapshotsMaxCount,
-		10,
-		{ min: 0 },
+	// This env override is strict where the other number settings clamp: a
+	// value the file schema would reject (non-integer, or below the floor)
+	// falls back to the config file / default instead of being silently
+	// repaired. Flooring "-5" to 0 would select keep-everything — the
+	// unbounded snapshot growth the floor exists to rule out — and truncating
+	// "2.5" would honour a count the user never wrote.
+	const envValue = parseIntegerEnv(
+		process.env.CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT,
+		0,
 	);
+	if (envValue !== undefined) return envValue;
+	const configValue = pluginConfig.credentialSnapshotsMaxCount;
+	return configValue !== undefined && Number.isInteger(configValue) && configValue >= 0
+		? configValue
+		: 10;
 }
 
 export function getParallelProbing(pluginConfig: PluginConfig): boolean {
