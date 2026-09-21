@@ -130,6 +130,7 @@ export function createCodexSwitchTool(ctx: ToolContext): ToolDefinition {
 
 					const label = formatCommandAccountLabel(account, targetIndex, {
 						maskEmail,
+						peerAccounts: accounts,
 					});
 					try {
 						await persist(storage);

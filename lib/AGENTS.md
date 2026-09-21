@@ -78,6 +78,8 @@ lib/
 | Storage keychain | `storage/keychain.ts` | optional native keychain backend |
 | Storage migrations | `storage/migrations.ts` | V1 → V3 upgrade; V2 files throw a StorageError with code UNKNOWN_V2_FORMAT |
 | Backups/import/export | `storage/backup.ts`, `storage/export-import.ts` | timestamped backups and dry-run import preview |
+| Credential snapshots | `storage/credential-snapshots.ts` | pre-write copy of the previous account store, denylist significance check, prefix-scoped retention |
+| Test-home write guard | `storage/test-home-guard.ts` | refuses storage writes inside the real home during a vitest run |
 | Tool registry | `tools/index.ts` | `ToolContext`, `createToolRegistry` |
 | TUI quota status | `tui-status.ts`, `tui-quota-cache.ts`, `codex-usage.ts` | prompt quota display and usage cache |
 | Error types | `errors.ts`, `error-sentinels.ts` | StorageError and structured sentinel errors |

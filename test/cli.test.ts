@@ -189,6 +189,24 @@ describe("CLI Module", () => {
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("1. id:acc_1234567890"));
     });
 
+		it("displays a seat suffix that separates two members of one workspace", async () => {
+			mockRl.question.mockResolvedValueOnce("a");
+			const consoleSpy = vi.spyOn(console, "log");
+
+			const { promptLoginMode } = await import("../lib/cli.js");
+			await promptLoginMode([
+				{ index: 0, email: "shared@example.com", accountId: "acc_1234567890", accountUserId: "user_aaaaaa111111" },
+				{ index: 1, email: "shared@example.com", accountId: "acc_1234567890", accountUserId: "user_bbbbbb222222" },
+			]);
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringContaining("1. shared@example.com | id:acc_1234567890 | seat:111111"),
+			);
+			expect(consoleSpy).toHaveBeenCalledWith(
+				expect.stringContaining("2. shared@example.com | id:acc_1234567890 | seat:222222"),
+			);
+		});
+
 		it("displays plain Account N when no email or accountId", async () => {
 			mockRl.question.mockResolvedValueOnce("f");
 			const consoleSpy = vi.spyOn(console, "log");

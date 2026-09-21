@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -642,24 +643,167 @@ function accountIdSuffix(accountId, includeSensitive) {
 	return accountId.slice(-4);
 }
 
+// A member id is what tells two seats of one Business workspace apart, and no
+// fixed-length tail always does it: member ids sharing a six-character tail
+// were observed, and in a real nine-seat pool the ids are 67 characters with
+// no shared tail at all, so growing a tail until it separates them prints most
+// of the id in every row. The renderer below mirrors `resolveSeatRenderer` in
+// lib/account-display.ts - a tail, else one window anchored where the ids first
+// diverge, else short windows at each position where a pair first differs
+// joined by `..`, else a hash prefix, each capped - and the id whole only if
+// none of those separate them, which needs a 128-bit SHA-256 collision. The
+// hash outcome is reachable, and it prints a value that cannot be matched
+// against the id by eye.
+const STANDALONE_SEAT_MAX_LENGTH = 12;
+const STANDALONE_SEAT_HASH_LENGTHS = [8, 12, 16, 24, 32];
+const STANDALONE_SEAT_WINDOW_SEPARATOR = "..";
+
+function seatIsDisclosable(accountUserId, includeSensitive) {
+	if (!accountUserId) return false;
+	return includeSensitive || accountUserId.length >= MASK_MIN_LENGTH;
+}
+
+function seatTail(accountUserId, length) {
+	return accountUserId.length > length ? accountUserId.slice(-length) : accountUserId;
+}
+
+function seatWindow(accountUserId, start, length) {
+	if (accountUserId.length <= length) return accountUserId;
+	const begin = Math.max(0, Math.min(start, accountUserId.length - length));
+	return accountUserId.slice(begin, begin + length);
+}
+
+function seatCommonPrefixLength(values) {
+	const [first] = values;
+	if (first === undefined) return 0;
+	let shared = first.length;
+	for (const value of values) {
+		let index = 0;
+		while (index < shared && index < value.length && first[index] === value[index]) {
+			index += 1;
+		}
+		shared = index;
+		if (shared === 0) break;
+	}
+	return shared;
+}
+
+function seatFirstDivergence(left, right) {
+	const limit = Math.min(left.length, right.length);
+	let index = 0;
+	while (index < limit && left[index] === right[index]) index += 1;
+	return index;
+}
+
+// For every pair, the first index at which that pair differs - not every index
+// where the ids disagree, which across a handful of random-looking ids is
+// nearly all of them and localizes nothing.
+function seatDivergenceAnchors(values) {
+	const anchors = new Set();
+	for (let left = 0; left < values.length; left += 1) {
+		for (let right = left + 1; right < values.length; right += 1) {
+			anchors.add(seatFirstDivergence(values[left], values[right]));
+		}
+	}
+	return [...anchors].sort((left, right) => left - right);
+}
+
+function seatAnchorWindowStarts(anchors, width) {
+	const starts = [];
+	for (const anchor of anchors) {
+		const last = starts[starts.length - 1];
+		if (last !== undefined && anchor < last + width) continue;
+		starts.push(anchor);
+	}
+	return starts;
+}
+
+function resolveStandaloneSeatRenderer(accountUserIds, includeSensitive) {
+	// Starts at the length the mask above allows, so masked output widens only
+	// when leaving it short would print a lie.
+	const base = includeSensitive ? 6 : 4;
+	const distinct = [];
+	const seen = new Set();
+	for (const accountUserId of accountUserIds) {
+		if (!seatIsDisclosable(accountUserId, includeSensitive)) continue;
+		if (seen.has(accountUserId)) continue;
+		seen.add(accountUserId);
+		distinct.push(accountUserId);
+	}
+	const atBase = (accountUserId) => seatTail(accountUserId, base);
+	if (distinct.length <= 1) return atBase;
+
+	const separates = (render) => new Set(distinct.map(render)).size === distinct.length;
+
+	for (let length = base; length <= STANDALONE_SEAT_MAX_LENGTH; length += 1) {
+		const render = (accountUserId) => seatTail(accountUserId, length);
+		if (separates(render)) return render;
+	}
+	const start = seatCommonPrefixLength(distinct);
+	for (let length = base; length <= STANDALONE_SEAT_MAX_LENGTH; length += 1) {
+		const render = (accountUserId) => seatWindow(accountUserId, start, length);
+		if (separates(render)) return render;
+	}
+	const anchors = seatDivergenceAnchors(distinct);
+	for (let width = 2; width <= STANDALONE_SEAT_MAX_LENGTH; width += 1) {
+		const starts = seatAnchorWindowStarts(anchors, width);
+		const rendered =
+			starts.length * width + (starts.length - 1) * STANDALONE_SEAT_WINDOW_SEPARATOR.length;
+		// Skipped, not abandoned: a wider window can span two nearby anchors
+		// that needed one window each, so the cost falls as the window count
+		// does. Mirrors `resolveSeatRenderer` in lib/account-display.ts, where
+		// the measured counter-example is written out.
+		if (rendered > STANDALONE_SEAT_MAX_LENGTH) continue;
+		const render = (accountUserId) =>
+			starts
+				.map((windowStart) => accountUserId.slice(windowStart, windowStart + width))
+				.join(STANDALONE_SEAT_WINDOW_SEPARATOR);
+		if (separates(render)) return render;
+	}
+	for (const length of STANDALONE_SEAT_HASH_LENGTHS) {
+		const render = (accountUserId) => createHash("sha256").update(accountUserId).digest("hex").slice(0, length);
+		if (separates(render)) return render;
+	}
+	return (accountUserId) => accountUserId;
+}
+
 function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
 	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
 	const normalizedTag = typeof tag === "string" ? tag.trim().toLowerCase() : "";
-	return accounts
+	const entries = accounts
 		.map((account, index) => ({ account, index }))
 		.filter(({ account }) => !normalizedTag ||
 			(Array.isArray(account?.accountTags) &&
-				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)))
+				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)));
+	const renderSeat = resolveStandaloneSeatRenderer(
+		entries.map(({ account }) =>
+			(typeof account?.accountUserId === "string" ? account.accountUserId.trim() : "") || undefined,
+		),
+		includeSensitive,
+	);
+	return entries
 		.map(({ account, index }) => {
 			const trimmedId =
 				typeof account?.accountId === "string" ? account.accountId.trim() : "";
 			const accountId = trimmedId || undefined;
+			// Members of one Business workspace share `accountId`, so the seat is
+			// what tells them apart. It is carried masked next to its suffix for
+			// the same reason `accountId` is: so the printed `seat:` discloses no
+			// more of an id than the field beside it unless telling two seats
+			// apart requires it.
+			const trimmedUserId =
+				typeof account?.accountUserId === "string" ? account.accountUserId.trim() : "";
+			const accountUserId = trimmedUserId || undefined;
 			return {
 				index,
 				label: account?.accountLabel ?? `Account ${index + 1}`,
 				email: maskValue(account?.email, includeSensitive),
 				accountId: maskValue(accountId, includeSensitive),
 				idSuffix: accountIdSuffix(accountId, includeSensitive),
+				accountUserId: maskValue(accountUserId, includeSensitive),
+				seatSuffix: seatIsDisclosable(accountUserId, includeSensitive)
+					? renderSeat(accountUserId)
+					: undefined,
 				accountIdSource: account?.accountIdSource,
 				enabled: account?.enabled !== false,
 				hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
@@ -685,7 +829,11 @@ function printStandaloneResult(command, payload, json) {
 	console.log(`Accounts: ${payload.totalAccounts}`);
 	if (Array.isArray(payload.accounts)) {
 		for (const account of payload.accounts) {
-			const identity = [account.email, account.idSuffix ? `id:${account.idSuffix}` : undefined]
+			const identity = [
+				account.email,
+				account.idSuffix ? `id:${account.idSuffix}` : undefined,
+				account.seatSuffix ? `seat:${account.seatSuffix}` : undefined,
+			]
 				.filter(Boolean)
 				.join(", ");
 			const name = identity ? `${account.label} (${identity})` : account.label;
