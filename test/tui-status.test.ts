@@ -751,7 +751,7 @@ describe("pool-wide prompt status", () => {
 			options,
 			width: 60,
 		});
-		expect(text).toBe("80%: 3 accounts");
+		expect(text).toBe("80%: 4 accounts");
 	});
 
 	it("leaves the model label its room on an 80-column terminal", () => {
@@ -864,7 +864,7 @@ describe("pool-wide prompt status", () => {
 		expect(
 			formatQuotaResetsStatusLines({ accounts: spent, options, availableChars: 80 }),
 		).toEqual([
-			"Free resets: 6d 1r damian@nowaker.net, 4d 2r work@example.com",
+			"Free resets: 6d 1r #1, 4d 2r #2",
 		]);
 		expect(
 			formatQuotaResetsStatusLines({ accounts: pool, options, availableChars: 80 }),
@@ -894,6 +894,32 @@ describe("pool-wide prompt status", () => {
 		expect(
 			formatQuotaResetsStatusLines({ accounts: spent, options, availableChars: 11 }),
 		).toEqual(["Resets: 2"]);
+	});
+
+	it("names no account on the resets line when names are switched off", () => {
+		const spent: QuotaOverviewAccount[] = [
+			{
+				index: 1,
+				planType: "plus",
+				email: "damian@nowaker.net",
+				resetCredits: 1,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 6 * DAY }],
+			},
+			{
+				index: 2,
+				planType: "plus",
+				email: "work@example.com",
+				resetCredits: 2,
+				windows: [{ leftPercent: 0, resetAtMs: NOW + 4 * DAY }],
+			},
+		];
+		expect(
+			formatQuotaResetsStatusLines({
+				accounts: spent,
+				options: { ...options, names: "none" },
+				availableChars: 80,
+			}),
+		).toEqual(["Free resets: 6d 1r, 4d 2r"]);
 	});
 });
 

@@ -608,6 +608,7 @@ export function formatQuotaResetsStatusLines(params: {
 }): string[] {
 	const candidates = formatQuotaResetsCandidates(params.accounts, {
 		maskEmail: params.options.maskEmail,
+		names: params.options.names,
 		now: params.options.now,
 	});
 	if (candidates.length === 0) return [];

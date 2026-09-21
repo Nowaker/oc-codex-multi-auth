@@ -132,7 +132,7 @@ describe("default quota fetch path", () => {
 		expect(onCredentialsPersisted).toHaveBeenCalledOnce();
 		expect(notify).toHaveBeenCalledWith(
 			"Codex quota status",
-			"5h: 10% | resets unavailable\nWeekly: 90% | resets unavailable",
+			"5h: 10% left | resets unavailable\nWeekly: 90% left | resets unavailable",
 		);
 	});
 
@@ -327,7 +327,7 @@ describe("default quota fetch path", () => {
 		expect(fetchCodexUsage).toHaveBeenCalledOnce();
 		expect(notify).toHaveBeenCalledWith(
 			"Codex quota status",
-			"5h: 80% | resets unavailable\nWeekly: 80% | resets unavailable",
+			"5h: 80% left | resets unavailable\nWeekly: 80% left | resets unavailable",
 		);
 	});
 });

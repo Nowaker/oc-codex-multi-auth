@@ -147,13 +147,43 @@ export async function fetchTuiQuotaOverview(params: {
 
 	const indices = deduplicateUsageAccountIndices(storage);
 	const accounts: TuiQuotaOverviewAccount[] = [];
+	// Set when an account this pass could not fetch keeps its previous
+	// reading instead of dropping out of the snapshot.
+	let carriedOver = false;
 	for (let offset = 0; offset < indices.length; offset += MAX_CONCURRENCY) {
 		const chunk = indices.slice(offset, offset + MAX_CONCURRENCY);
 		const results = await Promise.all(
 			chunk.map((index) => fetchOverviewAccount(storage, index)),
 		);
-		for (const result of results) {
-			if (result) accounts.push(result);
+		for (const [position, result] of results.entries()) {
+			if (result) {
+				accounts.push(result);
+				continue;
+			}
+			// A failed fetch must not drop the account out of the snapshot: the
+			// pool would be judged on a subset, and one transient error on the
+			// only account with headroom would flip the line to "fully spent"
+			// and surface the resets screen wrongly. The cached reading is reused
+			// only for the SAME account - same pool position and same credential
+			// fingerprint, so a pool that changed membership never inherits a
+			// stranger's numbers - and the snapshot below keeps the older fetch
+			// time so the reading is rendered stale rather than current.
+			const index = chunk[position];
+			const account =
+				index === undefined ? undefined : storage.accounts[index];
+			const previous =
+				index === undefined || account === undefined
+					? undefined
+					: cached?.accounts.find(
+							(candidate) =>
+								candidate.index === index + 1 &&
+								candidate.fingerprint ===
+									createUsageAccountFingerprint(account),
+						);
+			if (previous) {
+				accounts.push(previous);
+				carriedOver = true;
+			}
 		}
 	}
 	// Every account failing means the pool was not observed at all, which is a
@@ -165,7 +195,11 @@ export async function fetchTuiQuotaOverview(params: {
 	accounts.sort((left, right) => left.index - right.index);
 	const snapshot: TuiQuotaOverviewSnapshot = {
 		version: TUI_QUOTA_CACHE_VERSION,
-		fetchedAt: now,
+		// A snapshot carrying a reused reading is only as fresh as that
+		// reading, so it keeps the previous fetch time - the stale flag is how
+		// the line says "part of this is not new" without dropping it.
+		fetchedAt:
+			carriedOver && cached ? Math.min(cached.fetchedAt, now) : now,
 		accounts,
 	};
 	try {

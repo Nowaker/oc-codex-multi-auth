@@ -180,8 +180,8 @@ describe("quota notification content", () => {
 		};
 		const lines = formatQuotaNotification(aggregate).split("\n");
 		expect(lines).toHaveLength(2);
-		expect(lines[0]).toMatch(/^5h: 8% \| resets [^|]+$/);
-		expect(lines[1]).toMatch(/^Weekly: 72% \| resets [^|]+$/);
+		expect(lines[0]).toMatch(/^5h: 8% left \| resets [^|]+$/);
+		expect(lines[1]).toMatch(/^Weekly: 72% left \| resets [^|]+$/);
 	});
 
 	it("labels the pool's earlier reset instead of pairing it with the percentage", () => {
@@ -193,7 +193,7 @@ describe("quota notification content", () => {
 			},
 			weekly: { remainingPercent: 72, resetAtMs: Date.now() + 120_000 },
 		}).split("\n");
-		expect(lines[0]).toMatch(/^5h: 60% \| resets .+ \| another account resets .+$/);
+		expect(lines[0]).toMatch(/^5h: 60% left \| resets .+ \| another account resets .+$/);
 		// No second reset in the pool, so no second clause.
 		expect(lines[1]).not.toContain("another account");
 	});
@@ -202,7 +202,7 @@ describe("quota notification content", () => {
 		expect(formatQuotaNotification({
 			fiveHour: {},
 			weekly: { remainingPercent: 20 },
-		})).toBe("5h: unavailable\nWeekly: 20% | resets unavailable");
+		})).toBe("5h: unavailable\nWeekly: 20% left | resets unavailable");
 	});
 });
 
@@ -515,9 +515,9 @@ describe("quota monitor lifecycle", () => {
 	});
 
 	it.each([
-		["free", "20%"],
-		["used", "80%"],
-	])("notifies in %s mode when only the weekly window crosses a threshold", async (mode, weeklyPercent) => {
+		["free", "50% left", "20% left"],
+		["used", "50% used", "80% used"],
+	])("notifies in %s mode when only the weekly window crosses a threshold", async (mode, fiveHourPercent, weeklyPercent) => {
 		vi.stubEnv("CODEX_AUTH_QUOTA_DISPLAY", mode);
 		const directory = await mkdtemp(join(tmpdir(), "quota-monitor-"));
 		tempDirectories.push(directory);
@@ -546,7 +546,7 @@ describe("quota monitor lifecycle", () => {
 		expect(notify).toHaveBeenCalledOnce();
 		expect(notify).toHaveBeenCalledWith(
 			"Codex quota status",
-			`5h: 50% | resets unavailable\nWeekly: ${weeklyPercent} | resets unavailable`,
+			`5h: ${fiveHourPercent} | resets unavailable\nWeekly: ${weeklyPercent} | resets unavailable`,
 		);
 	});
 

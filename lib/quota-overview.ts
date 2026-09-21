@@ -677,9 +677,13 @@ export function formatQuotaOverviewCandidates(
 	const bodies: string[] = [];
 	if (options.layout !== "count") {
 		// Position identifies an account only when the accounts are in number
-		// order and none of them is missing from the line.
+		// order, none of them is missing from the line, and the numbers run
+		// 1..n with no gap - a deduplicated or disabled account leaves indices
+		// like #1, #3, where the second percentage is NOT account #2's.
 		const positionsAreComplete =
-			options.order === "number" && usable.length === accounts.length;
+			options.order === "number" &&
+			usable.length === accounts.length &&
+			usable.every((account, position) => account.index === position + 1);
 		for (const rung of annotationRungs(options, positionsAreComplete)) {
 			const segmentOptions: SegmentOptions = {
 				...rung,
@@ -724,16 +728,18 @@ export function formatQuotaOverviewCandidates(
 	}
 	for (const head of heads) {
 		// The count word is grammar, the recovery clause is information, so the
-		// word goes first.
+		// word goes first. The count is the pool's size, not the number of
+		// accounts that could be read - `40%: 1 account` on a three-account
+		// pool would say a pool exists that does not.
 		if (recoveryForms.length > 0) {
-			for (const form of recoveryForms) push(head, formatAccountCount(usable.length, "long"), form);
+			for (const form of recoveryForms) push(head, formatAccountCount(accounts.length, "long"), form);
 			const shortest = recoveryForms[recoveryForms.length - 1];
-			push(head, formatAccountCount(usable.length, "short"), shortest);
-			push(head, formatAccountCount(usable.length, "bare"), shortest);
+			push(head, formatAccountCount(accounts.length, "short"), shortest);
+			push(head, formatAccountCount(accounts.length, "bare"), shortest);
 		}
-		push(head, formatAccountCount(usable.length, "long"));
-		push(head, formatAccountCount(usable.length, "short"));
-		push(head, formatAccountCount(usable.length, "bare"));
+		push(head, formatAccountCount(accounts.length, "long"));
+		push(head, formatAccountCount(accounts.length, "short"));
+		push(head, formatAccountCount(accounts.length, "bare"));
 	}
 	for (const head of heads) push(head);
 	return candidates;
@@ -765,7 +771,10 @@ export function formatQuotaOverviewText(
  */
 export function formatQuotaResetsCandidates(
 	accounts: readonly QuotaOverviewAccount[],
-	options: Pick<QuotaOverviewOptions, "maskEmail"> & { now?: number },
+	options: Pick<QuotaOverviewOptions, "maskEmail"> & {
+		names?: QuotaOverviewNames;
+		now?: number;
+	},
 ): string[] {
 	if (!isPoolFullySpent(accounts)) return [];
 	const now = options.now ?? Date.now();
@@ -784,14 +793,31 @@ export function formatQuotaResetsCandidates(
 	const credits = redeemable.map((account) => resolveResetCredits(account));
 	const everyAccountHasOneCredit = credits.every((count) => count === 1);
 
-	const emailIdentity = redeemable.map((account) =>
-		resolveAccountEmail(account, maskEmail),
-	);
-	const identities: Array<Array<string | undefined>> = [
-		emailIdentity,
-		redeemable.map((account) => resolveAccountName(account, "label", maskEmail)),
-		redeemable.map((account) => resolveAccountName(account, "number", maskEmail)),
-	];
+	// The identity follows `accountNames` like the pool line does: the full
+	// address is the longest form of the `label` name and appears only there,
+	// `number` gives `#n`, and `none` names no account at all.
+	const names = options.names ?? "label";
+	const unnamed = redeemable.map(() => undefined);
+	const identities: Array<Array<string | undefined>> =
+		names === "none"
+			? [unnamed]
+			: names === "number"
+				? [
+						redeemable.map((account) =>
+							resolveAccountName(account, "number", maskEmail),
+						),
+					]
+				: [
+						redeemable.map((account) =>
+							resolveAccountEmail(account, maskEmail),
+						),
+						redeemable.map((account) =>
+							resolveAccountName(account, "label", maskEmail),
+						),
+						redeemable.map((account) =>
+							resolveAccountName(account, "number", maskEmail),
+						),
+					];
 
 	const candidates: string[] = [];
 	const add = (text: string): void => {
@@ -819,9 +845,9 @@ export function formatQuotaResetsCandidates(
 	};
 
 	// The word `Free` is given up before any account detail is, and the
-	// identity then shortens from the full address a person recognizes down to
-	// the number `codex-reset` takes.
-	push("Free resets:", emailIdentity, true, true);
+	// identity then shortens from the fullest configured form - the full
+	// address under `label` - down to the number `codex-reset` takes.
+	push("Free resets:", identities[0] ?? unnamed, true, true);
 	for (const identity of identities) push("Resets:", identity, true, true);
 	// Only once every identity form has been tried does the line start giving
 	// up facts: the countdown is the reason one account is a better redemption

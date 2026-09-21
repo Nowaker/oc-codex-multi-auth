@@ -6,7 +6,7 @@ import {
 } from "./config.js";
 import {
 	DEFAULT_QUOTA_DISPLAY_MODE,
-	formatQuotaPercent,
+	formatNamedQuotaPercent,
 	type QuotaDisplayMode,
 } from "./quota-display.js";
 import {
@@ -266,7 +266,9 @@ function formatQuotaWindow(
 	const reset = formatUsageReset(window.resetAtMs) ?? "unavailable";
 	const earliest = formatUsageReset(window.earliestResetAtMs);
 	const poolClause = earliest ? ` | another account resets ${earliest}` : "";
-	const percent = formatQuotaPercent(window.remainingPercent, mode);
+	// Named, not bare: a notification is read without the line's context, so
+	// `80%` alone cannot say whether it is headroom or consumption.
+	const percent = formatNamedQuotaPercent(window.remainingPercent, mode);
 	return `${label}: ${percent} | resets ${reset}${poolClause}`;
 }
 

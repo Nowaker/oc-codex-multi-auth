@@ -34,6 +34,8 @@ import {
 	resolveCodexUsageAccountId,
 	type CodexUsageSummary,
 } from "../codex-usage.js";
+import { getQuotaDisplay, loadPluginConfig } from "../config.js";
+import type { QuotaDisplayMode } from "../quota-display.js";
 import { loadAccounts, withAccountStorageTransaction } from "../storage.js";
 import { clearUnchangedRecoveryState } from "../accounts/stale-state.js";
 import { findAccountIndexByIdentity } from "./refresh-account.js";
@@ -87,12 +89,15 @@ function resolveResetAccountIndex(
 	return account - 1;
 }
 
-function buildUsageLines(usage: CodexUsageSummary): string[] {
+function buildUsageLines(
+	usage: CodexUsageSummary,
+	mode: QuotaDisplayMode,
+): string[] {
 	const lines: string[] = [];
 	for (const window of [usage.primary, usage.secondary]) {
 		if (!hasUsageWindow(window)) continue;
 		lines.push(
-			`  ${formatUsageLimitTitle(window.windowMinutes)}: ${formatUsageLimitSummary(window)}`,
+			`  ${formatUsageLimitTitle(window.windowMinutes)}: ${formatUsageLimitSummary(window, mode)}`,
 		);
 	}
 	return lines;
@@ -176,6 +181,7 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 		}: CodexResetArgs = {}) {
 			const ui = resolveUiRuntime();
 			const maskEmail = resolveMaskEmail();
+			const quotaDisplay = getQuotaDisplay(loadPluginConfig());
 			const outputFormat = normalizeToolOutputFormat(format);
 			const resetAction = normalizeResetAction(action);
 			const includeSensitiveOutput = includeSensitive === true;
@@ -250,7 +256,7 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 						fetchCodexUsage(request),
 					]);
 					const summary = parseCodexResetCredits(creditsPayload);
-					const usage = parseCodexUsagePayload(usagePayload);
+					const usage = parseCodexUsagePayload(usagePayload, quotaDisplay);
 
 					if (outputFormat === "json") {
 						return renderJsonOutput({
@@ -268,7 +274,7 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 					lines.push(`${displayLabel}:`);
 					lines.push(...buildCreditLines(summary));
 					lines.push("", "current usage:");
-					lines.push(...buildUsageLines(usage));
+					lines.push(...buildUsageLines(usage, quotaDisplay));
 					if (summary.availableCount > 0) {
 						lines.push(
 							"",
@@ -404,7 +410,10 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 				let usageAfter: CodexUsageSummary | undefined;
 				let usageError: string | undefined;
 				try {
-					usageAfter = parseCodexUsagePayload(await fetchCodexUsage(request));
+					usageAfter = parseCodexUsagePayload(
+						await fetchCodexUsage(request),
+						quotaDisplay,
+					);
 				} catch (error) {
 					usageError = error instanceof Error ? error.message : String(error);
 				}
@@ -435,7 +444,7 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 					...(blocksClearError ? [`  Note: ${blocksClearError}; the credit was redeemed.`] : []),
 					"",
 					...(usageAfter
-						? ["new usage:", ...buildUsageLines(usageAfter)]
+						? ["new usage:", ...buildUsageLines(usageAfter, quotaDisplay)]
 						: [
 								`new usage: unavailable (${usageError?.slice(0, 160)})`,
 								"The credit was redeemed. Run codex-reset to re-read usage.",
