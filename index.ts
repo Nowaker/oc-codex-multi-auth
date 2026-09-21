@@ -2624,7 +2624,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							if (sleepTime > 0) {
 								await sleep(sleepTime);
 							} else {
-								break;
+								continue;
 							}
 						}
 					};
