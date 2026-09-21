@@ -122,10 +122,13 @@ export class RetryBudgetTracker {
 	consumeWait(bucket: RetryBudgetClass, waitMs: number): boolean {
 		if (this.getRemaining(bucket) <= 0) return false;
 
-		const wait = Number.isFinite(waitMs) && waitMs > 0 ? waitMs : 0;
-		if (wait >= RETRY_WAIT_BUDGET_UNIT_MS) return this.consume(bucket);
+		// A non-finite or negative wait cannot be proportioned, so it costs a
+		// full unit: collapsing it to zero would let it accumulate nothing and
+		// retry forever.
+		if (!Number.isFinite(waitMs) || waitMs < 0) return this.consume(bucket);
+		if (waitMs >= RETRY_WAIT_BUDGET_UNIT_MS) return this.consume(bucket);
 
-		const carried = this.waitCarryMs[bucket] + wait;
+		const carried = this.waitCarryMs[bucket] + waitMs;
 		if (carried < RETRY_WAIT_BUDGET_UNIT_MS) {
 			this.waitCarryMs[bucket] = carried;
 			return true;
