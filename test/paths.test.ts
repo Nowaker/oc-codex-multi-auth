@@ -2,8 +2,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
+// `resolvePath` guards against a path that merely shares a string prefix with
+// an allowed root, so the lookalike cases below build a sibling of one root and
+// require it to be outside all three. Against the real layout that only holds
+// by accident: the suite runs with HOME redirected under the temp dir, which
+// makes every sibling of home a child of tmpdir() and turns the assertion into
+// a no-op. Fixed roots keep these cases meaningful wherever HOME points.
+//
+// This mock and the isolated HOME in `vitest.config.ts` are load-bearing
+// together. Removing the mock as redundant silently turns both lookalike
+// assertions into no-ops rather than failing them.
+const FAKE_HOME = path.resolve("/fake-storage-paths-home");
+const FAKE_TMPDIR = path.resolve("/fake-storage-paths-tmp");
+
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(),
+}));
+
+vi.mock("node:os", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:os")>()),
+	homedir: () => FAKE_HOME,
+	tmpdir: () => FAKE_TMPDIR,
 }));
 
 import { existsSync } from "node:fs";

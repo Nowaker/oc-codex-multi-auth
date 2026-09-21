@@ -25,7 +25,7 @@ import { AnyAccountStorageSchema, getValidationErrors } from "../schemas.js";
 import { renameWithWindowsRetry } from "./atomic-write.js";
 import { formatStorageErrorHint, StorageError } from "./errors.js";
 import { normalizeAccountStorage } from "./normalize.js";
-import { getConfigDir } from "./paths.js";
+import { getConfigDir, isWithinDirectory } from "./paths.js";
 import {
   getCurrentLegacyProjectStoragePath,
   getCurrentProjectRoot,
@@ -142,6 +142,10 @@ async function checkWorktreeLockForCurrentStorage(
     });
     return;
   }
+  // Before the probe, not inside the try: `acquireOrDetectLock` writes a lock
+  // sidecar next to the accounts file, so a leaked HOME would touch the real
+  // store here even on a pure read, and this function's catch would hide it.
+  assertTestRunNeverTouchesRealHome(path);
   try {
     const result = await acquireOrDetectLock(path);
     if (!result.acquired && result.foreign) {
@@ -169,6 +173,52 @@ async function checkWorktreeLockForCurrentStorage(
       error: String(error),
     });
   }
+}
+
+/**
+ * Refuse to touch account storage inside the developer's real home while the
+ * test suite is running.
+ *
+ * `vitest.config.ts` redirects HOME to a sandbox before any module loads, but a
+ * test that restores the captured real HOME, or a future regression in that
+ * config, would otherwise read or overwrite live ChatGPT credentials.
+ * `os.userInfo()` reads the passwd entry instead of `$HOME`, so it still names
+ * the real home after the redirect and gives the check something the sandbox
+ * cannot spoof. Inert outside vitest.
+ *
+ * The sandbox and the temp directory are exempt, and both exemptions are
+ * load-bearing rather than convenience: on Windows `os.tmpdir()` normally sits
+ * inside the user profile, so there every legitimate sandbox path is also a
+ * real-home path and a bare home-prefix test would reject the entire suite.
+ * Neither exemption can reach the production store, which lives under the real
+ * home's `.opencode`.
+ */
+function assertTestRunNeverTouchesRealHome(path: string): void {
+  if (!process.env.VITEST) return;
+
+  let realHome: string;
+  try {
+    realHome = os.userInfo().homedir;
+  } catch {
+    return;
+  }
+  if (!realHome || !isWithinDirectory(realHome, path)) return;
+
+  // A root exempts what lies beneath it only while it does not itself swallow
+  // the real home. Without that clause `OC_CODEX_TEST_HOME=/` or `TMPDIR=$HOME`
+  // would disarm the guard completely.
+  const exempts = (root: string | undefined): boolean =>
+    !!root && !isWithinDirectory(root, realHome) && isWithinDirectory(root, path);
+
+  if (exempts(process.env.OC_CODEX_TEST_HOME)) return;
+  if (exempts(os.tmpdir())) return;
+
+  throw new StorageError(
+    `Refusing to touch account storage inside the real home directory during a test run: ${path}`,
+    "TEST_HOME_ESCAPE",
+    path,
+    "A test resolved account storage against the developer's real home. Point HOME at a temp directory for the whole vitest process (see vitest.config.ts) instead of overriding it per test.",
+  );
 }
 
 async function ensureGitignore(storagePath: string): Promise<void> {
@@ -207,6 +257,10 @@ async function migrateStorageFileIfNeeded(
   persist: (storage: AccountStorageV3) => Promise<void>,
   label: string,
 ): Promise<AccountStorageV3 | null> {
+  // Before the existsSync, and outside the try: this reads the legacy file and
+  // the catch below swallows everything except a forward-compat reject, so a
+  // guard placed any later would be silently discarded.
+  if (legacyPath) assertTestRunNeverTouchesRealHome(legacyPath);
   if (!legacyPath || legacyPath === nextPath || !existsSync(legacyPath)) {
     return null;
   }
@@ -302,6 +356,12 @@ async function loadGlobalAccountsFallback(): Promise<AccountStorageV3 | null> {
   if (!shouldUseProjectGlobalFallback() || !currentStoragePath) {
     return null;
   }
+
+  // The project store is missing, so this reaches for the GLOBAL one, which
+  // resolves against `homedir()` and is the real pool whenever HOME has been
+  // restored. Guarded here rather than at the read below, because the catch
+  // there returns null for everything and would hide the escape.
+  assertTestRunNeverTouchesRealHome(getGlobalAccountsStoragePath());
 
   const migrated = await migrateLegacyGlobalStorageIfNeeded();
   if (migrated) {
@@ -537,6 +597,7 @@ async function loadAccountsInternal(
  * Callers must already be inside withStorageLock when using this helper directly.
  */
 async function writeAccountsToPathUnlocked(path: string, storage: AccountStorageV3): Promise<void> {
+  assertTestRunNeverTouchesRealHome(path);
   const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   const tempPath = `${path}.${uniqueSuffix}.tmp`;
 
@@ -759,6 +820,7 @@ export async function clearAccounts(): Promise<void> {
     let jsonCleared = true;
     try {
       const path = getStoragePath();
+      assertTestRunNeverTouchesRealHome(path);
       await fs.unlink(path);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
