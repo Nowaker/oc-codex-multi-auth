@@ -6,6 +6,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { getStoragePath, loadAccounts } from "../storage.js";
 import { formatCooldown } from "../accounts.js";
+import { resolveSeatSuffixes } from "../account-display.js";
 import { buildTableHeader, buildTableRow, type TableOptions } from "../table-formatter.js";
 import {
 	formatUiBadge,
@@ -179,6 +180,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 							...buildJsonAccountIdentity(index, {
 								includeSensitive: includeSensitiveOutput,
 								account,
+								peerAccounts: storage.accounts,
 							}),
 							enabled: account.enabled !== false,
 							isActive: index === activeIndex,
@@ -210,7 +212,10 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 				];
 
 				filteredEntries.forEach(({ account, index }) => {
-					const label = formatCommandAccountLabel(account, index, { maskEmail });
+					const label = formatCommandAccountLabel(account, index, {
+						maskEmail,
+						peerAccounts: storage.accounts,
+					});
 					const badges: string[] = [];
 					if (index === activeIndex)
 						badges.push(formatUiBadge(ui, "current", "accent"));
@@ -286,10 +291,31 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 				return lines.join("\n");
 			}
 
+			// The seat gets a column of its own, sized to the widest seat actually
+			// rendered. Kept inside the label it sat behind an email and a
+			// workspace label, neither of which has a length bound, so any long
+			// one pushed it past the cell's right edge and two members of one
+			// workspace went back to rendering as the same truncated string. A
+			// column cannot be pushed out of by its neighbours, and one sized to
+			// its own contents never truncates what it holds.
+			const seatSuffixes = resolveSeatSuffixes(
+				storage.accounts.map((entry) => entry.accountUserId),
+			);
+			const seatHeader = "Seat";
+			const seatWidth = filteredEntries.reduce(
+				(widest, { index }) =>
+					Math.max(widest, seatSuffixes[index]?.length ?? 0),
+				seatHeader.length,
+			);
 			const listTableOptions: TableOptions = {
 				columns: [
 					{ header: "#", width: 3 },
-					{ header: "Label", width: 42 },
+					// Wide enough for "Account 10 (name@example.com,
+					// id:05cd9f04...989a40)" at 57 characters. Longer emails and
+					// labels still truncate here, which is why the seat is no longer
+					// one of them.
+					{ header: "Label", width: 68 },
+					{ header: seatHeader, width: seatWidth },
 					{ header: "Plan", width: 18 },
 					{ header: "Status", width: 20 },
 				],
@@ -302,7 +328,11 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 			];
 
 			filteredEntries.forEach(({ account, index }) => {
-				const label = formatCommandAccountLabel(account, index, { maskEmail });
+				const label = formatCommandAccountLabel(account, index, {
+					maskEmail,
+					peerAccounts: storage.accounts,
+					omitSeat: true,
+				});
 				const statuses: string[] = [];
 				const rateLimit = formatRateLimitEntry(account, now);
 				const quotaExhausted = formatQuotaExhaustionEntry(account, now);
@@ -322,6 +352,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 						[
 							String(index + 1),
 							label,
+							seatSuffixes[index] ?? "-",
 							formatPlanType(account.planType) ?? "unknown",
 							statusText,
 						],

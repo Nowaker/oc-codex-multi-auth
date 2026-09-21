@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import type { AccountIdSource } from "./types.js";
-import { resolveDisplayEmail } from "./account-display.js";
+import { formatSeatSuffix, resolveDisplayEmail } from "./account-display.js";
 import {
 	showAuthMenu,
 	showAccountDetails,
@@ -51,6 +51,7 @@ export type LoginMode =
 
 export interface ExistingAccountInfo {
 	accountId?: string;
+	accountUserId?: string;
 	accountLabel?: string;
 	email?: string;
 	index: number;
@@ -77,7 +78,10 @@ export interface LoginMenuResult {
 function formatAccountLabel(
 	account: ExistingAccountInfo,
 	index: number,
-	options: { maskEmail?: boolean } = {},
+	options: {
+		maskEmail?: boolean;
+		peerAccounts?: readonly ExistingAccountInfo[];
+	} = {},
 ): string {
 	const num = index + 1;
 	const label = account.accountLabel?.trim();
@@ -87,10 +91,15 @@ function formatAccountLabel(
 		accountId && accountId.length > 14
 			? `${accountId.slice(0, 8)}...${accountId.slice(-6)}`
 			: accountId;
+	const seatSuffix = formatSeatSuffix(
+		account.accountUserId,
+		options.peerAccounts?.map((peer) => peer.accountUserId),
+	);
 	const details: string[] = [];
 	if (email) details.push(email);
 	if (label) details.push(`workspace:${label}`);
 	if (accountIdDisplay) details.push(`id:${accountIdDisplay}`);
+	if (seatSuffix) details.push(`seat:${seatSuffix}`);
 	if (details.length > 0) {
 		return `${num}. ${details.join(" | ")}`;
 	}
@@ -116,7 +125,9 @@ async function promptLoginModeFallback(
 		if (existingAccounts.length > 0) {
 			console.log(`\n${existingAccounts.length} account(s) saved:`);
 			for (const account of existingAccounts) {
-				console.log(`  ${formatAccountLabel(account, account.index, { maskEmail })}`);
+				console.log(
+					`  ${formatAccountLabel(account, account.index, { maskEmail, peerAccounts: existingAccounts })}`,
+				);
 			}
 			console.log("");
 		}
@@ -173,7 +184,10 @@ export async function promptLoginMode(
 			case "verify-flagged":
 				return { mode: "verify-flagged" };
 			case "select-account": {
-				const accountAction = await showAccountDetails(action.account, { maskEmail });
+				const accountAction = await showAccountDetails(action.account, {
+					maskEmail,
+					peerAccounts: existingAccounts,
+				});
 				if (accountAction === "delete") {
 					return { mode: "manage", deleteAccountIndex: action.account.index };
 				}

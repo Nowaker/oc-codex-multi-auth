@@ -164,7 +164,11 @@ function buildPoolSnapshot(
 				...ctx.buildJsonAccountIdentity(index, {
 					includeSensitive,
 					account,
-					label: ctx.formatCommandAccountLabel(account, index, { maskEmail }),
+					label: ctx.formatCommandAccountLabel(account, index, {
+						maskEmail,
+						peerAccounts: storedAccounts,
+					}),
+					peerAccounts: storedAccounts,
 				}),
 				enabled: account.enabled !== false,
 			});
@@ -197,7 +201,7 @@ function renderPoolStatusText(
 			const account = storage?.accounts[index];
 			if (account) {
 				lines.push(
-					`  ${ctx.formatCommandAccountLabel(account, index, { maskEmail })}${
+					`  ${ctx.formatCommandAccountLabel(account, index, { maskEmail, peerAccounts: storage?.accounts })}${
 						account.enabled === false ? " [disabled]" : ""
 					}`,
 				);

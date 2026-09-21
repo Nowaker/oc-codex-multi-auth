@@ -144,7 +144,13 @@ import {
 	matchesModelPoolAccountKey,
 	type ModelPoolAccount,
 } from "./lib/accounts/pool-identity.js";
-import { resolveDisplayEmail } from "./lib/account-display.js";
+import {
+	formatSeatSuffix,
+	maskIdentityValue,
+	resolveDisplayEmail,
+	seatIsDisclosable,
+} from "./lib/account-display.js";
+import { extractAccountUserId } from "./lib/auth/token-utils.js";
 import { CodexAuthError } from "./lib/errors.js";
 import {
 	getStoragePath,
@@ -478,24 +484,45 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			account?: {
 				email?: string;
 				accountId?: string;
+				accountUserId?: string;
 				accountLabel?: string;
 				accountTags?: string[];
 				accountNote?: string;
 			};
 			label?: string;
+			peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
 		} = {},
-	): Record<string, unknown> => ({
-		index: index + 1,
-		zeroBasedIndex: index,
-		...(options.includeSensitive
-			? {
-					label:
-						options.label ?? formatCommandAccountLabel(options.account, index),
-					email: options.account?.email ?? null,
-					accountId: options.account?.accountId ?? null,
-				}
-			: {}),
-	});
+	): Record<string, unknown> => {
+		const includeSensitive = options.includeSensitive ?? false;
+		const accountUserId = options.account?.accountUserId?.trim() || undefined;
+		return {
+			index: index + 1,
+			zeroBasedIndex: index,
+			...(includeSensitive
+				? {
+						label:
+							options.label ??
+							formatCommandAccountLabel(options.account, index, {
+								peerAccounts: options.peerAccounts,
+							}),
+						email: options.account?.email ?? null,
+						accountId: options.account?.accountId ?? null,
+					}
+				: {}),
+			// Members of one Business workspace share `accountId`, so the seat is
+			// the field a JSON consumer can tell them apart by. It rides in both
+			// modes - the member id masked when sensitive output is off, and the
+			// suffix withheld when the id is too short to excerpt without
+			// disclosing it - under the same field names the standalone CLI emits.
+			accountUserId: maskIdentityValue(accountUserId, includeSensitive) ?? null,
+			seatSuffix: seatIsDisclosable(accountUserId, includeSensitive)
+				? (formatSeatSuffix(
+						accountUserId,
+						options.peerAccounts?.map((peer) => peer?.accountUserId),
+					) ?? null)
+				: null,
+		};
+	};
 
 	const appendRoutingVisibilityText = (
 		lines: string[],
@@ -832,6 +859,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			response: Response,
 			account: TuiQuotaAccount,
 			accountCount: number,
+			peerAccounts: readonly ({ accountUserId?: string } | undefined)[],
 		): Promise<void> => {
 			try {
 				const snapshot = parseTuiQuotaSnapshotFromHeaders(response.headers, {
@@ -839,7 +867,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					accountIndex: account.index + 1,
 					accountCount,
 					accountEmail: account.email?.trim() || undefined,
-					accountLabel: formatAccountLabel(account, account.index),
+					accountLabel: formatAccountLabel(account, account.index, {
+						peerAccounts,
+					}),
 				});
 				if (!snapshot) return;
 				await writeTuiQuotaSnapshot(snapshot);
@@ -1273,16 +1303,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			account: {
 				email?: string;
 				accountId?: string;
+				accountUserId?: string;
 				accountLabel?: string;
 				accountTags?: string[];
 				accountNote?: string;
 			} | undefined,
 			index: number,
-			options: { maskEmail?: boolean } = {},
+			options: {
+				maskEmail?: boolean;
+				peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
+				omitSeat?: boolean;
+			} = {},
 		): string => {
 			const email = resolveDisplayEmail(account?.email, options.maskEmail ?? false);
 			const workspace = account?.accountLabel?.trim();
 			const accountId = formatAccountIdForDisplay(account?.accountId);
+			// `omitSeat` is for a caller that renders the seat itself in a place
+			// a long email cannot push it out of - a table column of its own.
+			// Leaving it in the label too would print the seat twice.
+			const seat = options.omitSeat
+				? undefined
+				: formatSeatSuffix(
+						account?.accountUserId,
+						options.peerAccounts?.map((peer) => peer?.accountUserId),
+					);
 			const tags =
 				Array.isArray(account?.accountTags)
 					? account.accountTags
@@ -1294,6 +1338,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (email) details.push(email);
 			if (workspace) details.push(`workspace:${workspace}`);
 			if (accountId) details.push(`id:${accountId}`);
+			if (seat) details.push(`seat:${seat}`);
 			if (tags.length > 0) details.push(`tags:${tags.join(",")}`);
 
 			if (details.length === 0) {
@@ -1335,7 +1380,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const maskEmail = resolveMaskEmail();
 				const selected = await select<number>(
 					storage.accounts.map((account, index) => ({
-						label: formatCommandAccountLabel(account, index, { maskEmail }),
+						label: formatCommandAccountLabel(account, index, {
+							maskEmail,
+							peerAccounts: storage.accounts,
+						}),
 						value: index,
 					})),
 					{
@@ -1360,7 +1408,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		): BeginnerAccountSnapshot[] => {
 			return storage.accounts.map((account, index) => ({
 				index,
-				label: formatCommandAccountLabel(account, index),
+				label: formatCommandAccountLabel(account, index, {
+					peerAccounts: storage.accounts,
+				}),
 				accountLabel: account.accountLabel,
 				enabled: account.enabled !== false,
 				isActive: index === activeIndex,
@@ -2970,6 +3020,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const failures = await accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index, {
 					maskEmail: maskEmailEnabled,
+					peerAccounts: accountManager.getAccountsSnapshot(),
 				});
 				
 				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL) {
@@ -3052,6 +3103,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											) {
 												const accountLabel = formatAccountLabel(account, account.index, {
 													maskEmail: maskEmailEnabled,
+													peerAccounts: accountManager.getAccountsSnapshot(),
 												});
 												await showToast(
 													`Using ${accountLabel} (${account.index + 1}/${accountCount})`,
@@ -3277,7 +3329,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							// only the block would leave the status line reporting "0% left" for
 							// an account the router considers healthy.
 							const recordQuotaHeaders = (): boolean => {
-								void recordPromptQuotaHeaders(response, account, accountCount);
+								void recordPromptQuotaHeaders(
+									response,
+									account,
+									accountCount,
+									accountManager.getAccountsSnapshot(),
+								);
 								return applyQuotaExhaustion(
 									accountManager,
 									response.headers,
@@ -3312,6 +3369,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				if (workspaceDeactivated) {
 					const accountLabel = formatAccountLabel(account, account.index, {
 						maskEmail: maskEmailEnabled,
+						peerAccounts: accountManager.getAccountsSnapshot(),
 					});
 					accountManager.refundToken(account, modelFamily, model);
 					accountManager.recordFailure(account, modelFamily, model);
@@ -3627,6 +3685,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																													if (isInvalidatedAuthTokenError(errorBody, response.status)) {
 																														const accountLabel = formatAccountLabel(account, account.index, {
 																															maskEmail: maskEmailEnabled,
+																															peerAccounts: accountManager.getAccountsSnapshot(),
 																														});
 																														accountManager.refundToken(account, modelFamily, model);
 																														accountManager.recordFailure(account, modelFamily, model);
@@ -4335,9 +4394,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 										if (deepProbe) {
 											ok += 1;
+											// Both read from the probed token, so the pair is the seat
+											// the credential actually belongs to. The workspace id
+											// alone repeats across every member of a Business
+											// workspace and cannot confirm which seat answered.
+											const tokenSeat = formatSeatSuffix(
+												extractAccountUserId(accessToken),
+												workingStorage.accounts.map(
+													(peer) => peer?.accountUserId,
+												),
+											);
+											const identity = [
+												tokenAccountId ? `id:${tokenAccountId.slice(-6)}` : undefined,
+												tokenSeat ? `seat:${tokenSeat}` : undefined,
+											].filter((part): part is string => part !== undefined);
 											const detail =
-												tokenAccountId
-													? `${authDetail} (id:${tokenAccountId.slice(-6)})`
+												identity.length > 0
+													? `${authDetail} (${identity.join(", ")})`
 													: authDetail;
 											console.log(`[${i + 1}/${total}] ${label}: ${detail}`);
 											continue;
@@ -4689,6 +4762,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										}
 										return {
 											accountId: account.accountId,
+											accountUserId: account.accountUserId,
 											accountLabel: account.accountLabel,
 											email: account.email,
 											index,

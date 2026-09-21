@@ -126,7 +126,10 @@ export function createCodexTagTool(ctx: ToolContext): ToolDefinition {
 				accountManagerPromiseRef.current = Promise.resolve(reloadedManager);
 			}
 
-			const accountLabel = formatCommandAccountLabel(persistedAccount, targetIndex, { maskEmail });
+			const accountLabel = formatCommandAccountLabel(persistedAccount, targetIndex, {
+				maskEmail,
+				peerAccounts: storage.accounts,
+			});
 			const previousText =
 				previousTags.length > 0 ? previousTags.join(", ") : "none";
 			const nextText =
