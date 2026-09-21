@@ -1155,6 +1155,107 @@ describe("install-oc-codex-multi-auth script", () => {
 			await expect(readdir(configDir)).resolves.toEqual(["opencode.json", "tui.json"]);
 		});
 
+		async function writeOriginHistory(home: string, sightings: unknown[]) {
+			const historyPath = join(home, ".opencode", "oc-codex-multi-auth-origin.json");
+			await mkdir(join(home, ".opencode"), { recursive: true });
+			await writeFile(historyPath, JSON.stringify({ version: 1, sightings }), "utf-8");
+			return historyPath;
+		}
+
+		function sightingFor(root: string) {
+			return {
+				name: "oc-codex-multi-auth",
+				version: "6.21.0",
+				root,
+				isLocalCheckout: true,
+				firstSeen: "2026-01-01T00:00:00.000Z",
+				lastSeen: "2026-02-01T00:00:00.000Z",
+			};
+		}
+
+		it("reports a checkout the plugin ran from that the config no longer registers", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const checkout = await createCheckout(tempHome, "oc-codex-multi-auth", "oc-codex-multi-auth");
+			const historyPath = await writeOriginHistory(tempHome, [sightingFor(checkout)]);
+
+			expect(__test.findUnregisteredLocalCheckout(["oc-codex-multi-auth"], historyPath)).toMatchObject({
+				root: checkout,
+			});
+			expect(__test.findUnregisteredLocalCheckout([checkout], historyPath)).toBeNull();
+		});
+
+		it("stays silent when the recorded checkout is gone or was never recorded", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const absent = join(tempHome, "deleted-checkout");
+			const historyPath = await writeOriginHistory(tempHome, [sightingFor(absent)]);
+
+			expect(__test.findUnregisteredLocalCheckout(["oc-codex-multi-auth"], historyPath)).toBeNull();
+			expect(
+				__test.findUnregisteredLocalCheckout(
+					["oc-codex-multi-auth"],
+					join(tempHome, ".opencode", "absent.json"),
+				),
+			).toBeNull();
+		});
+
+		it("stays silent when the recorded directory now holds a different package", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const reusedRoot = await createCheckout(tempHome, "oc-codex-multi-auth", "reused-root");
+			const historyPath = await writeOriginHistory(tempHome, [sightingFor(reusedRoot)]);
+
+			expect(
+				__test.findUnregisteredLocalCheckout(["oc-codex-multi-auth"], historyPath)?.root,
+			).toBe(reusedRoot);
+
+			// Same path, cloned over with something else since it was recorded.
+			await writeFile(
+				join(reusedRoot, "package.json"),
+				JSON.stringify({ name: "some-unrelated-project", version: "1.0.0" }),
+				"utf-8",
+			);
+
+			expect(
+				__test.findUnregisteredLocalCheckout(["oc-codex-multi-auth"], historyPath),
+			).toBeNull();
+		});
+
+		it("names the replaced checkout without restoring it to the config", async () => {
+			vi.resetModules();
+			tempHome = await createTempHome();
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+			const checkout = await createCheckout(tempHome, "oc-codex-multi-auth", "oc-codex-multi-auth");
+			await writeOriginHistory(tempHome, [sightingFor(checkout)]);
+			const configDir = join(tempHome, ".config", "opencode");
+			const configPath = join(configDir, "opencode.json");
+
+			await mkdir(configDir, { recursive: true });
+			await writeFile(
+				configPath,
+				JSON.stringify({ plugin: ["oc-codex-multi-auth"] }, null, 2),
+				"utf-8",
+			);
+
+			await expect(
+				runInstaller(["install", "--plugin-only", "--no-cache-clear"], {
+					env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+				}),
+			).resolves.toMatchObject({ exitCode: 0 });
+
+			const stdout = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+			expect(stdout).toContain(checkout);
+			expect(stdout).toContain("last loaded from a checkout");
+
+			const saved = JSON.parse(await readFile(configPath, "utf-8")) as { plugin: string[] };
+			expect(saved.plugin).toEqual(["oc-codex-multi-auth"]);
+		});
+
 		it("keeps a local checkout when a catalog mode rewrites provider.openai", async () => {
 			vi.resetModules();
 			tempHome = await createTempHome();

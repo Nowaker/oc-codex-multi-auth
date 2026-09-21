@@ -104,6 +104,7 @@ export interface UpdateCheckResult {
 export interface CheckAndNotifyOptions {
   autoUpdate?: boolean;
   scheduleCacheClear?: () => boolean;
+  localCheckout?: boolean;
 }
 
 function getManagedPackageNames(): string[] {
@@ -234,6 +235,14 @@ export async function checkAndNotify(
   options: CheckAndNotifyOptions = {},
 ): Promise<void> {
   try {
+    // The published version says nothing about a build loaded from a checkout,
+    // and evicting the cache would not update it. Offering either is noise at
+    // best and an invitation to overwrite the checkout at worst.
+    if (options.localCheckout) {
+      log.debug("Skipping the update check for a plugin loaded from a local checkout");
+      return;
+    }
+
     const result = await checkForUpdates();
 
     if (result.hasUpdate && result.latestVersion) {
