@@ -43,6 +43,18 @@ const PROFILE_LIMITS: Record<RetryProfile, RetryBudgetLimits> = {
 	},
 };
 
+/**
+ * How much blocking one budget unit buys when a retry is charged through
+ * {@link RetryBudgetTracker.consumeWait}.
+ *
+ * The budgets are small (1/3/10) and were being charged one unit per wait
+ * regardless of length, so three consecutive sub-second waits exhausted the
+ * default and hard-failed a request that one more second would have served.
+ * Waiting is only expensive in proportion to the time it costs the caller, so
+ * that is what a unit now measures.
+ */
+export const RETRY_WAIT_BUDGET_UNIT_MS = 5_000;
+
 const RETRY_BUDGET_CLASSES: RetryBudgetClass[] = [
 	"authRefresh",
 	"network",
@@ -87,10 +99,43 @@ function createUsedCounters(): RetryBudgetLimits {
 
 export class RetryBudgetTracker {
 	private readonly used: RetryBudgetLimits = createUsedCounters();
+	private readonly waitCarryMs: RetryBudgetLimits = createUsedCounters();
 	private readonly limits: RetryBudgetLimits;
 
 	constructor(limits: RetryBudgetLimits) {
 		this.limits = { ...limits };
+	}
+
+	/**
+	 * Charge a retry that blocks for `waitMs` against a bucket, in proportion to
+	 * how long it blocks.
+	 *
+	 * A wait of {@link RETRY_WAIT_BUDGET_UNIT_MS} or longer costs a full unit,
+	 * so a multi-hour block stays governed exactly as before. Shorter waits
+	 * accumulate on a per-bucket carry and only cost a unit once they have added
+	 * up to one, so a burst of sub-second waits is effectively free.
+	 *
+	 * An exhausted bucket refuses even a free wait: the carry bounds how long
+	 * short waits can loop, and without that check they would loop forever once
+	 * the budget ran out.
+	 */
+	consumeWait(bucket: RetryBudgetClass, waitMs: number): boolean {
+		if (this.getRemaining(bucket) <= 0) return false;
+
+		// A non-finite or negative wait cannot be proportioned, so it costs a
+		// full unit: collapsing it to zero would let it accumulate nothing and
+		// retry forever.
+		if (!Number.isFinite(waitMs) || waitMs < 0) return this.consume(bucket);
+		if (waitMs >= RETRY_WAIT_BUDGET_UNIT_MS) return this.consume(bucket);
+
+		const carried = this.waitCarryMs[bucket] + waitMs;
+		if (carried < RETRY_WAIT_BUDGET_UNIT_MS) {
+			this.waitCarryMs[bucket] = carried;
+			return true;
+		}
+
+		this.waitCarryMs[bucket] = carried - RETRY_WAIT_BUDGET_UNIT_MS;
+		return this.consume(bucket);
 	}
 
 	consume(bucket: RetryBudgetClass): boolean {

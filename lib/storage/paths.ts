@@ -81,7 +81,7 @@ function normalizePathForComparison(filePath: string): string {
 	return process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
 }
 
-function isWithinDirectory(baseDir: string, targetPath: string): boolean {
+export function isWithinDirectory(baseDir: string, targetPath: string): boolean {
 	const normalizedBase = normalizePathForComparison(baseDir);
 	const normalizedTarget = normalizePathForComparison(targetPath);
 	const rel = relative(normalizedBase, normalizedTarget);

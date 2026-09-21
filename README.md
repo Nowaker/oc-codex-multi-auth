@@ -286,7 +286,7 @@ Most of these also run as a **direct CLI** with no agent or model involvement, s
 - unsupported-model handling is strict by default, with opt-in fallback controls
 - TUI quota status follows the account/workspace used by the latest request
 - Business workspace memberships and Personal accounts keep separate usage and quota windows. Business members sharing one workspace are distinguished by their member/seat identity, so their usage is not collapsed into one row.
-- An account identifies itself by its own ChatGPT email and the last 6 characters of its account id, with the email masked when `maskEmail` is on. The OAuth id_token also lists the API-platform organizations the login belongs to; those are not ChatGPT workspaces and are never used to name an account, so logging in clears a label left behind by one. A label you set with `codex-label` is always kept.
+- An account identifies itself by its own ChatGPT email and the last 6 characters of its account id, with the email masked when `maskEmail` is on. An account id names a ChatGPT workspace and every member of a Business workspace shares it, so a record that also carries a member/seat id prints a short excerpt of that as `seat:`. The excerpt is a 6-character tail where that is enough to tell the listed accounts apart. Where it is not, it widens, moves to where those ids first differ, or joins two short excerpts with `..` - real member ids are long, share a leading prefix, and differ in more than one place, so a tail alone often cannot separate them. Where no excerpt that short can separate them, `seat:` is instead an **opaque hash prefix** such as `719f78b5`: it identifies the seat and stays stable, but it is not part of the member id and cannot be matched against anything ChatGPT shows you. Whichever form it takes, two distinct seats never render the same `seat:` and a `seat:` is never longer than 32 characters. A record with no member id renders exactly as before. The OAuth id_token also lists the API-platform organizations the login belongs to; those are not ChatGPT workspaces and are never used to name an account, so logging in clears a label left behind by one. A label you set with `codex-label` is always kept.
 - The ChatGPT plan (`Free`, `Plus`, `Pro`, `Business`, `Business Premium`, `Enterprise`) is read from the access token, refreshed on every token refresh, and shown by `codex-list` and `codex-status`. `codex-limits` and the TUI read the plan live from the usage endpoint and name it the same way. An unrecognized plan is reported verbatim rather than renamed.
 
 ---
@@ -442,6 +442,8 @@ Selected runtime/environment overrides:
 | `CODEX_TUI_MASK_EMAIL=0/1` | Mask account emails across account-display surfaces (list/status/limits/health/dashboard/menus + TUI quota status) |
 | `CODEX_TUI_MASK_EMAIL_DETAILS=0/1` | Also hide account email in quota details when prompt masking is enabled |
 | `CODEX_AUTH_PER_PROJECT_ACCOUNTS=0/1` | Disable/enable per-project account pools |
+| `CODEX_AUTH_CREDENTIAL_SNAPSHOTS=0/1` | Disable/enable pre-write snapshots of the credential store (default on) |
+| `CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT=<n>` | How many credential snapshots to keep (`0` keeps all of them) |
 | `CODEX_AUTH_AUTO_UPDATE=0/1` | Disable/enable daily npm update check and cache refresh |
 | `CODEX_AUTH_ROTATION_STRATEGY=hybrid\|sticky\|round-robin` | Account selection strategy |
 | `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=strict\|fallback` | Control unsupported-model retry behavior |
@@ -476,6 +478,8 @@ Modern OpenCode versions use [config/opencode-modern.json](config/opencode-moder
 By default, account pools are stored locally as V3 JSON files. File permissions are restricted where the platform supports them.
 
 Use JSON storage when you want predictable, inspectable local files and easy backup/export behavior.
+
+Before the store is changed in a way that matters, the plugin copies the previous version of the file into `backups/` as `codex-credential-snapshot-*.json`, mode `0600` in a `0700` directory. The snapshot holds the state being replaced, not the state replacing it, which is what makes it useful if the file is ever overwritten wholesale. Token refreshes count as significant, which bounds how stale a restore can be. Refresh tokens are single-use, so a snapshot taken just before a refresh holds the consumed token for the one account that refresh rotated - that account needs a fresh `opencode auth login` - while every other account in the pool comes back with the token that was live at that moment. A snapshot old enough to predate many refreshes restores a pool where most or all accounts can no longer authenticate, which is the failure this bounding exists to avoid. Rotation bookkeeping - `lastUsed`, rate-limit and cooldown state, quota stamps, and the rotation cursor - never triggers one on its own, so the kept snapshots are not churned away by ordinary traffic. The plugin keeps the 10 most recent and prunes strictly by that filename prefix, so nothing else in `backups/` is touched. Set `credentialSnapshots: false` to turn it off, or `credentialSnapshotsMaxCount` to keep a different number (`0` keeps all of them).
 
 </details>
 

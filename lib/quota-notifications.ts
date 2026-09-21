@@ -326,7 +326,11 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 		}
 	};
 
-	const check = async (config: QuotaNotificationsConfig, expectedGeneration: number): Promise<void> => {
+	const check = async (
+		config: QuotaNotificationsConfig,
+		expectedGeneration: number,
+		deliverNotifications = true,
+	): Promise<void> => {
 		const storage = await dependencies.loadStorage();
 		if (!storage || storage.accounts.length === 0 || disposed || expectedGeneration !== generation) return;
 		// Resolved next to the load that produced `storage`, not after the
@@ -367,12 +371,16 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 		}
 		if (summaries.length === 0 || disposed || expectedGeneration !== generation) return;
 		const canDeliver =
+			deliverNotifications &&
 			config.enabled &&
 			(config.notifyEveryCheck || config.thresholds.length > 0) &&
 			dependencies.notificationsSupported();
 		// Credit protection has already persisted any exhausted accounts while
 		// gathering summaries. Do not create notification-state files unless a
-		// notification can actually be delivered.
+		// notification can actually be delivered. A forced check never delivers:
+		// it is a request-driven probe, so writing the threshold/delivery state
+		// would also consume a crossing the next scheduled poll is meant to
+		// announce.
 		if (!canDeliver) return;
 
 		const now = dependencies.now();
@@ -455,7 +463,11 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 		schedule(intervalMs, expectedGeneration);
 	};
 
-	const tick = async (expectedGeneration: number, reschedule: boolean): Promise<void> => {
+	const tick = async (
+		expectedGeneration: number,
+		reschedule: boolean,
+		force = false,
+	): Promise<void> => {
 		if (disposed || expectedGeneration !== generation) return;
 		if (running) {
 			if (reschedule) scheduleNext(expectedGeneration);
@@ -475,7 +487,13 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 			// request simply retries on the next interval, so it cannot turn usage
 			// endpoint throttling into a routing block.
 			keepPolling = config.autoProtectCredits !== false || notificationsEnabled;
-			if (keepPolling) await check(config, expectedGeneration);
+			// Both switches govern the UNATTENDED poll. A forced check is an
+			// on-demand request from a caller that is blocked on the answer, so
+			// honouring them here would let `runNow()` return without asking
+			// upstream anything at all. For the same reason a forced check is a
+			// probe, not an alert: `notifyEveryCheck` opts into the poll's
+			// cadence, not one notification per re-probe during a long wait.
+			if (force || keepPolling) await check(config, expectedGeneration, !force);
 		} catch (error) {
 			logDebug(`Quota monitor tick failed: ${(error as Error).message}`);
 		} finally {
@@ -510,7 +528,7 @@ export function createQuotaMonitor(overrides: Partial<MonitorDependencies> = {})
 		},
 		dispose: disposeMonitor,
 		async runNow() {
-			await tick(generation, false);
+			await tick(generation, false, true);
 		},
 	};
 }
@@ -551,7 +569,15 @@ async function fetchUsageForAccount(
 				// only the proactive routing guard is unavailable until the next poll.
 				logWarn(`Failed to persist exhausted usage quota: ${(error as Error).message}`);
 			}
-		} else if (autoProtectCredits && isUsageQuotaRecovered([usage.primary, usage.secondary])) {
+			// Clearing a stale block is not part of the credit guard.
+			// `autoProtectCredits` opts out of BLOCKING rotation, while the request
+			// path stamps a block from 429 headers regardless of it. Gating the
+			// clear on it too left those accounts blocked with nothing able to
+			// clear them, so the long-wait probe could never wake.
+		} else if (
+			quotaExhaustedResetAtMs === undefined &&
+			isUsageQuotaRecovered([usage.primary, usage.secondary])
+		) {
 			try {
 				if (await persistUsageQuotaRecovery(account)) onCredentialsPersisted();
 			} catch {

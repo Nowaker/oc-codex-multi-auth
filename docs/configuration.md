@@ -224,6 +224,8 @@ a restart to change their configuration.
     "server": 2
   },
   "perProjectAccounts": true,
+  "credentialSnapshots": true,
+  "credentialSnapshotsMaxCount": 10,
   "autoUpdate": true,
   "toastDurationMs": 5000,
   "accountToasts": true,
@@ -281,6 +283,8 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `retryProfile` | `balanced` | retry budget profile for request classes (`conservative`, `balanced`, `aggressive`) |
 | `retryBudgetOverrides` | `{}` | optional per-class budget overrides (`authRefresh`, `network`, `server`, `rateLimitShort`, `rateLimitGlobal`, `emptyResponse`) |
 | `perProjectAccounts` | `true` | each project gets its own account storage |
+| `credentialSnapshots` | `true` | before a significant change to the account store, copy the previous on-disk version into `backups/` so a clobbered store can be restored to a recent state. Refresh tokens are single-use: a snapshot taken just before a refresh holds the consumed token for the one account that refresh rotated, and the live token for every other account, so restoring costs at most a re-login for that one account rather than the whole pool. Snapshots are taken for account additions and removals, token refreshes, identity changes, label/tag/note/enabled changes, plan changes, schema-version changes, and deletion of the store. Rotation bookkeeping never triggers one on its own: `lastUsed`, `lastSwitchReason`, rate-limit and cooldown state, quota-exhaustion stamps, and the `activeIndex` / `activeIndexByFamily` rotation cursor. A snapshot failure is logged and never fails the write it precedes. The flagged-accounts file beside the store is covered the same way, since it retains quarantined refresh tokens. Snapshots cover the default JSON backend only, not `CODEX_KEYCHAIN=1` |
+| `credentialSnapshotsMaxCount` | `10` | how many credential snapshots to keep. Pruning deletes strictly by the snapshot filename prefix, so other files in `backups/` are never touched. `0` means keep every snapshot; use `credentialSnapshots: false` to turn the feature off |
 | `autoUpdate` | `true` | check npm daily and clear the OpenCode-managed plugin cache on exit when a newer version is available; restart OpenCode to install it |
 | `toastDurationMs` | `5000` | how long toast notifications stay visible (ms) |
 | `accountToasts` | `true` | show the transient `Using <account> (N/N)` account-selection toast; set `false` to hide only this informational toast (rate-limit/auth/recovery warnings and errors still show) |
@@ -469,6 +473,8 @@ override any config with env vars (boolean values are truthy only for `"1"`):
 | `CODEX_AUTH_BEGINNER_SAFE_MODE=1` | enable beginner-safe retry behavior |
 | `CODEX_AUTH_RETRY_PROFILE=aggressive` | override retry profile (`conservative`, `balanced`, `aggressive`) |
 | `CODEX_AUTH_PER_PROJECT_ACCOUNTS=0` | disable per-project accounts |
+| `CODEX_AUTH_CREDENTIAL_SNAPSHOTS=0` | disable pre-write credential-store snapshots (enabled by default) |
+| `CODEX_AUTH_CREDENTIAL_SNAPSHOTS_MAX_COUNT=25` | how many credential snapshots to keep (`0` keeps all of them) |
 | `CODEX_AUTH_PARALLEL_PROBING=1` | enable concurrent account health probes |
 | `CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY=3` | max concurrent probes (1–5) |
 | `CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES=3` | override empty-response retry count |
@@ -616,6 +622,7 @@ opencode run "task" --model=openai/gpt-5.6-sol-high
 | `~/.opencode/oc-codex-multi-auth-accounts.json` | global V3 account pool |
 | `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json` | per-project account pool |
 | `~/.opencode/projects/<project-key>/oc-codex-multi-auth-flagged-accounts.json` | flagged/deactivated account metadata, written beside the active accounts file. With the default `perProjectAccounts` this is the per-project path; with project storage off it is `~/.opencode/oc-codex-multi-auth-flagged-accounts.json` |
+| `~/.opencode/backups/codex-credential-snapshot-*.json` | pre-write credential-store snapshots, written beside the accounts file they belong to (so the per-project `backups/` directory when `perProjectAccounts` is on). Mode `0600` in a `0700` directory on POSIX systems, because they hold live refresh tokens; on Windows the POSIX-mode hardening is skipped and the profile directory's ACLs apply |
 | `~/.opencode/logs/codex-plugin/` | request/debug logs when enabled |
 | `~/.opencode/cache/` | instruction/catalog and auto-update caches |
 | `~/.local/state/opencode/oc-codex-multi-auth-tui-quota.json` | TUI quota snapshot cache shared by the provider and TUI plugins; `$OPENCODE_STATE_DIR` overrides the directory when set |

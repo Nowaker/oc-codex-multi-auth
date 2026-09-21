@@ -134,6 +134,10 @@ export interface EvictionScope {
  * looks like cache. Resolving symlinks before the containment check is the part
  * that matters: a developer who links their working checkout into the cache
  * would otherwise have it deleted on exit by a name match alone.
+ *
+ * The cache root itself must not resolve through a symlink either. When
+ * `~/.cache/opencode` is a link to `~`, comparing realpaths makes the whole
+ * home directory "inside the cache" and containment proves nothing.
  */
 export function isEvictableCachePath(cachePath: string, scope: EvictionScope = {}): boolean {
   const { cacheRoot = OPENCODE_CACHE_DIR, resolveRealPath = realpathSync } = scope;
@@ -142,7 +146,13 @@ export function isEvictableCachePath(cachePath: string, scope: EvictionScope = {
   if (!isInsideDirectory(absolutePath, absoluteRoot)) return false;
 
   try {
-    return isInsideDirectory(resolveRealPath(absolutePath), resolveRealPath(absoluteRoot));
+    const realRoot = resolveRealPath(absoluteRoot);
+    const rootIsSymlinked =
+      process.platform === "win32"
+        ? realRoot.toLowerCase() !== absoluteRoot.toLowerCase()
+        : realRoot !== absoluteRoot;
+    if (rootIsSymlinked) return false;
+    return isInsideDirectory(resolveRealPath(absolutePath), realRoot);
   } catch {
     return false;
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 vi.mock("node:fs", () => ({
 	readFileSync: vi.fn(),
@@ -383,6 +383,24 @@ describe("auto-update-checker", () => {
 			const cleared = clearManagedOpenCodePluginCache([nodeModulesPath], {
 				cacheRoot,
 				resolveRealPath: (path) => (path === nodeModulesPath ? checkoutPath : path),
+			});
+
+			expect(cleared).toBe(false);
+			expect(fs.rmSync).not.toHaveBeenCalled();
+		});
+
+		it("refuses every path when the cache root itself resolves through a symlink", () => {
+			vi.mocked(fs.existsSync).mockReturnValue(true);
+			// `~/.cache/opencode -> ~`: the resolved root is the whole home
+			// directory, so a realpath containment check would call anything under
+			// ~ "inside the cache".
+			const linkedRoot = join("/home", "dev", ".cache", "opencode");
+			const managedPath = join(linkedRoot, "node_modules", "oc-codex-multi-auth");
+
+			const cleared = clearManagedOpenCodePluginCache([managedPath], {
+				cacheRoot: linkedRoot,
+				resolveRealPath: (path) =>
+					path === resolve(linkedRoot) ? join("/home", "dev") : path,
 			});
 
 			expect(cleared).toBe(false);

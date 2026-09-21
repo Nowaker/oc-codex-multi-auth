@@ -27,6 +27,11 @@ import { formatStorageErrorHint, StorageError } from "./errors.js";
 import { normalizeAccountStorage } from "./normalize.js";
 import { getConfigDir } from "./paths.js";
 import {
+  assertTestRunNeverTouchesRealHome,
+  TEST_HOME_ESCAPE_CODE,
+} from "./test-home-guard.js";
+import { trySnapshotCredentialStoreBeforeWrite } from "./credential-snapshots.js";
+import {
   getCurrentLegacyProjectStoragePath,
   getCurrentProjectRoot,
   getCurrentProjectStorageKey,
@@ -142,6 +147,10 @@ async function checkWorktreeLockForCurrentStorage(
     });
     return;
   }
+  // Before the probe, not inside the try: `acquireOrDetectLock` writes a lock
+  // sidecar next to the accounts file, so a leaked HOME would touch the real
+  // store here even on a pure read, and this function's catch would hide it.
+  assertTestRunNeverTouchesRealHome(path);
   try {
     const result = await acquireOrDetectLock(path);
     if (!result.acquired && result.foreign) {
@@ -207,6 +216,10 @@ async function migrateStorageFileIfNeeded(
   persist: (storage: AccountStorageV3) => Promise<void>,
   label: string,
 ): Promise<AccountStorageV3 | null> {
+  // Before the existsSync, and outside the try: this reads the legacy file and
+  // the catch below swallows everything except a forward-compat reject, so a
+  // guard placed any later would be silently discarded.
+  if (legacyPath) assertTestRunNeverTouchesRealHome(legacyPath);
   if (!legacyPath || legacyPath === nextPath || !existsSync(legacyPath)) {
     return null;
   }
@@ -302,6 +315,12 @@ async function loadGlobalAccountsFallback(): Promise<AccountStorageV3 | null> {
   if (!shouldUseProjectGlobalFallback() || !currentStoragePath) {
     return null;
   }
+
+  // The project store is missing, so this reaches for the GLOBAL one, which
+  // resolves against `homedir()` and is the real pool whenever HOME has been
+  // restored. Guarded here rather than at the read below, because the catch
+  // there returns null for everything and would hide the escape.
+  assertTestRunNeverTouchesRealHome(getGlobalAccountsStoragePath());
 
   const migrated = await migrateLegacyGlobalStorageIfNeeded();
   if (migrated) {
@@ -537,6 +556,7 @@ async function loadAccountsInternal(
  * Callers must already be inside withStorageLock when using this helper directly.
  */
 async function writeAccountsToPathUnlocked(path: string, storage: AccountStorageV3): Promise<void> {
+  assertTestRunNeverTouchesRealHome(path);
   const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   const tempPath = `${path}.${uniqueSuffix}.tmp`;
 
@@ -547,6 +567,12 @@ async function writeAccountsToPathUnlocked(path: string, storage: AccountStorage
     // Normalize before persisting so every write path enforces dedup semantics
     // (exact identity dedupe plus legacy email dedupe for identity-less records).
     const normalizedStorage = normalizeAccountStorage(storage) ?? storage;
+    // Preserve what is on disk now, before it is replaced. Compared against
+    // the normalized payload rather than the caller's, so a difference
+    // normalization erases never costs a snapshot. We are already inside
+    // `withStorageLock`, so the captured state is exactly the state this write
+    // supersedes.
+    await trySnapshotCredentialStoreBeforeWrite(path, normalizedStorage);
     const content = JSON.stringify(normalizedStorage, null, 2);
     await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 
@@ -672,6 +698,13 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   await checkWorktreeLockForCurrentStorage("save");
 
   if (isKeychainOptInEnabled()) {
+    // Credential snapshots are scoped to the JSON backend and do not cover
+    // keychain mode. That is enforced inside the snapshotter itself rather
+    // than by the absence of a call here, so neither the JSON fallback below
+    // nor `clearAccounts` can reintroduce a plaintext copy of the token set -
+    // see `snapshotCredentialStoreBeforeWrite`. Keychain users' recovery path
+    // stays `codex-export` plus the keychain's own backing store.
+    //
     // Normalize before serializing so the keychain receives the same shape
     // the JSON backend would have written. Using the same JSON format keeps
     // migration and rollback symmetric: a rolled-back JSON file is valid
@@ -753,14 +786,34 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  * keychain delete and log at `error`. Both copies remain in sync so the
  * caller can retry safely. The operation is still best-effort (never
  * throws) to preserve the existing contract above the storage layer.
+ *
+ * @throws StorageError (code `TEST_HOME_ESCAPE`) - the single exception to
+ *   best-effort, and inert outside vitest. The guard refuses the deletion, so
+ *   absorbing it would return success for a clear that never happened.
  */
 export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
     let jsonCleared = true;
     try {
       const path = getStoragePath();
+      assertTestRunNeverTouchesRealHome(path);
+      // Deleting the store outright needs no significance test - `null` says
+      // there is no successor document to compare against. The snapshotter
+      // still applies its own config and keychain gates.
+      await trySnapshotCredentialStoreBeforeWrite(path, null);
       await fs.unlink(path);
     } catch (error) {
+      // The test-home guard is not a storage failure to absorb. It fires only
+      // under vitest, and it exists to fail a run that escaped its sandbox; it
+      // throws before the unlink, so swallowing it here would report a
+      // successful clear for a deletion that deliberately did not happen -
+      // fail-closed downgraded to fail-open on the one path that destroys the
+      // store. The same re-throw covers the snapshotter, which surfaces this
+      // code through `trySnapshotCredentialStoreBeforeWrite` for the same
+      // reason.
+      if (error instanceof StorageError && error.code === TEST_HOME_ESCAPE_CODE) {
+        throw error;
+      }
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
         jsonCleared = false;

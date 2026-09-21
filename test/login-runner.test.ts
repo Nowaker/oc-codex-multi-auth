@@ -14,7 +14,9 @@ import {
 } from "../lib/auth/login-runner.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
 import { loadAccounts, setStoragePathDirect } from "../lib/storage.js";
-import { JWT_CLAIM_PATH } from "../lib/constants.js";
+import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
+import * as loadSaveModule from "../lib/storage/load-save.js";
+import * as loggerModule from "../lib/logger.js";
 
 function createTokenResult(
 	accountId: string,
@@ -218,7 +220,13 @@ describe("login-runner persistAccountPool", () => {
 			resolveFirstRename?.();
 			await Promise.all([firstPersist, secondPersist]);
 
-			expect(renameSpy).toHaveBeenCalledTimes(2);
+			// Count only the renames that publish the accounts file. The
+			// pre-write credential snapshotter swaps its own file through the
+			// same `fs.rename`, so a raw call count also counts snapshots.
+			const accountFileRenames = renameSpy.mock.calls.filter(
+				([, destinationPath]) => destinationPath === storagePath,
+			);
+			expect(accountFileRenames).toHaveLength(2);
 			const loaded = await loadAccounts();
 			expect(loaded?.accounts).toHaveLength(2);
 			expect(
@@ -602,6 +610,175 @@ describe("login-runner account and quota identities", () => {
 		expect(stored?.accounts.map((account) => account.refreshToken)).toEqual([
 			"refresh-owner-new",
 			"refresh-invited",
+		]);
+	});
+
+	const loginAs = async (
+		workspaceId: string,
+		memberId: string,
+		email: string,
+		refresh: string,
+	): Promise<void> => {
+		await persistAccountPool(
+			[
+				{
+					type: "success",
+					access: businessAccessTokenFor(workspaceId, memberId, email),
+					refresh,
+					expires: Date.now() + 60_000,
+				},
+			],
+			false,
+		);
+	};
+
+	it("reports a re-login of a stored seat as an in-place update", async () => {
+		const infoSpy = vi.spyOn(loggerModule, "logInfo");
+		await loginAs("workspace-a", "member-a", "a@example.com", "refresh-a");
+		infoSpy.mockClear();
+
+		await loginAs("workspace-a", "member-a", "a@example.com", "refresh-a-new");
+
+		expect(await loadAccounts().then((stored) => stored?.accounts)).toHaveLength(1);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Login updated Account 1"),
+		);
+		expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("in place"));
+		expect(infoSpy).not.toHaveBeenCalledWith(
+			expect.stringContaining("as a NEW account"),
+		);
+	});
+
+	it("reports a new seat in a stored workspace as an addition, naming the slot it did not repair", async () => {
+		const infoSpy = vi.spyOn(loggerModule, "logInfo");
+		await loginAs("workspace-a", "member-a", "first@example.com", "refresh-a");
+		infoSpy.mockClear();
+
+		await loginAs("workspace-a", "member-b", "second@example.com", "refresh-b");
+
+		expect(await loadAccounts().then((stored) => stored?.accounts)).toHaveLength(2);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Login added Account 2"),
+		);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("as a NEW account"),
+		);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Same workspace id as Account 1."),
+		);
+		// Only slots are named. An email on this line would be the one identity
+		// surface that ignores `maskEmail`.
+		const messages = infoSpy.mock.calls.map(([message]) => String(message));
+		expect(messages.join("\n")).not.toContain("example.com");
+	});
+
+	it("names the slot sharing an email when a new seat is added under a different workspace", async () => {
+		const infoSpy = vi.spyOn(loggerModule, "logInfo");
+		await loginAs("workspace-a", "member-a", "shared@example.com", "refresh-a");
+		infoSpy.mockClear();
+
+		await loginAs("workspace-b", "member-b", "shared@example.com", "refresh-b");
+
+		expect(await loadAccounts().then((stored) => stored?.accounts)).toHaveLength(2);
+		expect(infoSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Same email as Account 1."),
+		);
+		expect(infoSpy).not.toHaveBeenCalledWith(
+			expect.stringContaining("Same workspace id as"),
+		);
+	});
+
+	// Reads the array the runner hands to `persist`, because reading it back
+	// through the storage layer cannot see this: `saveAccounts` normalizes on
+	// write using the same org|account|member seat key, so it merges same-seat
+	// records itself and hides whether the prune did anything.
+	const prunedAccountsFor = async (
+		stored: AccountMetadataV3[],
+		result: TokenSuccessWithAccount,
+	): Promise<AccountMetadataV3[]> => {
+		let persisted: AccountStorageV3 | undefined;
+		const transaction = vi
+			.spyOn(loadSaveModule, "withAccountStorageTransaction")
+			.mockImplementation(<T>(
+				handler: (
+					current: AccountStorageV3 | null,
+					persist: (storage: AccountStorageV3) => Promise<void>,
+				) => Promise<T>,
+			): Promise<T> =>
+				handler(
+					{ version: 3, accounts: stored, activeIndex: 0, activeIndexByFamily: {} },
+					async (storage) => {
+						persisted = storage;
+					},
+				));
+		try {
+			await persistAccountPool([result], false);
+		} finally {
+			transaction.mockRestore();
+		}
+		return persisted?.accounts ?? [];
+	};
+
+	/** A login for a seat none of the seeded records hold, so only the prune acts on them. */
+	const unrelatedSeatLogin = (): TokenSuccessWithAccount => ({
+		type: "success",
+		access: businessAccessTokenFor("workspace-z", "member-z", "z@example.com"),
+		refresh: "refresh-z",
+		expires: Date.now() + 60_000,
+	});
+
+	it("merges two records of one seat that carry different refresh tokens", async () => {
+		const accounts = await prunedAccountsFor(
+			[
+				{
+					accountId: "workspace-a",
+					accountUserId: "member-a",
+					email: "a@example.com",
+					refreshToken: "refresh-stale",
+					addedAt: 1_000,
+					lastUsed: 1_000,
+				},
+				{
+					accountId: "workspace-a",
+					accountUserId: "member-a",
+					email: "a@example.com",
+					refreshToken: "refresh-current",
+					addedAt: 2_000,
+					lastUsed: 2_000,
+				},
+			],
+			unrelatedSeatLogin(),
+		);
+
+		const seat = accounts.filter((account) => account.accountUserId === "member-a");
+		expect(seat).toHaveLength(1);
+		expect(seat[0]?.refreshToken).toBe("refresh-current");
+		expect(accounts).toHaveLength(2);
+	});
+
+	it("keeps two email-only records with different refresh tokens apart", async () => {
+		const accounts = await prunedAccountsFor(
+			[
+				{
+					email: "shared@example.com",
+					refreshToken: "refresh-1",
+					addedAt: 1_000,
+					lastUsed: 1_000,
+				},
+				{
+					email: "shared@example.com",
+					refreshToken: "refresh-2",
+					addedAt: 2_000,
+					lastUsed: 2_000,
+				},
+			],
+			unrelatedSeatLogin(),
+		);
+
+		expect(accounts.map((account) => account.refreshToken)).toEqual([
+			"refresh-1",
+			"refresh-2",
+			"refresh-z",
 		]);
 	});
 

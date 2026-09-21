@@ -140,6 +140,7 @@ export function createCodexDashboardTool(ctx: ToolContext): ToolDefinition {
 						...buildJsonAccountIdentity(entry.index, {
 							includeSensitive: includeSensitiveOutput,
 							account: storage.accounts[entry.index],
+							peerAccounts: storage.accounts,
 						}),
 						eligible: entry.eligible,
 						healthScore: entry.healthScore,
@@ -196,7 +197,7 @@ export function createCodexDashboardTool(ctx: ToolContext): ToolDefinition {
 					const label = formatCommandAccountLabel(
 						storage.accounts[entry.index],
 						entry.index,
-						{ maskEmail },
+						{ maskEmail, peerAccounts: storage.accounts },
 					);
 					const state = entry.eligible
 						? formatUiBadge(ui, "eligible", "success")
@@ -252,7 +253,7 @@ export function createCodexDashboardTool(ctx: ToolContext): ToolDefinition {
 				const label = formatCommandAccountLabel(
 					storage.accounts[entry.index],
 					entry.index,
-					{ maskEmail },
+					{ maskEmail, peerAccounts: storage.accounts },
 				);
 				lines.push(
 					`  - ${label}: ${entry.eligible ? "eligible" : "blocked"} | health=${Math.round(entry.healthScore)} | tokens=${entry.tokensAvailable.toFixed(1)} | reasons=${entry.reasons.join(", ")}`,

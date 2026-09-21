@@ -145,7 +145,13 @@ import {
 	matchesModelPoolAccountKey,
 	type ModelPoolAccount,
 } from "./lib/accounts/pool-identity.js";
-import { resolveDisplayEmail } from "./lib/account-display.js";
+import {
+	formatSeatSuffix,
+	maskIdentityValue,
+	resolveDisplayEmail,
+	seatIsDisclosable,
+} from "./lib/account-display.js";
+import { extractAccountUserId } from "./lib/auth/token-utils.js";
 import { CodexAuthError } from "./lib/errors.js";
 import {
 	getStoragePath,
@@ -396,6 +402,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPreflightShown = false;
 	let beginnerSafeModeEnabled = false;
 	const MIN_BACKOFF_MS = 100;
+	// An all-accounts rate-limit wait can run for days, and the local accounts
+	// file is its only wake-up. A quota reset granted server-side leaves that file
+	// untouched, so such a wait would be slept straight through. Long waits
+	// therefore re-probe upstream: first after a minute, doubling to a quarter
+	// hour, so a multi-day sleep costs a handful of usage requests rather than one
+	// per countdown tick.
+	const UPSTREAM_REPROBE_MIN_WAIT_MS = 60_000;
+	const UPSTREAM_REPROBE_FIRST_DELAY_MS = 60_000;
+	const UPSTREAM_REPROBE_MAX_DELAY_MS = 15 * 60_000;
 
 	const runtimeMetrics: RuntimeMetrics = {
 		startedAt: Date.now(),
@@ -471,24 +486,45 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			account?: {
 				email?: string;
 				accountId?: string;
+				accountUserId?: string;
 				accountLabel?: string;
 				accountTags?: string[];
 				accountNote?: string;
 			};
 			label?: string;
+			peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
 		} = {},
-	): Record<string, unknown> => ({
-		index: index + 1,
-		zeroBasedIndex: index,
-		...(options.includeSensitive
-			? {
-					label:
-						options.label ?? formatCommandAccountLabel(options.account, index),
-					email: options.account?.email ?? null,
-					accountId: options.account?.accountId ?? null,
-				}
-			: {}),
-	});
+	): Record<string, unknown> => {
+		const includeSensitive = options.includeSensitive ?? false;
+		const accountUserId = options.account?.accountUserId?.trim() || undefined;
+		return {
+			index: index + 1,
+			zeroBasedIndex: index,
+			...(includeSensitive
+				? {
+						label:
+							options.label ??
+							formatCommandAccountLabel(options.account, index, {
+								peerAccounts: options.peerAccounts,
+							}),
+						email: options.account?.email ?? null,
+						accountId: options.account?.accountId ?? null,
+					}
+				: {}),
+			// Members of one Business workspace share `accountId`, so the seat is
+			// the field a JSON consumer can tell them apart by. It rides in both
+			// modes - the member id masked when sensitive output is off, and the
+			// suffix withheld when the id is too short to excerpt without
+			// disclosing it - under the same field names the standalone CLI emits.
+			accountUserId: maskIdentityValue(accountUserId, includeSensitive) ?? null,
+			seatSuffix: seatIsDisclosable(accountUserId, includeSensitive)
+				? (formatSeatSuffix(
+						accountUserId,
+						options.peerAccounts?.map((peer) => peer?.accountUserId),
+					) ?? null)
+				: null,
+		};
+	};
 
 	const appendRoutingVisibilityText = (
 		lines: string[],
@@ -825,6 +861,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			response: Response,
 			account: TuiQuotaAccount,
 			accountCount: number,
+			peerAccounts: readonly ({ accountUserId?: string } | undefined)[],
 		): Promise<void> => {
 			try {
 				const snapshot = parseTuiQuotaSnapshotFromHeaders(response.headers, {
@@ -832,7 +869,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					accountIndex: account.index + 1,
 					accountCount,
 					accountEmail: account.email?.trim() || undefined,
-					accountLabel: formatAccountLabel(account, account.index),
+					accountLabel: formatAccountLabel(account, account.index, {
+						peerAccounts,
+					}),
 				});
 				if (!snapshot) return;
 				await writeTuiQuotaSnapshot(snapshot);
@@ -1266,16 +1305,30 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			account: {
 				email?: string;
 				accountId?: string;
+				accountUserId?: string;
 				accountLabel?: string;
 				accountTags?: string[];
 				accountNote?: string;
 			} | undefined,
 			index: number,
-			options: { maskEmail?: boolean } = {},
+			options: {
+				maskEmail?: boolean;
+				peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
+				omitSeat?: boolean;
+			} = {},
 		): string => {
 			const email = resolveDisplayEmail(account?.email, options.maskEmail ?? false);
 			const workspace = account?.accountLabel?.trim();
 			const accountId = formatAccountIdForDisplay(account?.accountId);
+			// `omitSeat` is for a caller that renders the seat itself in a place
+			// a long email cannot push it out of - a table column of its own.
+			// Leaving it in the label too would print the seat twice.
+			const seat = options.omitSeat
+				? undefined
+				: formatSeatSuffix(
+						account?.accountUserId,
+						options.peerAccounts?.map((peer) => peer?.accountUserId),
+					);
 			const tags =
 				Array.isArray(account?.accountTags)
 					? account.accountTags
@@ -1287,6 +1340,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (email) details.push(email);
 			if (workspace) details.push(`workspace:${workspace}`);
 			if (accountId) details.push(`id:${accountId}`);
+			if (seat) details.push(`seat:${seat}`);
 			if (tags.length > 0) details.push(`tags:${tags.join(",")}`);
 
 			if (details.length === 0) {
@@ -1328,7 +1382,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const maskEmail = resolveMaskEmail();
 				const selected = await select<number>(
 					storage.accounts.map((account, index) => ({
-						label: formatCommandAccountLabel(account, index, { maskEmail }),
+						label: formatCommandAccountLabel(account, index, {
+							maskEmail,
+							peerAccounts: storage.accounts,
+						}),
 						value: index,
 					})),
 					{
@@ -1353,7 +1410,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		): BeginnerAccountSnapshot[] => {
 			return storage.accounts.map((account, index) => ({
 				index,
-				label: formatCommandAccountLabel(account, index),
+				label: formatCommandAccountLabel(account, index, {
+					peerAccounts: storage.accounts,
+				}),
 				accountLabel: account.accountLabel,
 				enabled: account.enabled !== false,
 				isActive: index === activeIndex,
@@ -1677,6 +1736,50 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
+		/**
+		 * `loadAccounts()` reports a read or parse failure the same way it reports
+		 * an absent file - by returning null - and a null load builds a manager
+		 * holding zero accounts. Installing that over a working pool makes this
+		 * process answer "No Codex accounts configured" while the accounts file on
+		 * disk is intact, which cross-process lock contention makes reachable.
+		 *
+		 * Emptying the pool for real always goes through an explicit action
+		 * (`codex-remove`, logout, a storage-mode switch); each installs its own
+		 * manager rather than arriving here, so refusing the shrink costs a genuine
+		 * deletion nothing.
+		 */
+		const isUntrustworthyEmptyReload = (
+			incumbent: AccountManager | null,
+			reloaded: AccountManager,
+		): boolean =>
+			incumbent !== null &&
+			incumbent !== reloaded &&
+			reloaded.getAccountCount() === 0 &&
+			incumbent.getAccountCount() > 0;
+
+		const EMPTY_RELOAD_RETRY_DELAY_MS = 2000;
+		const EMPTY_RELOAD_MAX_RETRIES = 3;
+		let emptyReloadRetries = 0;
+		let emptyReloadRetryTimer: ReturnType<typeof setTimeout> | undefined;
+		const cancelEmptyReloadRetry = (): void => {
+			clearTimeout(emptyReloadRetryTimer);
+			emptyReloadRetryTimer = undefined;
+			emptyReloadRetries = 0;
+		};
+		const scheduleEmptyReloadRetry = (retry: () => Promise<void>): void => {
+			if (emptyReloadRetries >= EMPTY_RELOAD_MAX_RETRIES) {
+				emptyReloadRetries = 0;
+				return;
+			}
+			emptyReloadRetries += 1;
+			clearTimeout(emptyReloadRetryTimer);
+			emptyReloadRetryTimer = setTimeout(() => {
+				emptyReloadRetryTimer = undefined;
+				void retry();
+			}, EMPTY_RELOAD_RETRY_DELAY_MS);
+			emptyReloadRetryTimer.unref();
+		};
+
 		const reloadCachedAccountManager = async (): Promise<void> => {
 			if (!cachedAccountManager) return;
 			const previous = cachedAccountManager;
@@ -1695,12 +1798,51 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 			try {
 				const reloadedManager = await AccountManager.loadFromDisk();
+				if (isUntrustworthyEmptyReload(previous, reloadedManager)) {
+					reloadedManager.disposeShutdownHandler();
+					logWarn(
+						`[${PLUGIN_NAME}] Account reload returned no accounts while ${previous.getAccountCount()} are held; keeping the loaded pool and retrying`,
+					);
+					scheduleEmptyReloadRetry(reloadCachedAccountManager);
+					return;
+				}
+				cancelEmptyReloadRetry();
 				cachedAccountManager = reloadedManager;
 				accountManagerPromise = Promise.resolve(reloadedManager);
 				// Dispose only after the replacement is installed so we never leak
 				// the outgoing manager's shutdown handler on every reload, and so a
 				// load failure leaves the working manager intact.
 				previous.disposeShutdownHandler();
+			} catch (error) {
+				logWarn(
+					`Failed to reload account manager: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		};
+
+		/**
+		 * Refills the cache after the fetch path refused an empty reload.
+		 * `reloadCachedAccountManager` cannot serve here - it compares against
+		 * the cached incumbent, which is exactly what is missing - so the
+		 * incumbent the refusing request kept serving is passed in instead.
+		 */
+		const repopulateAccountManagerCache = async (incumbent: AccountManager): Promise<void> => {
+			try {
+				const reloaded = await AccountManager.loadFromDisk();
+				if (cachedAccountManager) {
+					// Another actor repopulated first; the late load is stale and
+					// retires for the same reason the fetch path retires it.
+					if (cachedAccountManager !== reloaded) reloaded.disposeShutdownHandler();
+					return;
+				}
+				if (isUntrustworthyEmptyReload(incumbent, reloaded)) {
+					reloaded.disposeShutdownHandler();
+					scheduleEmptyReloadRetry(() => repopulateAccountManagerCache(incumbent));
+					return;
+				}
+				cancelEmptyReloadRetry();
+				cachedAccountManager = reloaded;
+				accountManagerPromise = Promise.resolve(reloaded);
 			} catch (error) {
 				logWarn(
 					`Failed to reload account manager: ${error instanceof Error ? error.message : String(error)}`,
@@ -1727,21 +1869,41 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			accountsWatcherDisposed = true;
 			unsubscribeAccountsPath?.();
 			stopAccountsWatcher();
+			cancelEmptyReloadRetry();
 			unregisterCleanup(disposeAccountsWatcher);
 		};
-		const readAccountsDigest = async (path: string): Promise<string | undefined> => {
+		const readAccountsFileState = async (
+			path: string,
+		): Promise<{ digest: string; accountCount: number } | undefined> => {
 			try {
 				const content = await readFile(path, "utf8");
-				if (!AnyAccountStorageSchema.safeParse(JSON.parse(content)).success) return;
-				return createHash("sha256").update(content).digest("hex");
+				const data = JSON.parse(content) as unknown;
+				if (!AnyAccountStorageSchema.safeParse(data).success) return;
+				// Counted off the raw document rather than the parsed union so the
+				// count is the same for every storage version.
+				const accounts = (data as { accounts?: unknown }).accounts;
+				return {
+					digest: createHash("sha256").update(content).digest("hex"),
+					accountCount: Array.isArray(accounts) ? accounts.length : 0,
+				};
 			} catch {
 				return;
 			}
 		};
 		const reloadForExternalAccountsChange = async (path: string, generation: number, attempt = 0, retired?: AccountManager): Promise<void> => {
-			const digest = await readAccountsDigest(path);
-			if (generation !== accountsWatchGeneration || !digest || path !== getStoragePath()) return;
+			const observed = await readAccountsFileState(path);
+			if (generation !== accountsWatchGeneration || !observed || path !== getStoragePath()) return;
+			const digest = observed.digest;
 			if (digest === consumeLastWrittenAccountsDigest(path)) return;
+			const retryLater = (): void => {
+				if (attempt < 2 && generation === accountsWatchGeneration && !accountsWatcherDisposed) {
+					accountsReloadTimer = setTimeout(() => {
+						accountsReloadTimer = undefined;
+						void reloadForExternalAccountsChange(path, generation, attempt + 1, retired);
+					}, 1500);
+					accountsReloadTimer.unref();
+				}
+			};
 			const previous = cachedAccountManager;
 			try {
 				// A null cache means an invalidation retired the incumbent; the
@@ -1762,6 +1924,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					reloaded.disposeShutdownHandler();
 					return;
 				}
+				// The file this reload observed carried accounts but the load
+				// produced none, so `loadAccounts()` failed to read it rather than
+				// the accounts having gone away - a failure it reports as an empty
+				// result, never as a throw, so the catch below cannot see it.
+				// Adopting it would answer "No Codex accounts configured" against an
+				// intact file; the retired incumbent still serves its accounts until
+				// a retry lands a real one.
+				if (observed.accountCount > 0 && reloaded.getAccountCount() === 0) {
+					reloaded.disposeShutdownHandler();
+					logWarn(
+						`[${PLUGIN_NAME}] Externally changed accounts file holds ${observed.accountCount} account(s) but loaded as empty; keeping the current pool and retrying`,
+					);
+					retryLater();
+					return;
+				}
 				const outgoing = cachedAccountManager;
 				if (outgoing && outgoing !== retired) {
 					// Another actor replaced the cached manager while this reload
@@ -1777,13 +1954,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				observedAccountsDigest = digest;
 			} catch {
 				logWarn("Could not reload externally updated account storage");
-				if (attempt < 2 && generation === accountsWatchGeneration && !accountsWatcherDisposed) {
-					accountsReloadTimer = setTimeout(() => {
-						accountsReloadTimer = undefined;
-						void reloadForExternalAccountsChange(path, generation, attempt + 1, retired);
-					}, 1500);
-					accountsReloadTimer.unref();
-				}
+				retryLater();
 				return;
 			}
 			logDebug("Reloaded cached account manager after external accounts file change");
@@ -1797,8 +1968,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			const path = watchedAccountsPath;
 			if (!path) return;
 			const generation = accountsWatchGeneration;
-			const digest = await readAccountsDigest(path);
-			if (generation !== accountsWatchGeneration || !digest || digest === observedAccountsDigest) return;
+			const observed = await readAccountsFileState(path);
+			if (generation !== accountsWatchGeneration || !observed || observed.digest === observedAccountsDigest) return;
+			const digest = observed.digest;
 			observedAccountsDigest = digest;
 			clearTimeout(accountsReloadTimer);
 			accountsReloadTimer = undefined;
@@ -1823,9 +1995,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			});
 			watchedAccountsPath = path;
 			const generation = accountsWatchGeneration;
-			const initialDigest = await readAccountsDigest(path);
+			const initial = await readAccountsFileState(path);
 			if (generation !== accountsWatchGeneration) return;
-			observedAccountsDigest = initialDigest;
+			observedAccountsDigest = initial?.digest;
 			// Stat polling follows the path across the storage writer's temp-file rename.
 			watchFile(path, { interval: 1500, persistent: false }, onAccountsStatChanged);
 			unregisterCleanup(disposeAccountsWatcher);
@@ -2414,9 +2586,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							const consumeRetryBudget = (
 								bucket: RetryBudgetClass,
 								reason: string,
+								waitMs?: number,
 							): boolean => {
-								if (retryBudget.consume(bucket)) {
-									runtimeMetrics.retryBudgetUsage[bucket] += 1;
+								// Pass the wait so the charge scales with how long the retry
+								// blocks. Metrics follow the tracker's own counter rather than
+								// assuming one unit, or a free sub-second wait would report
+								// budget it never spent.
+								const usedBefore = retryBudget.getUsage()[bucket];
+								const granted =
+									waitMs === undefined
+										? retryBudget.consume(bucket)
+										: retryBudget.consumeWait(bucket, waitMs);
+								if (granted) {
+									runtimeMetrics.retryBudgetUsage[bucket] +=
+										retryBudget.getUsage()[bucket] - usedBefore;
 									return true;
 								}
 								runtimeMetrics.retryBudgetExhaustions += 1;
@@ -2468,16 +2651,35 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						totalMs: number,
 						message: string,
 						intervalMs: number = 5000,
+						probeUpstream?: () => Promise<boolean>,
 					): Promise<void> => {
 						const startTime = Date.now();
 						const endTime = startTime + totalMs;
-						
+						let probeDelayMs = UPSTREAM_REPROBE_FIRST_DELAY_MS;
+						let nextProbeAt =
+							probeUpstream && totalMs >= UPSTREAM_REPROBE_MIN_WAIT_MS
+								? startTime + probeDelayMs
+								: Number.POSITIVE_INFINITY;
+
 						while (Date.now() < endTime) {
 							if (cachedAccountManager !== accountManager) return;
 							if (abortSignal?.aborted) {
 								throw abortError();
 							}
-							
+
+							if (probeUpstream && Date.now() >= nextProbeAt) {
+								if (await probeUpstream()) return;
+								if (cachedAccountManager !== accountManager) return;
+								if (abortSignal?.aborted) {
+									throw abortError();
+								}
+								probeDelayMs = Math.min(probeDelayMs * 2, UPSTREAM_REPROBE_MAX_DELAY_MS);
+								// Measured from the end of the probe, so a slow usage
+								// request cannot schedule the next one in the past and
+								// collapse the countdown sleep below to zero.
+								nextProbeAt = Date.now() + probeDelayMs;
+							}
+
 							const remaining = Math.max(0, endTime - Date.now());
 							const waitLabel = formatWaitTime(remaining);
 							await showToast(
@@ -2485,14 +2687,40 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								"warning",
 								{ duration: Math.min(intervalMs + 1000, toastDurationMs) },
 							);
-							
-							const sleepTime = Math.min(intervalMs, remaining);
+
+							const sleepTime = Math.min(intervalMs, remaining, nextProbeAt - Date.now());
 							if (sleepTime > 0) {
 								await sleep(sleepTime);
 							} else {
-								break;
+								continue;
 							}
 						}
+					};
+
+					/**
+					 * True when an all-accounts wait can stop early.
+					 *
+					 * `runNow` refreshes `/wham/usage` for every account and persists
+					 * whatever it finds, so a reset that never touched local disk
+					 * becomes visible here. Persisting a recovery also drops the cached
+					 * manager, which is what makes the enclosing retry loop re-resolve
+					 * one that no longer reports a block.
+					 */
+					const probeUpstreamBlockLifted = async (): Promise<boolean> => {
+						try {
+							await quotaMonitor.runNow();
+						} catch (error) {
+							logDebug(
+								`[${PLUGIN_NAME}] Upstream quota re-probe failed: ${
+									error instanceof Error ? error.message : String(error)
+								}`,
+							);
+							return false;
+						}
+						if (cachedAccountManager !== accountManager) return true;
+						const manager = accountManager;
+						if (!manager) return false;
+						return manager.getMinWaitTimeForFamily(modelFamily, model) === 0;
 					};
 
 							let allRateLimitedRetries = 0;
@@ -2618,7 +2846,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									if (accountManagerPromise === pending) accountManagerPromise = null;
 								});
 							}
-						const reloaded = await accountManagerPromise;
+						const loading: Promise<AccountManager> = accountManagerPromise;
+						const reloaded = await loading;
 						if (cachedAccountManager) {
 							if (cachedAccountManager !== reloaded) {
 								// The cache was repopulated while this load was in
@@ -2629,6 +2858,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								reloaded.disposeShutdownHandler();
 							}
 							accountManager = cachedAccountManager;
+						} else if (accountManager && isUntrustworthyEmptyReload(accountManager, reloaded)) {
+							// The incumbent this request holds still has accounts, so
+							// the empty result is a failed `loadAccounts()` read rather
+							// than a real removal (same refusal as
+							// reloadCachedAccountManager). Keep serving the incumbent
+							// and drop the resolved promise so the next pass re-reads
+							// disk instead of adopting this same empty manager.
+							reloaded.disposeShutdownHandler();
+							if (accountManagerPromise === loading) accountManagerPromise = null;
+							logWarn(
+								`[${PLUGIN_NAME}] Account reload returned no accounts while ${accountManager.getAccountCount()} are held; keeping the loaded pool and retrying`,
+							);
+							const incumbent = accountManager;
+							scheduleEmptyReloadRetry(() => repopulateAccountManagerCache(incumbent));
 						} else {
 							cachedAccountManager = reloaded;
 							accountManager = reloaded;
@@ -2795,6 +3038,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const failures = await accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index, {
 					maskEmail: maskEmailEnabled,
+					peerAccounts: accountManager.getAccountsSnapshot(),
 				});
 				
 				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL) {
@@ -2877,6 +3121,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											) {
 												const accountLabel = formatAccountLabel(account, account.index, {
 													maskEmail: maskEmailEnabled,
+													peerAccounts: accountManager.getAccountsSnapshot(),
 												});
 												await showToast(
 													`Using ${accountLabel} (${account.index + 1}/${accountCount})`,
@@ -3102,7 +3347,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							// only the block would leave the status line reporting "0% left" for
 							// an account the router considers healthy.
 							const recordQuotaHeaders = (): boolean => {
-								void recordPromptQuotaHeaders(response, account, accountCount);
+								void recordPromptQuotaHeaders(
+									response,
+									account,
+									accountCount,
+									accountManager.getAccountsSnapshot(),
+								);
 								return applyQuotaExhaustion(
 									accountManager,
 									response.headers,
@@ -3137,6 +3387,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				if (workspaceDeactivated) {
 					const accountLabel = formatAccountLabel(account, account.index, {
 						maskEmail: maskEmailEnabled,
+						peerAccounts: accountManager.getAccountsSnapshot(),
 					});
 					accountManager.refundToken(account, modelFamily, model);
 					accountManager.recordFailure(account, modelFamily, model);
@@ -3452,6 +3703,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 																													if (isInvalidatedAuthTokenError(errorBody, response.status)) {
 																														const accountLabel = formatAccountLabel(account, account.index, {
 																															maskEmail: maskEmailEnabled,
+																															peerAccounts: accountManager.getAccountsSnapshot(),
 																														});
 																														accountManager.refundToken(account, modelFamily, model);
 																														accountManager.recordFailure(account, modelFamily, model);
@@ -3813,10 +4065,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									consumeRetryBudget(
 										"rateLimitGlobal",
 										`All accounts rate-limited wait ${waitMs}ms`,
+										waitMs,
 									)
 								) {
 									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
-									await sleepWithCountdown(addJitter(waitMs, 0.2), countdownMessage);
+									await sleepWithCountdown(
+										addJitter(waitMs, 0.2),
+										countdownMessage,
+										undefined,
+										probeUpstreamBlockLifted,
+									);
 									allRateLimitedRetries++;
 									continue;
 								}
@@ -4154,9 +4412,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 										if (deepProbe) {
 											ok += 1;
+											// Both read from the probed token, so the pair is the seat
+											// the credential actually belongs to. The workspace id
+											// alone repeats across every member of a Business
+											// workspace and cannot confirm which seat answered.
+											const tokenSeat = formatSeatSuffix(
+												extractAccountUserId(accessToken),
+												workingStorage.accounts.map(
+													(peer) => peer?.accountUserId,
+												),
+											);
+											const identity = [
+												tokenAccountId ? `id:${tokenAccountId.slice(-6)}` : undefined,
+												tokenSeat ? `seat:${tokenSeat}` : undefined,
+											].filter((part): part is string => part !== undefined);
 											const detail =
-												tokenAccountId
-													? `${authDetail} (id:${tokenAccountId.slice(-6)})`
+												identity.length > 0
+													? `${authDetail} (${identity.join(", ")})`
 													: authDetail;
 											console.log(`[${i + 1}/${total}] ${label}: ${detail}`);
 											continue;
@@ -4508,6 +4780,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										}
 										return {
 											accountId: account.accountId,
+											accountUserId: account.accountUserId,
 											accountLabel: account.accountLabel,
 											email: account.email,
 											index,
