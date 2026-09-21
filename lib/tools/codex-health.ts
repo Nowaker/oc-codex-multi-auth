@@ -109,6 +109,7 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 							includeSensitive: includeSensitiveOutput,
 							account,
 							label,
+							peerAccounts: storage.accounts,
 						}),
 						status: "healthy",
 					});
@@ -122,6 +123,7 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 							includeSensitive: includeSensitiveOutput,
 							account,
 							label,
+							peerAccounts: storage.accounts,
 						}),
 						status: "skipped",
 						error: "Account is disabled",
@@ -136,6 +138,7 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 							includeSensitive: includeSensitiveOutput,
 							account,
 							label,
+							peerAccounts: storage.accounts,
 						}),
 						status: "unhealthy",
 						error: outcome.error,

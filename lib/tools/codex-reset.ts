@@ -222,6 +222,7 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 				includeSensitive: includeSensitiveOutput,
 				account: target,
 				label,
+				peerAccounts: storage.accounts,
 			});
 
 			try {

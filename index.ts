@@ -144,7 +144,12 @@ import {
 	matchesModelPoolAccountKey,
 	type ModelPoolAccount,
 } from "./lib/accounts/pool-identity.js";
-import { formatSeatSuffix, resolveDisplayEmail } from "./lib/account-display.js";
+import {
+	formatSeatSuffix,
+	maskIdentityValue,
+	resolveDisplayEmail,
+	seatIsDisclosable,
+} from "./lib/account-display.js";
 import { extractAccountUserId } from "./lib/auth/token-utils.js";
 import { CodexAuthError } from "./lib/errors.js";
 import {
@@ -487,21 +492,37 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			label?: string;
 			peerAccounts?: readonly ({ accountUserId?: string } | undefined)[];
 		} = {},
-	): Record<string, unknown> => ({
-		index: index + 1,
-		zeroBasedIndex: index,
-		...(options.includeSensitive
-			? {
-					label:
-						options.label ??
-						formatCommandAccountLabel(options.account, index, {
-							peerAccounts: options.peerAccounts,
-						}),
-					email: options.account?.email ?? null,
-					accountId: options.account?.accountId ?? null,
-				}
-			: {}),
-	});
+	): Record<string, unknown> => {
+		const includeSensitive = options.includeSensitive ?? false;
+		const accountUserId = options.account?.accountUserId?.trim() || undefined;
+		return {
+			index: index + 1,
+			zeroBasedIndex: index,
+			...(includeSensitive
+				? {
+						label:
+							options.label ??
+							formatCommandAccountLabel(options.account, index, {
+								peerAccounts: options.peerAccounts,
+							}),
+						email: options.account?.email ?? null,
+						accountId: options.account?.accountId ?? null,
+					}
+				: {}),
+			// Members of one Business workspace share `accountId`, so the seat is
+			// the field a JSON consumer can tell them apart by. It rides in both
+			// modes - the member id masked when sensitive output is off, and the
+			// suffix withheld when the id is too short to excerpt without
+			// disclosing it - under the same field names the standalone CLI emits.
+			accountUserId: maskIdentityValue(accountUserId, includeSensitive) ?? null,
+			seatSuffix: seatIsDisclosable(accountUserId, includeSensitive)
+				? (formatSeatSuffix(
+						accountUserId,
+						options.peerAccounts?.map((peer) => peer?.accountUserId),
+					) ?? null)
+				: null,
+		};
+	};
 
 	const appendRoutingVisibilityText = (
 		lines: string[],
@@ -838,6 +859,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			response: Response,
 			account: TuiQuotaAccount,
 			accountCount: number,
+			peerAccounts: readonly ({ accountUserId?: string } | undefined)[],
 		): Promise<void> => {
 			try {
 				const snapshot = parseTuiQuotaSnapshotFromHeaders(response.headers, {
@@ -845,7 +867,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					accountIndex: account.index + 1,
 					accountCount,
 					accountEmail: account.email?.trim() || undefined,
-					accountLabel: formatAccountLabel(account, account.index),
+					accountLabel: formatAccountLabel(account, account.index, {
+						peerAccounts,
+					}),
 				});
 				if (!snapshot) return;
 				await writeTuiQuotaSnapshot(snapshot);
@@ -3260,7 +3284,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							// only the block would leave the status line reporting "0% left" for
 							// an account the router considers healthy.
 							const recordQuotaHeaders = (): boolean => {
-								void recordPromptQuotaHeaders(response, account, accountCount);
+								void recordPromptQuotaHeaders(
+									response,
+									account,
+									accountCount,
+									accountManager.getAccountsSnapshot(),
+								);
 								return applyQuotaExhaustion(
 									accountManager,
 									response.headers,
@@ -4326,6 +4355,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 											// workspace and cannot confirm which seat answered.
 											const tokenSeat = formatSeatSuffix(
 												extractAccountUserId(accessToken),
+												workingStorage.accounts.map(
+													(peer) => peer?.accountUserId,
+												),
 											);
 											const identity = [
 												tokenAccountId ? `id:${tokenAccountId.slice(-6)}` : undefined,

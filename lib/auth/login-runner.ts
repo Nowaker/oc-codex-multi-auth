@@ -929,13 +929,14 @@ export async function persistAccountPool(
 					organizationId?: string;
 					accountId?: string;
 					accountUserId?: string;
+					accessToken?: string;
 					email?: string;
 					refreshToken?: string;
 				} | undefined,
 			): string => {
 				const organizationId = account?.organizationId?.trim() ?? "";
 				const accountId = normalizeStoredAccountId(account) ?? "";
-				const accountUserId = account?.accountUserId?.trim() ?? "";
+				const accountUserId = normalizeStoredAccountUserId(account) ?? "";
 				const email = account?.email?.trim().toLowerCase() ?? "";
 				const refreshToken = account?.refreshToken?.trim() ?? "";
 				// A member id pins one seat of one workspace, so two records

@@ -17,7 +17,6 @@ import { loadAccounts, setStoragePathDirect } from "../lib/storage.js";
 import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
 import * as loadSaveModule from "../lib/storage/load-save.js";
 import * as loggerModule from "../lib/logger.js";
-import { JWT_CLAIM_PATH } from "../lib/constants.js";
 
 function createTokenResult(
 	accountId: string,

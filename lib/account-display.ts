@@ -50,6 +50,32 @@ export function resolveDisplayEmail(
 	return maskEmail ? maskEmailForDisplay(trimmed) : trimmed;
 }
 
+/**
+ * Head/tail mask for a stored identity value that is not an email, so a JSON
+ * surface can carry a member id without disclosing more of it than the
+ * `accountId` field beside it. Eight characters stay visible, which conceals
+ * nothing below thirteen - `"me@x.io12"` would print all but its middle
+ * character - so anything shorter is replaced outright. Input is trimmed
+ * first, or `" abc "` would clear the cutoff on padding alone.
+ *
+ * The standalone CLI keeps its own copy as `maskValue` in
+ * `scripts/install-oc-codex-multi-auth-core.js`; both surfaces disclose the
+ * same fields, so keep the two in step.
+ */
+const IDENTITY_MASK_MIN_LENGTH = 13;
+const IDENTITY_MASKED_VALUE = "*****";
+
+export function maskIdentityValue(
+	value: string | undefined,
+	includeSensitive: boolean,
+): string | undefined {
+	if (includeSensitive) return value;
+	const trimmed = value?.trim();
+	if (!trimmed) return trimmed;
+	if (trimmed.length < IDENTITY_MASK_MIN_LENGTH) return IDENTITY_MASKED_VALUE;
+	return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+
 const SEAT_SUFFIX_MIN_LENGTH = 6;
 /**
  * Hard ceiling on a rendered seat, independent of how long the member id is.
@@ -282,4 +308,22 @@ export function resolveSeatSuffixes(
 		const trimmed = normalizeSeatIdentity(accountUserId);
 		return trimmed ? render(trimmed) : undefined;
 	});
+}
+
+/**
+ * Whether a member id may be shown as a seat suffix next to masked fields.
+ * The suffix is a bounded excerpt of the id, so on a short id it could be
+ * most of the id itself - more than `maskIdentityValue` discloses of the same
+ * value. Masked output shows the seat only when the id is long enough that
+ * {@link SEAT_RENDER_MAX_LENGTH} characters cannot be the whole thing.
+ *
+ * The standalone CLI keeps its own copy as `seatIsDisclosable`; keep the two
+ * in step.
+ */
+export function seatIsDisclosable(
+	accountUserId: string | undefined,
+	includeSensitive: boolean,
+): boolean {
+	if (!accountUserId) return false;
+	return includeSensitive || accountUserId.length >= IDENTITY_MASK_MIN_LENGTH;
 }

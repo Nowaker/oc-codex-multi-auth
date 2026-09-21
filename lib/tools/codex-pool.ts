@@ -168,6 +168,7 @@ function buildPoolSnapshot(
 						maskEmail,
 						peerAccounts: storedAccounts,
 					}),
+					peerAccounts: storedAccounts,
 				}),
 				enabled: account.enabled !== false,
 			});
