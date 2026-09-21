@@ -216,6 +216,10 @@ async function migrateStorageFileIfNeeded(
   persist: (storage: AccountStorageV3) => Promise<void>,
   label: string,
 ): Promise<AccountStorageV3 | null> {
+  // Before the existsSync, and outside the try: this reads the legacy file and
+  // the catch below swallows everything except a forward-compat reject, so a
+  // guard placed any later would be silently discarded.
+  if (legacyPath) assertTestRunNeverTouchesRealHome(legacyPath);
   if (!legacyPath || legacyPath === nextPath || !existsSync(legacyPath)) {
     return null;
   }
@@ -311,6 +315,12 @@ async function loadGlobalAccountsFallback(): Promise<AccountStorageV3 | null> {
   if (!shouldUseProjectGlobalFallback() || !currentStoragePath) {
     return null;
   }
+
+  // The project store is missing, so this reaches for the GLOBAL one, which
+  // resolves against `homedir()` and is the real pool whenever HOME has been
+  // restored. Guarded here rather than at the read below, because the catch
+  // there returns null for everything and would hide the escape.
+  assertTestRunNeverTouchesRealHome(getGlobalAccountsStoragePath());
 
   const migrated = await migrateLegacyGlobalStorageIfNeeded();
   if (migrated) {

@@ -92,6 +92,20 @@ describe("retry-budget", () => {
 			}
 		});
 
+		it("charges a full unit for a wait that cannot be proportioned", () => {
+			const tracker = balanced();
+
+			// Infinity, NaN, and negative waits have no proportion to charge.
+			// Each must cost a unit - as zero they would accumulate nothing and
+			// an unbounded retry path would never terminate.
+			expect(tracker.consumeWait("rateLimitGlobal", Number.POSITIVE_INFINITY)).toBe(true);
+			expect(tracker.consumeWait("rateLimitGlobal", Number.NaN)).toBe(true);
+			expect(tracker.consumeWait("rateLimitGlobal", -1)).toBe(true);
+			expect(tracker.getUsage().rateLimitGlobal).toBe(3);
+
+			expect(tracker.consumeWait("rateLimitGlobal", Number.POSITIVE_INFINITY)).toBe(false);
+		});
+
 		it("charges a full unit for a wait at or above the unit length", () => {
 			const tracker = balanced();
 

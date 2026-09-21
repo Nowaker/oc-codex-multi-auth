@@ -1768,6 +1768,36 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
+		/**
+		 * Refills the cache after the fetch path refused an empty reload.
+		 * `reloadCachedAccountManager` cannot serve here - it compares against
+		 * the cached incumbent, which is exactly what is missing - so the
+		 * incumbent the refusing request kept serving is passed in instead.
+		 */
+		const repopulateAccountManagerCache = async (incumbent: AccountManager): Promise<void> => {
+			try {
+				const reloaded = await AccountManager.loadFromDisk();
+				if (cachedAccountManager) {
+					// Another actor repopulated first; the late load is stale and
+					// retires for the same reason the fetch path retires it.
+					if (cachedAccountManager !== reloaded) reloaded.disposeShutdownHandler();
+					return;
+				}
+				if (isUntrustworthyEmptyReload(incumbent, reloaded)) {
+					reloaded.disposeShutdownHandler();
+					scheduleEmptyReloadRetry(() => repopulateAccountManagerCache(incumbent));
+					return;
+				}
+				cancelEmptyReloadRetry();
+				cachedAccountManager = reloaded;
+				accountManagerPromise = Promise.resolve(reloaded);
+			} catch (error) {
+				logWarn(
+					`Failed to reload account manager: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		};
+
 		let watchedAccountsPath: string | undefined;
 		let observedAccountsDigest: string | undefined;
 		let accountsReloadTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2594,7 +2624,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							if (sleepTime > 0) {
 								await sleep(sleepTime);
 							} else {
-								break;
+								continue;
 							}
 						}
 					};
@@ -2748,7 +2778,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									if (accountManagerPromise === pending) accountManagerPromise = null;
 								});
 							}
-						const reloaded = await accountManagerPromise;
+						const loading: Promise<AccountManager> = accountManagerPromise;
+						const reloaded = await loading;
 						if (cachedAccountManager) {
 							if (cachedAccountManager !== reloaded) {
 								// The cache was repopulated while this load was in
@@ -2759,6 +2790,20 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								reloaded.disposeShutdownHandler();
 							}
 							accountManager = cachedAccountManager;
+						} else if (accountManager && isUntrustworthyEmptyReload(accountManager, reloaded)) {
+							// The incumbent this request holds still has accounts, so
+							// the empty result is a failed `loadAccounts()` read rather
+							// than a real removal (same refusal as
+							// reloadCachedAccountManager). Keep serving the incumbent
+							// and drop the resolved promise so the next pass re-reads
+							// disk instead of adopting this same empty manager.
+							reloaded.disposeShutdownHandler();
+							if (accountManagerPromise === loading) accountManagerPromise = null;
+							logWarn(
+								`[${PLUGIN_NAME}] Account reload returned no accounts while ${accountManager.getAccountCount()} are held; keeping the loaded pool and retrying`,
+							);
+							const incumbent = accountManager;
+							scheduleEmptyReloadRetry(() => repopulateAccountManagerCache(incumbent));
 						} else {
 							cachedAccountManager = reloaded;
 							accountManager = reloaded;

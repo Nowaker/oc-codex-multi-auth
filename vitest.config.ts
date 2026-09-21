@@ -14,10 +14,14 @@ import { join } from 'node:path';
  * `lib/accounts/recovery.ts` and `lib/logger.ts` capture `homedir()` at module
  * scope, so anything later than import time is too late for them.
  */
+const inheritedHome = process.env.OC_CODEX_TEST_HOME;
 const isolatedHome =
-  process.env.OC_CODEX_TEST_HOME ??
-  mkdtempSync(join(tmpdir(), 'oc-codex-multi-auth-test-home-'));
+  inheritedHome ?? mkdtempSync(join(tmpdir(), 'oc-codex-multi-auth-test-home-'));
 process.env.OC_CODEX_TEST_HOME = isolatedHome;
+// Only a home this config minted may be removed once the run ends. One handed
+// in through the environment belongs to whoever set it.
+if (!inheritedHome) process.env.OC_CODEX_TEST_HOME_OWNED = '1';
+else delete process.env.OC_CODEX_TEST_HOME_OWNED;
 
 export default defineConfig({
   test: {
@@ -27,6 +31,10 @@ export default defineConfig({
       HOME: isolatedHome,
       USERPROFILE: isolatedHome,
       OC_CODEX_TEST_HOME: isolatedHome,
+      // The OS credential store is the one place the HOME redirect cannot
+      // reach. An inherited opt-in would route fixture writes into the
+      // developer's real keychain; tests that need the backend opt in per test.
+      CODEX_KEYCHAIN: '0',
     },
     // Four suites import the real `index.ts`, and the first one scheduled pays
     // the transform of a 4900-line entry plus its dependency graph: measured at
@@ -34,6 +42,7 @@ export default defineConfig({
     // that race times out under full-suite CPU contention, which is flakiness in
     // the harness rather than in any assertion (a warm re-import costs ~400ms).
     testTimeout: 15_000,
+    globalSetup: ['./test/global-setup.ts'],
     include: ['test/**/*.test.ts'],
     exclude: [
       'node_modules/**',
