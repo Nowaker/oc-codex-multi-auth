@@ -346,11 +346,14 @@ describe("auto-update-checker", () => {
 	});
 
 	describe("clearManagedOpenCodePluginCache", () => {
-		const cacheRoot = join("/tmp", "opencode-cache");
+		// resolve(), not join(): isEvictableCachePath resolves its input before
+		// calling resolveRealPath, and on Windows a drive-less "\tmp\..." resolves
+		// to "C:\tmp\...", so a join()-built fixture never matches the mock below.
+		const cacheRoot = resolve("/tmp", "opencode-cache");
 		const resolveRealPath = (path: string) => path;
 		const packagesPath = join(cacheRoot, "packages", "oc-codex-multi-auth@latest");
 		const nodeModulesPath = join(cacheRoot, "node_modules", "oc-codex-multi-auth");
-		const checkoutPath = join("/home", "dev", "src", "oc-codex-multi-auth");
+		const checkoutPath = resolve("/home", "dev", "src", "oc-codex-multi-auth");
 
 		it("removes managed OpenCode package cache paths", () => {
 			vi.mocked(fs.existsSync).mockReturnValue(true);
