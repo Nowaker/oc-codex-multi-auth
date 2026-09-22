@@ -591,16 +591,16 @@ describe('Fetch Helpers Module', () => {
 				},
 			};
 
-			const miniFallback = resolveUnsupportedCodexFallbackModel({
+			const gpt54Fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.4',
 				errorBody,
 				attemptedModels: ['gpt-5-codex', 'gpt-5.4'],
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(miniFallback).toBe('gpt-6-sol');
+			expect(gpt54Fallback).toBe('gpt-6-sol');
 
-			const nanoFallback = resolveUnsupportedCodexFallbackModel({
+			const gpt54MiniFallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.4-mini',
 				errorBody: {
 					error: {
@@ -613,7 +613,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(nanoFallback).toBe('gpt-6-luna');
+			expect(gpt54MiniFallback).toBe('gpt-6-luna');
 		});
 
 		it('keeps directly selected GPT-5.4 family models strict when fallback policy is disabled', () => {
