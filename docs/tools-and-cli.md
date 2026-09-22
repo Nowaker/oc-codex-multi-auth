@@ -177,9 +177,9 @@ the warm result, and newer concurrent block writes are preserved.
 | Flag | Effect |
 |------|--------|
 | (default) / `--plugin-only` | Register plugin/TUI entries without changing `provider.openai` |
-| `--modern` | Install compact modern config (15 bases + variants) |
+| `--modern` | Install compact modern config (10 bases + variants) |
 | `--full` | Compact bases plus explicit selector entries |
-| `--legacy` | Explicit-only catalog (70 entries) |
+| `--legacy` | Explicit-only catalog (53 entries) |
 | `--dry-run` | Show changed config paths without values or writes |
 | `--no-cache-clear` | Skip clearing OpenCode plugin cache |
 

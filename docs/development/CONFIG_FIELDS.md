@@ -72,7 +72,7 @@ This field differs slightly between the modern and legacy shipped templates.
 
 ### Modern template fields
 
-Modern templates define 15 base model families and expose 70 presets through `variants`.
+Modern templates define 10 base model families and expose 53 presets through `variants`.
 
 Example:
 
@@ -138,7 +138,7 @@ opencode run "task" --model=openai/gpt-5.6-sol --variant=medium
 
 ### Legacy template fields
 
-Legacy templates expose each preset as its own model key (70 explicit entries).
+Legacy templates expose each preset as its own model key (53 explicit entries).
 
 Example:
 
@@ -202,7 +202,7 @@ Examples:
 | `openai/gpt-5.4-mini-xhigh` | `gpt-5.4-mini` |
 | `openai/gpt-5.1-codex-high` | `gpt-5-codex` |
 | `openai/gpt-5.1-codex-max-high` | `gpt-5.1-codex-max` |
-| `openai/gpt-5-mini` | `gpt-5.4-mini` |
+| `openai/gpt-5-mini` | `gpt-6-luna` (was `gpt-5.4-mini`) |
 | `openai/gpt-5-nano` | `gpt-5.4-nano` |
 
 Note that the `gpt-5.1-codex` catalog entry normalizes to the canonical

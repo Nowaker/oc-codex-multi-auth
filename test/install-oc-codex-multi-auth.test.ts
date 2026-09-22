@@ -92,6 +92,10 @@ describe("install-oc-codex-multi-auth script", () => {
 							"gpt-5.4": { name: "stale base model" },
 							"gpt-5.5-high": { name: "stale explicit preset" },
 							"gpt-5.5-fast-medium": { name: "stale explicit preset" },
+							// Retired ids an earlier template shipped.
+							"gpt-5-codex": { name: "retired base" },
+							"gpt-5.4-mini": { name: "retired base" },
+							"gpt-5.1-codex-max-high": { name: "retired explicit preset" },
 						},
 					},
 				},
@@ -139,6 +143,9 @@ describe("install-oc-codex-multi-auth script", () => {
 		expect(saved.provider.openai.models["gpt-5.4"]).toBeUndefined();
 		expect(saved.provider.openai.models["gpt-5.5-high"]).toBeUndefined();
 		expect(saved.provider.openai.models["gpt-5.5-fast-medium"]).toBeUndefined();
+		expect(saved.provider.openai.models["gpt-5-codex"]).toBeUndefined();
+		expect(saved.provider.openai.models["gpt-5.4-mini"]).toBeUndefined();
+		expect(saved.provider.openai.models["gpt-5.1-codex-max-high"]).toBeUndefined();
 		// User-added model survives deep-merge without overriding template ids.
 		expect(saved.provider.openai.models["old"]).toEqual({ name: "old" });
 		const configEntries = await readdir(configDir);

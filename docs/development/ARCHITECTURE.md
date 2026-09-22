@@ -305,20 +305,21 @@ A screen that renders nothing is skipped in the rotation rather than shown blank
 
 The default installer preserves `provider.openai`. `--modern` writes the modern OpenCode template (`config/opencode-modern.json`):
 
-- 15 base model families in the picker:
+- 10 base model families in the picker:
   - `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`
   - `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
   - `gpt-5.5`, `gpt-5.5-fast`
-  - `gpt-5.4-mini`, `gpt-5.4-nano`
-  - `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`
-- 70 effective variants through OpenCode's variant selector
+  - `gpt-5.4-nano`, `gpt-5.1`
+- 53 effective variants through OpenCode's variant selector
 - `store: false`
 - `reasoning.encrypted_content`
 - large context/output metadata for supported model families
 
-`--full` adds 70 explicit selector IDs for scripts. `--legacy` writes the explicit-only template (70 entries) for older OpenCode versions.
+`--full` adds 53 explicit selector IDs for scripts. `--legacy` writes the explicit-only template (53 entries) for older OpenCode versions.
 
-Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for `gpt-6-astra` → `gpt-6-sol`/`gpt-6-luna` → the GPT-5.6 tiers → `gpt-5.5`, and for `gpt-5.5` / `gpt-5-codex` through `gpt-6-sol` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-6-luna` / `gpt-5.6-luna`. The same terminal `gpt-5.5` ends each higher tier's own chain, and it repeats on every tier row on purpose, because the resolver reads the chain of whichever model the request is currently on. `gpt-5.2` was removed as every chain's terminal after openai/codex #44250 (2026-09-09) removed it from the catalog. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31 and are no longer fallback targets. Full generic fallback can be enabled through config or environment variables.
+`gpt-5.4-mini`, `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, and `gpt-5.1-codex-mini` were removed from both templates: `gpt-5.4-mini` retired from Codex with ChatGPT sign-in on 2026-08-31 (replacement `gpt-6-luna`), and the other four were shut down from the OpenAI API on 2026-07-23 (replacement `gpt-5.6-sol`, or `gpt-5.6-terra` for `gpt-5.1-codex-mini`). Routing is unchanged: a user who still types one of these ids by hand is still routed and rescued by the default fallback chains. The installer's `STALE_MANAGED_MODEL_KEYS` set now prunes these five base ids and their legacy variant keys from an existing `opencode.json` on reinstall, the same way it already did for `gpt-5.2` / `gpt-5.3-codex` / `gpt-5.4`.
+
+Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for `gpt-6-astra` → `gpt-6-sol`/`gpt-6-luna` → the GPT-5.6 tiers → `gpt-5.5`, and for `gpt-5.5` / `gpt-5-codex` through `gpt-6-sol` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-6-luna` / `gpt-5.6-luna`. The same terminal `gpt-5.5` ends each higher tier's own chain, and it repeats on every tier row on purpose, because the resolver reads the chain of whichever model the request is currently on. `gpt-5.2` was removed as every chain's terminal after openai/codex #44250 (2026-09-09) removed it from the catalog. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31 and are no longer fallback targets. `normalizeModel()`'s default for a missing or unrecognized model id is now `gpt-6-sol` (was `gpt-5.4`, retired). Full generic fallback can be enabled through config or environment variables.
 
 ---
 
@@ -361,7 +362,7 @@ Unsupported-model behavior is strict by default. Default auto-fallbacks still co
 9. Account pool limits stay at `ACCOUNT_LIMITS` (max 20, 30s auth cooldown, remove after 3 consecutive auth failures).
 10. Codex CLI hydrate from `~/.codex` stays on unless `CODEX_AUTH_SYNC_CODEX_CLI=0`.
 11. Startup prewarm runs only for legacy request transform when not disabled via `CODEX_AUTH_PREWARM=0`.
-12. Installer help/post-install strings must match the live catalog (15 modern bases / 70 variants; 70 legacy explicit).
+12. Installer help/post-install strings must match the live catalog (10 modern bases / 53 variants; 53 legacy explicit).
 13. Tool additions require a per-file factory, registry wiring, and focused test/docs updates.
 14. Boolean environment overrides are truthy only for the literal string `"1"`.
 15. Docs, package metadata, GitHub About text, and plugin metadata should lead with OpenCode, ChatGPT OAuth, Codex/GPT-5 routing, multi-account rotation, account switching, health checks, diagnostics, and recovery tools.

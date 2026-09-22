@@ -397,7 +397,9 @@ export const MODEL_MAP: Record<string, string> = {
 	"gpt-5-medium": GPT_55_MODEL_ID,
 	"gpt-5-high": GPT_55_MODEL_ID,
 	"gpt-5-xhigh": GPT_55_MODEL_ID,
-	"gpt-5-mini": "gpt-5.4-mini",
+	// gpt-5.4-mini retired from Codex on 2026-08-31; OpenAI's Codex model docs
+	// name gpt-6-luna as its replacement.
+	"gpt-5-mini": GPT_6_LUNA_MODEL_ID,
 	"gpt-5-nano": "gpt-5.4-nano",
 };
 

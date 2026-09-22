@@ -13,6 +13,7 @@ import {
 	resolveUnsupportedCodexFallbackModel,
 } from "../lib/request/fetch-helpers.js";
 import { usesResponsesLite } from "../lib/request/helpers/responses-lite.js";
+import { MAX_QUOTA_FALLBACK_SWITCHES } from "../lib/constants.js";
 import { resolveClientIdentity } from "../lib/request/helpers/client-identity.js";
 
 /**
@@ -161,6 +162,14 @@ describe("GPT-6 Sol and Luna Model Support", () => {
 			}
 		});
 
+		// index.ts caps quota hops per request at MAX_QUOTA_FALLBACK_SWITCHES. A
+		// cap shorter than a row stops a quota-blocked walk before its tail.
+		it("lets a quota-blocked request hop through every target of any default row", () => {
+			for (const [model, targets] of Object.entries(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN)) {
+				expect(targets.length, model).toBeLessThanOrEqual(MAX_QUOTA_FALLBACK_SWITCHES);
+			}
+		});
+
 		// openai/codex #44250 removed gpt-5.2 from the catalog on 2026-09-09.
 		it("no longer ends any default chain on gpt-5.2", () => {
 			for (const targets of Object.values(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN)) {
@@ -223,6 +232,50 @@ describe("GPT-6 Sol and Luna Model Support", () => {
 				LUNA_EFFORTS.map((effort) => `${LUNA}-${effort}`),
 			);
 		});
+	});
+});
+
+// OpenAI docs: gpt-5.4 / gpt-5.4-mini retired from Codex with ChatGPT sign-in
+// on 2026-08-31 (developers.openai.com/codex/models); gpt-5-codex and the
+// gpt-5.1-codex family shut down 2026-07-23 (api/docs/deprecations).
+describe("retired models", () => {
+	const RETIRED = [
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.2",
+		"gpt-5.3-codex",
+		"gpt-5-codex",
+		"gpt-5.1-codex",
+		"gpt-5.1-codex-max",
+		"gpt-5.1-codex-mini",
+		"gpt-5.2-codex",
+	] as const;
+	const ownedByRetired = (id: string) =>
+		RETIRED.some((base) => id === base || id.startsWith(`${base}-`)) &&
+		// `gpt-5.4-nano` / `gpt-5.4-pro` are not on either deprecation list.
+		!id.startsWith("gpt-5.4-nano") &&
+		!id.startsWith("gpt-5.4-pro");
+
+	it("ships no retired id in either template", () => {
+		for (const path of ["config/opencode-modern.json", "config/opencode-legacy.json"]) {
+			const ids = Object.keys(
+				(JSON.parse(readFileSync(path, "utf8")) as TemplateShape).provider.openai.models,
+			);
+			expect(ids.filter(ownedByRetired), path).toEqual([]);
+		}
+	});
+
+	it("never resolves a default or legacy alias onto a retired id", () => {
+		expect(normalizeModel(undefined)).toBe(SOL);
+		expect(normalizeModel("unknown-model")).toBe(SOL);
+		expect(normalizeModel("gpt-5-mini")).toBe(LUNA);
+	});
+
+	// Hand-written configs that still name a retired id keep working: the id
+	// routes as typed and the default chain rescues it.
+	it("still routes a retired id a user typed by hand", () => {
+		expect(normalizeModel("gpt-5.4-mini-high")).toBe("gpt-5.4-mini");
+		expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN["gpt-5-codex"]?.length).toBeGreaterThan(0);
 	});
 });
 

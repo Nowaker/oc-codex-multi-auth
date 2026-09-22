@@ -389,7 +389,7 @@ mode, then add the second workspace.
 3. Remove obviously stale/duplicate entries and keep only verified accounts.
 4. Re-run with logging and inspect per-account failures:
    ```bash
-   DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-5-codex
+   DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-6-sol
    ```
 5. If you only need personal Plus/Pro usage, ensure login selected the intended personal workspace/account id.
 6. Run guided diagnostics and safe auto-remediation:
@@ -427,7 +427,7 @@ A successful refresh keeps the prior refresh token when the response omits one, 
 <details open>
 <summary><b>Model Not Found</b></summary>
 
-**Error.** `Model 'openai/gpt-5-codex-low' not found`
+**Error.** `Model 'openai/gpt-6-sol-low' not found`
 
 **Cause 1: Config key mismatch**
 
@@ -435,21 +435,21 @@ Check your config:
 ```json
 {
   "models": {
-    "gpt-5-codex-low": { ... }  // ← This is the key
+    "gpt-6-sol-low": { ... }  // ← This is the key
   }
 }
 ```
 
 CLI must match exactly:
 ```bash
-opencode run "test" --model=openai/gpt-5-codex-low  # Must match config key
+opencode run "test" --model=openai/gpt-6-sol-low  # Must match config key
 ```
 
 **Cause 2: Missing provider prefix**
 
 | Wrong | Correct |
 |-------|---------|
-| `--model=gpt-5-codex-low` | `--model=openai/gpt-5-codex-low` |
+| `--model=gpt-6-sol-low` | `--model=openai/gpt-6-sol-low` |
 
 **Note.** `opencode models openai` currently shows only OpenCode's built-in provider catalog. If you add template-defined or custom models, use `opencode debug config` to confirm they were merged into the effective config.
 
@@ -644,7 +644,7 @@ cat ~/.opencode/logs/codex-plugin/request-*-error-response.json
 ```
 
 **Common causes:**
-1. Invalid options for model (e.g., `minimal` for gpt-5-codex)
+1. Invalid options for model (e.g., `minimal` for gpt-6-sol)
 2. Malformed request body
 3. Unsupported parameter
 
@@ -655,7 +655,7 @@ cat ~/.opencode/logs/codex-plugin/request-*-error-response.json
 
 **Error:**
 ```
-Rate limit reached for gpt-5-codex
+Rate limit reached for gpt-6-sol
 ```
 
 **Solutions:**

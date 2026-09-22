@@ -279,7 +279,7 @@ describe("Model Map Module", () => {
     it("maps legacy GPT-5 aliases to proper canonical models", () => {
       expect(MODEL_MAP["gpt-5"]).toBe("gpt-5.5");
       expect(MODEL_MAP["gpt-5-high"]).toBe("gpt-5.5");
-      expect(MODEL_MAP["gpt-5-mini"]).toBe("gpt-5.4-mini");
+      expect(MODEL_MAP["gpt-5-mini"]).toBe("gpt-6-luna");
       expect(MODEL_MAP["gpt-5-nano"]).toBe("gpt-5.4-nano");
     });
 

@@ -74,7 +74,7 @@ describe('Request Transformer Module', () => {
 		});
 
 		it('should normalize legacy gpt-5 aliases to proper canonical models', () => {
-			expect(normalizeModel('gpt-5-mini')).toBe('gpt-5.4-mini');
+			expect(normalizeModel('gpt-5-mini')).toBe('gpt-6-luna');
 			expect(normalizeModel('gpt-5-nano')).toBe('gpt-5.4-nano');
 		});
 
@@ -83,13 +83,13 @@ describe('Request Transformer Module', () => {
 			expect(normalizeModel('GPT-5.4-Nano')).toBe('gpt-5.4-nano');
 		});
 
-		it('should return gpt-5.4 as default for unknown models', () => {
-			expect(normalizeModel('unknown-model')).toBe('gpt-5.4');
-			expect(normalizeModel('gpt-4')).toBe('gpt-5.4');
+		it('should return gpt-6-sol as default for unknown models', () => {
+			expect(normalizeModel('unknown-model')).toBe('gpt-6-sol');
+			expect(normalizeModel('gpt-4')).toBe('gpt-6-sol');
 		});
 
-		it('should return gpt-5.4 for undefined', () => {
-			expect(normalizeModel(undefined)).toBe('gpt-5.4');
+		it('should return gpt-6-sol for undefined', () => {
+			expect(normalizeModel(undefined)).toBe('gpt-6-sol');
 		});
 
 		// Codex CLI preset name tests - legacy gpt-5 base aliases now map to the current GPT-5.5 release
@@ -240,7 +240,7 @@ describe('Request Transformer Module', () => {
 
 			it('should handle special characters', () => {
 				expect(normalizeModel('my_gpt-5_codex')).toBe('gpt-5-codex');
-				expect(normalizeModel('gpt.5.high')).toBe('gpt-5.4');
+				expect(normalizeModel('gpt.5.high')).toBe('gpt-6-sol');
 			});
 
 			it('should handle old verbose names', () => {
@@ -249,7 +249,7 @@ describe('Request Transformer Module', () => {
 			});
 
 			it('should handle empty string', () => {
-				expect(normalizeModel('')).toBe('gpt-5.4');
+				expect(normalizeModel('')).toBe('gpt-6-sol');
 			});
 		});
 	});
@@ -441,8 +441,8 @@ describe('Request Transformer Module', () => {
 				expect(getReasoningConfig('gpt-5.4-mini', { reasoningEffort: 'xhigh' }).effort).toBe('xhigh');
 			});
 
-			it('should support none effort for gpt-5-mini (maps to gpt-5.4-mini)', () => {
-				expect(getReasoningConfig('gpt-5-mini', { reasoningEffort: 'none' }).effort).toBe('none');
+			it('floors none to low for gpt-5-mini (maps to gpt-6-luna, which rejects none)', () => {
+				expect(getReasoningConfig('gpt-5-mini', { reasoningEffort: 'none' }).effort).toBe('low');
 			});
 
 			it('should coerce Pro low effort to medium', () => {
@@ -920,7 +920,7 @@ describe('Request Transformer Module', () => {
 				input: [],
 			};
 			const result = await transformRequestBody(body, codexInstructions);
-			expect(result.model).toBe('gpt-5.4-mini');  // gpt-5-mini now maps to gpt-5.4-mini
+			expect(result.model).toBe('gpt-6-luna');  // gpt-5-mini maps to gpt-6-luna (gpt-5.4-mini retired)
 		});
 
 		it('should apply default reasoning config', async () => {
@@ -2379,7 +2379,7 @@ describe('Request Transformer Module', () => {
 					expect(result.store).toBe(false);
 				});
 
-				it('should handle gpt-5-mini normalizing to gpt-5.4-mini', async () => {
+				it('should handle gpt-5-mini normalizing to gpt-6-luna', async () => {
 					const body: RequestBody = {
 						model: 'gpt-5-mini',
 						input: []
@@ -2387,11 +2387,11 @@ describe('Request Transformer Module', () => {
 
 					const result = await transformRequestBody(body, codexInstructions);
 
-					expect(result.model).toBe('gpt-5.4-mini');  // gpt-5-mini now maps to gpt-5.4-mini
+					expect(result.model).toBe('gpt-6-luna');  // gpt-5-mini maps to gpt-6-luna (gpt-5.4-mini retired)
 					expect(result.reasoning?.effort).toBe('high');  // First-class gpt-5.4-mini defaults to high
 				});
 
-				it('should preserve xhigh effort for gpt-5-mini (normalized to gpt-5.4-mini)', async () => {
+				it('should preserve xhigh effort for gpt-5-mini (normalized to gpt-6-luna)', async () => {
 					const body: RequestBody = {
 						model: 'gpt-5-mini',
 						input: [],
@@ -2400,7 +2400,7 @@ describe('Request Transformer Module', () => {
 
 					const result = await transformRequestBody(body, codexInstructions);
 
-					expect(result.model).toBe('gpt-5.4-mini');
+					expect(result.model).toBe('gpt-6-luna');
 					expect(result.reasoning?.effort).toBe('xhigh');
 				});
 

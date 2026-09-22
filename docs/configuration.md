@@ -48,20 +48,20 @@ controls how much thinking the model does.
 | `gpt-5.5` | none, low, medium, high, xhigh |
 | `gpt-5.5-fast` | none, low, medium, high, xhigh |
 | `gpt-5.4` | none, low, medium, high, xhigh (retired from Codex 2026-08-31; auto-upgrades to `gpt-6-sol`) |
-| `gpt-5.4-mini` | none, low, medium, high, xhigh (retired from Codex 2026-08-31; auto-upgrades to `gpt-6-luna`) |
+| `gpt-5.4-mini` | none, low, medium, high, xhigh (retired from Codex 2026-08-31, no longer shipped as a base; auto-upgrades to `gpt-6-luna`; still routed if typed) |
 | `gpt-5.4-nano` | none, low, medium, high, xhigh |
 | `gpt-5.4-pro` | low, medium, high, xhigh (optional/manual model) |
-| `gpt-5-codex` | low, medium, high (default: high) |
+| `gpt-5-codex` | low, medium, high (default: high; API shutdown 2026-07-23, no longer shipped as a base; replacement `gpt-5.6-sol`; still routed if typed) |
 | `gpt-5.3-codex` | low, medium, high, xhigh (distinct legacy model id; falls back to `gpt-5-codex`) |
 | `gpt-5.3-codex-spark` | low, medium, high, xhigh (entitlement-gated distinct model id, not an alias of `gpt-5-codex`; add manually) |
 | `gpt-5.2-codex` | low, medium, high, xhigh (distinct legacy model id; falls back to `gpt-5-codex`) |
 | `gpt-5.2` | none, low, medium, high, xhigh |
-| `gpt-5.1-codex-max` | low, medium, high, xhigh (default: high; `xhigh` only when explicitly requested) |
-| `gpt-5.1-codex` | low, medium, high (legacy alias to `gpt-5-codex`) |
-| `gpt-5.1-codex-mini` | medium, high |
+| `gpt-5.1-codex-max` | low, medium, high, xhigh (default: high; `xhigh` only when explicitly requested; API shutdown 2026-07-23, no longer shipped as a base; replacement `gpt-5.6-sol`; still routed if typed) |
+| `gpt-5.1-codex` | low, medium, high (legacy alias to `gpt-5-codex`; API shutdown 2026-07-23, no longer shipped as a base; still routed if typed) |
+| `gpt-5.1-codex-mini` | medium, high (API shutdown 2026-07-23, no longer shipped as a base; replacement `gpt-5.6-terra`; still routed if typed) |
 | `gpt-5.1` | none, low, medium, high |
 
-The shipped config templates include 15 base model families and 70 shipped presets overall (70 modern variants or 70 legacy explicit entries). Default install preserves `provider.openai`; use `--modern` to install the compact base families and variant picker, or `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin). `gpt-6-astra-pro` is almost certainly not a model id at all (see below). `gpt-5.3-codex-spark` and the three Daybreak-gated cyber tiers remain manual add-ons for entitled workspaces only.
+The shipped config templates include 10 base model families and 53 shipped presets overall (53 modern variants or 53 legacy explicit entries). Default install preserves `provider.openai`; use `--modern` to install the compact base families and variant picker, or `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin). `gpt-6-astra-pro` is almost certainly not a model id at all (see below). `gpt-5.3-codex-spark` and the three Daybreak-gated cyber tiers remain manual add-ons for entitled workspaces only.
 
 Base families:
 
@@ -74,14 +74,11 @@ gpt-5.6-terra
 gpt-5.6-luna
 gpt-5.5
 gpt-5.5-fast
-gpt-5.4-mini
 gpt-5.4-nano
-gpt-5.1-codex-max
-gpt-5.1-codex
-gpt-5.1-codex-mini
 gpt-5.1
-gpt-5-codex
 ```
+
+`gpt-5.4-mini`, `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, and `gpt-5.1-codex-mini` were removed from both config templates: `gpt-5.4-mini` retired from Codex with ChatGPT sign-in on 2026-08-31 (replacement `gpt-6-luna`), and the other four were shut down from the OpenAI API on 2026-07-23 (replacement `gpt-5.6-sol`, or `gpt-5.6-terra` for `gpt-5.1-codex-mini`). Routing for these ids is unchanged: a user who still types one of them by hand is still routed and rescued by the default fallback chains.
 
 GPT-6 Astra notes:
 - Astra is OpenAI's frontier model, launched 2026-09-03. Efforts are low through `ultra`, matching OpenAI's Codex model list. Its API reference page says only "`reasoning.effort` supports `low`, `medium`, `high`, `xhigh`, and `max`", which is not a contradiction: `ultra` is a Codex client-side tier that is rewritten to `max` before the request leaves the client, so an API reference has no reason to list it. `gpt-5.6-sol` shows the same split.
@@ -111,9 +108,12 @@ GPT-5.6 notes:
 - No 5.6 tier accepts `none` or `minimal`; both are raised to `low`.
 - `max` and `ultra` are new in 5.6. Requesting them on an older family steps down to `xhigh` (then `high` where xhigh is unsupported).
 - `ultra` is a client-side tier. Codex rewrites it to `max` before the request leaves the client, and the subagent orchestration that distinguishes ultra lives in the Codex client rather than the request body. This plugin is a proxy, so `-ultra` is accepted as an alias and sent on the wire as `max`, and it does **not** spawn subagents.
-- 5.6 is opt-in: the legacy `gpt-5` alias and the plugin default still resolve to `gpt-5.5` / `gpt-5.4`. Because 5.6 shipped as a limited preview, an account without access falls back down the 5.6 tiers and then to `gpt-5.5` automatically. This works under the default `strict` policy, like the `gpt-5.5`/`gpt-5-codex` auto-fallbacks, and can be disabled with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`. The lite shape is applied per request attempt, so a request that falls back from `gpt-5.6-sol` to `gpt-5.5` is re-serialized into the classic shape and keeps its tools.
+- 5.6 is opt-in: the legacy `gpt-5` alias still resolves to `gpt-5.5`, but the plugin default for a missing or unrecognized model id is now `gpt-6-sol` (was `gpt-5.4`, retired). Because 5.6 shipped as a limited preview, an account without access falls back down the 5.6 tiers and then to `gpt-5.5` automatically. This works under the default `strict` policy, like the `gpt-5.5`/`gpt-5-codex` auto-fallbacks, and can be disabled with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`. The lite shape is applied per request attempt, so a request that falls back from `gpt-5.6-sol` to `gpt-5.5` is re-serialized into the classic shape and keeps its tools.
 - Client identity defaults to `originator: opencode` for every responses-lite model (the 5.6 tiers, GPT-6 Astra/Sol/Luna and both Daybreak tiers) and `codex_cli_rs` for other models. Override with `CODEX_AUTH_CLIENT_IDENTITY=codex|opencode`.
 - Instructions for the 5.6 tiers come from the Codex model catalog. See "System instructions" below.
+
+GPT-5.5 notes:
+- Still shipped and live. OpenAI's Codex models page lists GPT-5.5 as retiring from Codex with ChatGPT sign-in on 2026-10-14, with `gpt-6-sol` as the replacement on Plus/Pro/Business/Enterprise/Edu and `gpt-6-luna` on Free/Go.
 
 ### System instructions
 
@@ -145,7 +145,7 @@ model normalization aliases:
 - `gpt-daybreak-blue*` and `gpt-daybreak-red*` map to the catalog ids `gpt-daybreak-blue-latest` / `gpt-daybreak-red-latest`; `gpt-5.6-cyber*` maps to itself, never to Sol
 - bare `gpt-5.6` maps to the flagship tier `gpt-5.6-sol`; `gpt-5.6-terra*` and `gpt-5.6-luna*` map to their own ids
 - `gpt-5.5*`, `gpt-5.5-fast*`, and user-typed `gpt-5.5-pro*` normalize to the public Codex model id `gpt-5.5`
-- legacy `gpt-5` maps to `gpt-5.5`; legacy `gpt-5-mini` / `gpt-5-nano` map to `gpt-5.4-mini` / `gpt-5.4-nano`
+- legacy `gpt-5` maps to `gpt-5.5`; legacy `gpt-5-mini` maps to `gpt-6-luna` (was `gpt-5.4-mini`); legacy `gpt-5-nano` still maps to `gpt-5.4-nano`
 - snapshot ids `gpt-5.4-2026-03-05*`, `gpt-5.4-mini-2026-03-05*`, and `gpt-5.4-pro-2026-03-05*` map to stable `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.4-pro`
 - `opencode debug config` is the reliable way to confirm merged custom/template model entries; `--modern` exposes compact entries like `gpt-5.5` and `gpt-5.5-fast`, while `--full` also exposes explicit entries like `gpt-5.5-medium`, `gpt-5.5-fast-medium`, and `gpt-5.5-high`
 

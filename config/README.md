@@ -6,17 +6,17 @@ This directory contains the official OpenCode config templates for `oc-codex-mul
 
 | File | OpenCode version | Description |
 |------|------------------|-------------|
-| [`opencode-modern.json`](./opencode-modern.json) | **v1.0.210+** | Variant-based config: **15 base models**, **70 variants** total |
-| [`opencode-legacy.json`](./opencode-legacy.json) | **v1.0.209 and below** | Legacy explicit entries: **70** individual model definitions |
+| [`opencode-modern.json`](./opencode-modern.json) | **v1.0.210+** | Variant-based config: **10 base models**, **53 variants** total |
+| [`opencode-legacy.json`](./opencode-legacy.json) | **v1.0.209 and below** | Legacy explicit entries: **53** individual model definitions |
 
 ## Install modes
 
 | Installer flag | What gets written |
 |----------------|-------------------|
 | default / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
-| `--modern` | Compact modern: 15 base OAuth families + variant picker |
+| `--modern` | Compact modern: 10 base OAuth families + variant picker |
 | `--full` | Modern bases **plus** explicit legacy selector IDs |
-| `--legacy` | Explicit-only catalog (70 preset model entries) |
+| `--legacy` | Explicit-only catalog (53 preset model entries) |
 
 ```bash
 npx -y oc-codex-multi-auth@latest          # plugin entries only
@@ -53,7 +53,7 @@ OpenCode v1.0.210+ added model `variants`, so one model entry can expose multipl
 
 Both templates include:
 
-### Base model families (15)
+### Base model families (10)
 
 | Base | Variants (modern) |
 |------|-------------------|
@@ -65,20 +65,17 @@ Both templates include:
 | `gpt-5.6-luna` | low, medium, high, xhigh, max |
 | `gpt-5.5` | none, low, medium, high, xhigh |
 | `gpt-5.5-fast` | none, low, medium, high, xhigh |
-| `gpt-5.4-mini` | none, low, medium, high, xhigh (retired from Codex 2026-08-31; auto-upgrades to `gpt-5.6-luna`) |
 | `gpt-5.4-nano` | none, low, medium, high, xhigh |
-| `gpt-5.1-codex-max` | low, medium, high, xhigh |
-| `gpt-5.1-codex` | low, medium, high |
-| `gpt-5.1-codex-mini` | medium, high |
 | `gpt-5.1` | none, low, medium, high |
-| `gpt-5-codex` | low, medium, high |
+
+`gpt-5.4-mini`, `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, and `gpt-5.1-codex-mini` were removed from both templates: `gpt-5.4-mini` retired from Codex with ChatGPT sign-in on 2026-08-31 (replacement `gpt-6-luna`), and `gpt-5-codex`/`gpt-5.1-codex`/`gpt-5.1-codex-max`/`gpt-5.1-codex-mini` were shut down from the OpenAI API on 2026-07-23 (replacement `gpt-5.6-sol`, or `gpt-5.6-terra` for `gpt-5.1-codex-mini`). They are no longer shipped, but routing is unchanged: a user who still types one of these ids by hand is still routed and rescued by the default fallback chains below.
 
 Shared template requirements:
 
 - `store: false` and `include: ["reasoning.encrypted_content"]`
 - Context metadata:
   - `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` / `gpt-5.5-fast`: context **1,050,000**, output **128,000**
-  - `gpt-5.4-mini` / `gpt-5.4-nano` / Codex models (`gpt-5-codex`, `gpt-5.1-codex*`, …): context **400,000**, output **128,000**
+  - `gpt-5.4-nano`: context **400,000**, output **128,000**
   - `gpt-5.1`: context **272,000**, output **128,000**
 
 Use `opencode debug config` to verify that these template entries were merged into your effective config. A `--modern` install shows base OAuth entries such as `gpt-5.5` / `gpt-5.6-sol`; the separate OpenCode variant picker exposes the reasoning presets. The default install writes no catalog, so these entries appear only if OpenCode supplies them itself.
@@ -101,6 +98,10 @@ If your OpenCode runtime supports global compaction tuning, you can also set val
 - Served over the **responses-lite** path with default client identity `opencode`, same as Astra.
 - `ultra` is sent as `max` on the wire, as with Astra and 5.6.
 - Covered by the same `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK` opt-out as Astra.
+
+## GPT-5.5 notes
+
+- Still shipped and live. OpenAI's Codex models page lists GPT-5.5 as retiring from Codex with ChatGPT sign-in on 2026-10-14, with `gpt-6-sol` as the replacement on Plus/Pro/Business/Enterprise/Edu and `gpt-6-luna` on Free/Go.
 
 ## Cyber tier notes (Daybreak-gated)
 
@@ -134,7 +135,6 @@ opencode run "task" --model=openai/gpt-6-astra --variant=medium
 opencode run "task" --model=openai/gpt-6-sol --variant=medium
 opencode run "task" --model=openai/gpt-6-luna --variant=medium
 opencode run "task" --model=openai/gpt-5.6-sol --variant=medium
-opencode run "task" --model=openai/gpt-5-codex --variant=high
 ```
 
 If you need direct explicit selector IDs for scripts, install with:

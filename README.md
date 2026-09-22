@@ -20,9 +20,9 @@ Use it when you want OpenCode to run Codex-style coding workflows from your own 
 ## What You Get
 
 - OpenCode plugin support for ChatGPT Plus/Pro OAuth and Codex/GPT-5 coding workflows
-- GPT-6 Astra, GPT-6 Sol/Luna, GPT-5.6 Sol/Terra/Luna, and the Daybreak Blue/Red cyber tiers on the responses-lite request path, plus GPT-5.5, GPT-5.5 Fast, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.1, and Codex model templates
+- GPT-6 Astra, GPT-6 Sol/Luna, GPT-5.6 Sol/Terra/Luna, and the Daybreak Blue/Red cyber tiers on the responses-lite request path, plus GPT-5.5, GPT-5.5 Fast, GPT-5.4 Nano, and GPT-5.1 templates
 - Routing for the Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`), deliberately kept out of the shipped templates since they need program approval
-- Compact modern OpenCode config with 15 base families and 70 variant presets; explicit legacy selector IDs when needed
+- Compact modern OpenCode config with 10 base families and 53 variant presets; explicit legacy selector IDs when needed
 - Stateless Codex-compatible request handling with `store: false` and `reasoning.encrypted_content`
 - Multi-account rotation with hybrid health scoring, cooldowns, automatic token refresh, and failover
 - Explicit saved-account listing, account switching, labeling, tagging, notes, health checks, and diagnostics
@@ -90,8 +90,8 @@ Installer flags:
 | Flag | Effect |
 | --- | --- |
 | (default) / `--plugin-only` | Register the plugin and TUI integration without changing `provider.openai` |
-| `--modern` | Install compact modern catalog: 15 bases, 70 variants |
-| `--full` | Compact bases plus 70 explicit selector IDs |
+| `--modern` | Install compact modern catalog: 10 bases, 53 variants |
+| `--full` | Compact bases plus 53 explicit selector IDs |
 | `--legacy` | Explicit-only catalog for older OpenCode |
 | `--dry-run` | Show changed config paths without values or writes |
 | `--no-cache-clear` | Skip clearing the OpenCode plugin cache |
@@ -218,7 +218,7 @@ opencode run "Plan the refactor" --model=openai/gpt-6-astra --variant=high
 Use Codex-focused routing:
 
 ```bash
-opencode run "Refactor the retry logic and update the tests" --model=openai/gpt-5-codex --variant=high
+opencode run "Refactor the retry logic and update the tests" --model=openai/gpt-6-sol --variant=high
 ```
 
 If browser launch is blocked, use the alternate login paths in [docs/getting-started.md](docs/getting-started.md#remote-or-headless-login).

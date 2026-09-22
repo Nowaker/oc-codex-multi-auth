@@ -48,6 +48,14 @@ export {
 } from "./helpers/input-utils.js";
 
 /**
+ * Model for a missing or unrecognized id. gpt-5.4 retired from Codex with
+ * ChatGPT sign-in on 2026-08-31, and OpenAI's Codex model docs name
+ * gpt-6-sol as its replacement. An account outside the GPT-6 rollout still
+ * recovers through gpt-6-sol's default auto-fallback chain.
+ */
+const DEFAULT_NORMALIZED_MODEL = GPT_6_SOL_MODEL_ID;
+
+/**
  * Normalize model name to Codex-supported variants
  *
  * Uses explicit model map for known models, with fallback pattern matching
@@ -57,7 +65,7 @@ export {
  * @returns Normalized model name (e.g., "gpt-5-codex", "gpt-5.1-codex-max")
  */
 export function normalizeModel(model: string | undefined): string {
-	if (!model) return "gpt-5.4";
+	if (!model) return DEFAULT_NORMALIZED_MODEL;
 
 	// Strip provider prefix if present (e.g., "openai/gpt-5-codex" → "gpt-5-codex")
 	const modelId = model.includes("/") ? model.split("/").pop() ?? model : model;
@@ -228,7 +236,7 @@ export function normalizeModel(model: string | undefined): string {
 	}
 
 	// Default fallback
-	return "gpt-5.4";
+	return DEFAULT_NORMALIZED_MODEL;
 }
 
 /**

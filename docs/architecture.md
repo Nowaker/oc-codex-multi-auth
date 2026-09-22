@@ -34,9 +34,9 @@ Install modes:
 | Flag | Config written |
 | --- | --- |
 | (default) / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
-| `--modern` | Compact modern: 15 base model families + variant picker (70 variants total) |
+| `--modern` | Compact modern: 10 base model families + variant picker (53 variants total) |
 | `--full` | Compact modern bases **plus** explicit legacy selector IDs |
-| `--legacy` | Explicit-only catalog (70 model entries) |
+| `--legacy` | Explicit-only catalog (53 model entries) |
 
 Standalone read/ops commands (no OpenCode agent loop required): `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm`. See [tools-and-cli.md](tools-and-cli.md).
 
