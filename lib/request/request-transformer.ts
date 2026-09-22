@@ -689,13 +689,17 @@ export function getReasoningConfig(
 	// - Codex CLI: docs/config.md lists "none" as valid for model_reasoning_effort
 	// - gpt-5.2 and gpt-5.4 general models support: none, low, medium, high, xhigh
 	// - Codex/Pro models (including GPT-5 Codex, GPT-5.4 Pro, and legacy GPT-5.3/5.2 Codex aliases) do NOT support "none"
+	// The canonical family wins over the typed name: `gpt-5` / `gpt-5-<effort>`
+	// match isGpt51General by spelling but resolve to gpt-6-sol, which rejects
+	// "none" and would 400.
 	const supportsNone =
-		isGpt55General ||
-		isGpt54General ||
-		isGpt54Mini ||
-		isGpt54Nano ||
-		isGpt52General ||
-		(isGpt51General && !isLightweight);
+		!isFullEffortFamily &&
+		(isGpt55General ||
+			isGpt54General ||
+			isGpt54Mini ||
+			isGpt54Nano ||
+			isGpt52General ||
+			(isGpt51General && !isLightweight));
 
 	// Default based on model type (Codex CLI defaults + plugin opinionated tuning)
 	// Note: OpenAI docs say gpt-5.1 defaults to "none", but we default to "medium"

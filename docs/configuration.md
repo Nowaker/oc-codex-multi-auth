@@ -137,7 +137,7 @@ For context sizing, shipped templates use:
 - `gpt-6-astra`, `gpt-6-sol`, and `gpt-6-luna`: `context=1050000`, `output=128000`
 - `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`: `context=1050000`, `output=128000`
 - `gpt-5.5` and `gpt-5.5-fast`: `context=1050000`, `output=128000`
-- `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, and `gpt-5.1-codex-mini`: `context=400000`, `output=128000`
+- `gpt-5.4-nano`: `context=400000`, `output=128000`
 - `gpt-5.1`: `context=272000`, `output=128000`
 
 model normalization aliases:

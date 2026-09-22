@@ -265,6 +265,17 @@ describe("retired models", () => {
 		}
 	});
 
+	// `gpt-5` / `gpt-5-<effort>` match the GPT-5.1 branch by spelling, which
+	// allows "none", but resolve to gpt-6-sol, which rejects it.
+	it("never sends none or minimal through a gpt-5 alias that resolves to Sol", () => {
+		for (const alias of ["gpt-5", "gpt-5-none", "gpt-5-minimal", "gpt-5-low", "gpt-5-high"]) {
+			expect(normalizeModel(alias)).toBe(SOL);
+			for (const effort of ["none", "minimal"] as const) {
+				expect(getReasoningConfig(alias, { reasoningEffort: effort }).effort, `${alias} ${effort}`).toBe("low");
+			}
+		}
+	});
+
 	it("never resolves a default or legacy alias onto a retired id", () => {
 		expect(normalizeModel(undefined)).toBe(SOL);
 		expect(normalizeModel("unknown-model")).toBe(SOL);
