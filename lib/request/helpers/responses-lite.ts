@@ -36,6 +36,8 @@ import {
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
 	GPT_6_ASTRA_MODEL_ID,
+	GPT_6_LUNA_MODEL_ID,
+	GPT_6_SOL_MODEL_ID,
 	getNormalizedModel,
 } from "./model-map.js";
 import { stripEffortSuffix } from "./effort-suffix.js";
@@ -61,6 +63,9 @@ const RESPONSES_LITE_MODELS: ReadonlySet<string> = new Set([
 	// `multi_agent_version: "v2"`. The inference was right, so it is now read
 	// rather than guessed and the switch is gone.
 	GPT_6_ASTRA_MODEL_ID,
+	// `use_responses_lite: true` in their catalog entries (openai/codex 49e95cc7).
+	GPT_6_SOL_MODEL_ID,
+	GPT_6_LUNA_MODEL_ID,
 ]);
 
 /** Header Codex sets on every responses-lite request. */

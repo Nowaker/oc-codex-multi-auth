@@ -31,6 +31,17 @@ export const GPT_56_LUNA_MODEL_ID = "gpt-5.6-luna" as const;
 export const GPT_6_ASTRA_MODEL_ID = "gpt-6-astra" as const;
 
 /**
+ * GPT-6 Sol and Luna, added to the Codex catalog on 2026-09-22
+ * (openai/codex 49e95cc7). Sol is the "workhorse model for coding"; Luna is
+ * the "fast and affordable model for easier tasks". The catalog makes them
+ * the named `upgrade` target of every older general model: gpt-5.5,
+ * gpt-5.6-sol, gpt-5.6-terra and retired gpt-5.4 -> gpt-6-sol, gpt-5.6-luna
+ * and retired gpt-5.4-mini -> gpt-6-luna.
+ */
+export const GPT_6_SOL_MODEL_ID = "gpt-6-sol" as const;
+export const GPT_6_LUNA_MODEL_ID = "gpt-6-luna" as const;
+
+/**
  * Daybreak cyber tiers, verified in the Codex model catalog
  * (openai/codex `codex-rs/models-manager/models.json`, rust-v0.153.0+):
  * `gpt-daybreak-blue-latest` (`model_specialty: cyber`, defensive) and
@@ -132,8 +143,20 @@ export const MODEL_MAP: Record<string, string> = {
 	// ============================================================================
 	...expandEffortAliases(GPT_6_ASTRA_MODEL_ID, LOW_TO_ULTRA_EFFORT_SUFFIXES),
 	// Plugin-side convenience alias. OpenAI does not publish a bare `gpt-6`
-	// alias, so this is ours, pointing at the only shipped GPT-6 tier.
+	// alias, so this is ours. It stays on Astra, the frontier tier, now that
+	// Sol and Luna exist too: re-pointing it would silently downgrade anyone
+	// who already selected it.
 	"gpt-6": GPT_6_ASTRA_MODEL_ID,
+
+	// ============================================================================
+	// GPT-6 Sol / Luna (added to the Codex catalog 2026-09-22)
+	//
+	// Both are `visibility: "list"` and name every plan Astra does, plus
+	// `ent26`. Efforts per the catalog: Sol low..ultra, Luna low..max, the
+	// same split as the 5.6 Sol/Luna pair. Neither accepts `none`/`minimal`.
+	// ============================================================================
+	...expandEffortAliases(GPT_6_SOL_MODEL_ID, LOW_TO_ULTRA_EFFORT_SUFFIXES),
+	...expandEffortAliases(GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_EFFORT_SUFFIXES),
 	// "GPT-6 Astra Pro" appears in launch-day press but is very likely not a
 	// model id at all: `/api/docs/models/gpt-6-astra-pro` 404s while the real
 	// `gpt-5.5-pro` and `gpt-5.4-pro` pages both 200, and it appears in neither
@@ -365,16 +388,23 @@ export const MODEL_MAP: Record<string, string> = {
 	"gpt-5-codex-mini-high": "gpt-5.1-codex-mini",
 
 	// ============================================================================
-	// GPT-5 General Purpose Models (LEGACY - maps to gpt-5.5 latest)
+	// GPT-5 General Purpose Models (LEGACY - maps to gpt-6-sol)
+	//
+	// Was gpt-5.5, which OpenAI's Codex model docs retire from Codex with
+	// ChatGPT sign-in on 2026-10-14, naming gpt-6-sol as the replacement on
+	// paid plans. gpt-6-sol rejects none/minimal; the effort clamp floors both
+	// to low.
 	// ============================================================================
-	"gpt-5": GPT_55_MODEL_ID,
-	"gpt-5-none": GPT_55_MODEL_ID,
-	"gpt-5-minimal": GPT_55_MODEL_ID,
-	"gpt-5-low": GPT_55_MODEL_ID,
-	"gpt-5-medium": GPT_55_MODEL_ID,
-	"gpt-5-high": GPT_55_MODEL_ID,
-	"gpt-5-xhigh": GPT_55_MODEL_ID,
-	"gpt-5-mini": "gpt-5.4-mini",
+	"gpt-5": GPT_6_SOL_MODEL_ID,
+	"gpt-5-none": GPT_6_SOL_MODEL_ID,
+	"gpt-5-minimal": GPT_6_SOL_MODEL_ID,
+	"gpt-5-low": GPT_6_SOL_MODEL_ID,
+	"gpt-5-medium": GPT_6_SOL_MODEL_ID,
+	"gpt-5-high": GPT_6_SOL_MODEL_ID,
+	"gpt-5-xhigh": GPT_6_SOL_MODEL_ID,
+	// gpt-5.4-mini retired from Codex on 2026-08-31; OpenAI's Codex model docs
+	// name gpt-6-luna as its replacement.
+	"gpt-5-mini": GPT_6_LUNA_MODEL_ID,
 	"gpt-5-nano": "gpt-5.4-nano",
 };
 

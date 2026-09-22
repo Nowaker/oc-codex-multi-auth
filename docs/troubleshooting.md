@@ -389,7 +389,7 @@ mode, then add the second workspace.
 3. Remove obviously stale/duplicate entries and keep only verified accounts.
 4. Re-run with logging and inspect per-account failures:
    ```bash
-   DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-5-codex
+   DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-6-sol
    ```
 5. If you only need personal Plus/Pro usage, ensure login selected the intended personal workspace/account id.
 6. Run guided diagnostics and safe auto-remediation:
@@ -427,7 +427,7 @@ A successful refresh keeps the prior refresh token when the response omits one, 
 <details open>
 <summary><b>Model Not Found</b></summary>
 
-**Error.** `Model 'openai/gpt-5-codex-low' not found`
+**Error.** `Model 'openai/gpt-6-sol-low' not found`
 
 **Cause 1: Config key mismatch**
 
@@ -435,21 +435,21 @@ Check your config:
 ```json
 {
   "models": {
-    "gpt-5-codex-low": { ... }  // ← This is the key
+    "gpt-6-sol-low": { ... }  // ← This is the key
   }
 }
 ```
 
 CLI must match exactly:
 ```bash
-opencode run "test" --model=openai/gpt-5-codex-low  # Must match config key
+opencode run "test" --model=openai/gpt-6-sol-low  # Must match config key
 ```
 
 **Cause 2: Missing provider prefix**
 
 | Wrong | Correct |
 |-------|---------|
-| `--model=gpt-5-codex-low` | `--model=openai/gpt-5-codex-low` |
+| `--model=gpt-6-sol-low` | `--model=openai/gpt-6-sol-low` |
 
 **Note.** `opencode models openai` currently shows only OpenCode's built-in provider catalog. If you add template-defined or custom models, use `opencode debug config` to confirm they were merged into the effective config.
 
@@ -511,33 +511,39 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    CODEX_AUTH_SEND_ORGANIZATION_HEADER=1 opencode   # restore legacy openai-organization pinning
    ```
    If the model still fails only through the plugin, run `codex-health` and compare the failing pooled account ids against the account the Codex CLI uses (`~/.codex/auth.json`).
-4. Default public selectors that are commonly entitlement-gated can auto-fallback: `gpt-6-astra` degrades into the GPT-5.6 tiers, the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain to `gpt-5.5`, and `gpt-5.5` degrades through `gpt-5.6-terra` and `gpt-5.6-luna` to `gpt-5.2`, while canonical `gpt-5-codex` degrades through `gpt-5.6-terra` and `gpt-5.5` to `gpt-5.2`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones. The Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`) have no chain by design: an unentitled account gets a hard failure rather than a silent substitution by a general model.
-5. Enable fallback policy if you also want automatic downgrades for manual/legacy selectors (live targets `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.2` succeed retired GPT-5.4 IDs):
+4. Default public selectors that are commonly entitlement-gated can auto-fallback: `gpt-6-astra` degrades through `gpt-6-sol` into the GPT-5.6 tiers, the GPT-5.6 preview tiers (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) degrade down the tier chain through `gpt-5.5` to the Luna tiers, and `gpt-5.5` degrades through `gpt-6-sol`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-luna`, and `gpt-5.6-luna`, while canonical `gpt-5-codex` degrades through `gpt-5.6-terra` to `gpt-5.6-luna`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-6-sol`, `gpt-5.4-mini` -> `gpt-6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones. `gpt-5.2` was removed as the terminal of every chain after openai/codex #44250 (2026-09-09) removed it from the catalog; the terminal is now `gpt-5.6-luna` (not `gpt-5.5`), since GPT-5.5 retires from Codex with ChatGPT sign-in on 2026-10-14. The Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`) have no chain by design: an unentitled account gets a hard failure rather than a silent substitution by a general model.
+5. Enable fallback policy if you also want automatic downgrades for manual/legacy selectors (live targets `gpt-6-sol`, `gpt-5.6-terra`, `gpt-5.5`, `gpt-6-luna`, and `gpt-5.6-luna` succeed retired GPT-5.4 IDs):
    ```bash
    CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback opencode
    ```
-6. Default fallback chain (auto-fallback for `gpt-6-astra`, the 5.6 tiers and `gpt-5.5`/`gpt-5-codex`; full chain when policy is `fallback` and not overridden):
-   - `gpt-6-astra -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
-   - `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
-   - `gpt-5.5 -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.2`
-   - `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2`
-   - `gpt-5.4 -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (the successor its catalog entry names)
-   - `gpt-5.4-mini -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
-   - `gpt-5.4-nano -> gpt-5.6-luna -> gpt-5.5 -> gpt-5.2`
-   - `gpt-5.4-pro -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` (if `gpt-5.4-pro` is selected manually)
+6. Default fallback chain (auto-fallback for `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, the 5.6 tiers and `gpt-5.5`/`gpt-5-codex`; full chain when policy is `fallback` and not overridden). The general rows follow one order, most capable first (`gpt-6-astra > gpt-6-sol > gpt-5.6-sol > gpt-5.6-terra > gpt-5.5 > gpt-6-luna > gpt-5.6-luna`), and each row is that order's tail after its own model:
+   - `gpt-6-astra -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.5 -> gpt-6-luna -> gpt-5.6-luna`
+   - `gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.5 -> gpt-6-luna -> gpt-5.6-luna`
+   - `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.5 -> gpt-6-luna -> gpt-5.6-luna`
+   - `gpt-5.6-terra -> gpt-5.5 -> gpt-6-luna -> gpt-5.6-luna`
+   - `gpt-5.5 -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-6-luna -> gpt-5.6-luna`
+   - `gpt-6-luna -> gpt-5.6-luna -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.5`
+   - `gpt-5.6-luna -> gpt-6-luna -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.5`
+   - `gpt-5-codex -> gpt-5.6-terra -> gpt-5.6-luna`
+   - `gpt-5.4 -> gpt-6-sol -> gpt-5.6-terra -> gpt-5.6-luna` (the successor its catalog entry names)
+   - `gpt-5.4-mini -> gpt-6-luna -> gpt-5.6-luna`
+   - `gpt-5.4-nano -> gpt-6-luna -> gpt-5.6-luna`
+   - `gpt-5.4-pro -> gpt-6-sol -> gpt-5.6-terra -> gpt-5.6-luna` (if `gpt-5.4-pro` is selected manually)
    - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
    - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (if Spark IDs are selected manually)
    - `gpt-5.2-codex -> gpt-5-codex`
    - `gpt-5.1-codex -> gpt-5-codex`
+
+   A single request hops across at most 6 quota-exhausted models (`MAX_QUOTA_FALLBACK_SWITCHES`, was 3), enough to reach the tail of the longest default chain (`gpt-6-astra`'s, 6 targets).
 7. Configure a custom fallback chain in `~/.opencode/openai-codex-auth-config.json`:
    ```json
    {
    "unsupportedCodexPolicy": "fallback",
    "fallbackOnUnsupportedCodexModel": true,
    "unsupportedCodexFallbackChain": {
-      "gpt-5.5": ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.2"],
-      "gpt-5.6-sol": ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.2"],
-      "gpt-5-codex": ["gpt-5.6-terra", "gpt-5.5", "gpt-5.2"],
+      "gpt-5.5": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna", "gpt-5.6-luna"],
+      "gpt-5.6-sol": ["gpt-5.6-terra", "gpt-5.5", "gpt-6-luna", "gpt-5.6-luna"],
+      "gpt-5-codex": ["gpt-5.6-terra", "gpt-5.6-luna"],
       "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
       "gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"]
      }
@@ -642,7 +648,7 @@ cat ~/.opencode/logs/codex-plugin/request-*-error-response.json
 ```
 
 **Common causes:**
-1. Invalid options for model (e.g., `minimal` for gpt-5-codex)
+1. Invalid options for model (e.g., `minimal` for gpt-6-sol)
 2. Malformed request body
 3. Unsupported parameter
 
@@ -653,7 +659,7 @@ cat ~/.opencode/logs/codex-plugin/request-*-error-response.json
 
 **Error:**
 ```
-Rate limit reached for gpt-5-codex
+Rate limit reached for gpt-6-sol
 ```
 
 **Solutions:**

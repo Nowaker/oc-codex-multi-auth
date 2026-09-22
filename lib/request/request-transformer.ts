@@ -14,6 +14,8 @@ import {
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
 	GPT_6_ASTRA_MODEL_ID,
+	GPT_6_LUNA_MODEL_ID,
+	GPT_6_SOL_MODEL_ID,
 	getNormalizedModel,
 } from "./helpers/model-map.js";
 import {
@@ -46,6 +48,14 @@ export {
 } from "./helpers/input-utils.js";
 
 /**
+ * Model for a missing or unrecognized id. gpt-5.4 retired from Codex with
+ * ChatGPT sign-in on 2026-08-31, and OpenAI's Codex model docs name
+ * gpt-6-sol as its replacement. An account outside the GPT-6 rollout still
+ * recovers through gpt-6-sol's default auto-fallback chain.
+ */
+const DEFAULT_NORMALIZED_MODEL = GPT_6_SOL_MODEL_ID;
+
+/**
  * Normalize model name to Codex-supported variants
  *
  * Uses explicit model map for known models, with fallback pattern matching
@@ -55,7 +65,7 @@ export {
  * @returns Normalized model name (e.g., "gpt-5-codex", "gpt-5.1-codex-max")
  */
 export function normalizeModel(model: string | undefined): string {
-	if (!model) return "gpt-5.4";
+	if (!model) return DEFAULT_NORMALIZED_MODEL;
 
 	// Strip provider prefix if present (e.g., "openai/gpt-5-codex" → "gpt-5-codex")
 	const modelId = model.includes("/") ? model.split("/").pop() ?? model : model;
@@ -87,8 +97,15 @@ export function normalizeModel(model: string | undefined): string {
 	if (/\bgpt(?:-| )5\.6(?:-| )cyber(?:\b|[- ])/.test(normalized)) {
 		return GPT_56_CYBER_MODEL_ID;
 	}
+	// Sol and Luna must precede the catch-all `gpt-6` branch below.
+	if (/\bgpt(?:-| )6(?:-| )sol(?:\b|[- ])/.test(normalized)) {
+		return GPT_6_SOL_MODEL_ID;
+	}
+	if (/\bgpt(?:-| )6(?:-| )luna(?:\b|[- ])/.test(normalized)) {
+		return GPT_6_LUNA_MODEL_ID;
+	}
 	// GPT-6 Astra Pro is not a Codex-routable id (see MODEL_MAP), so every
-	// `gpt-6*` spelling collapses onto the one shipped tier.
+	// other `gpt-6*` spelling collapses onto the frontier tier.
 	if (/\bgpt(?:-| )6(?:\b|[- ])/.test(normalized)) {
 		return GPT_6_ASTRA_MODEL_ID;
 	}
@@ -213,13 +230,13 @@ export function normalizeModel(model: string | undefined): string {
 		return "gpt-5-codex";
 	}
 
-	// 18. GPT-5 family (any variant) - default to 5.5 latest general model
+	// 18. GPT-5 family (any other variant) - same target as the gpt-5 alias
 	if (normalized.includes("gpt-5") || normalized.includes("gpt 5")) {
-		return GPT_55_MODEL_ID;
+		return DEFAULT_NORMALIZED_MODEL;
 	}
 
 	// Default fallback
-	return "gpt-5.4";
+	return DEFAULT_NORMALIZED_MODEL;
 }
 
 /**
@@ -583,11 +600,17 @@ export function getReasoningConfig(
 		canonicalModelName === DAYBREAK_BLUE_MODEL_ID ||
 		canonicalModelName === DAYBREAK_RED_MODEL_ID ||
 		canonicalModelName === GPT_56_CYBER_MODEL_ID;
+	// GPT-6 Sol/Luna repeat the 5.6 Sol/Luna split, read from the catalog:
+	// Sol low..ultra, Luna low..max, neither accepts none/minimal.
+	const isGpt6Sol = canonicalModelName === GPT_6_SOL_MODEL_ID;
+	const isGpt6Luna = canonicalModelName === GPT_6_LUNA_MODEL_ID;
 
-	/** Families whose whole effort range is low..ultra with no none/minimal. */
-	const isFullEffortFamily = isGpt56 || isGpt6Astra || isDaybreak;
+	/** Families whose whole effort range is low..max(+ultra) with no none/minimal. */
+	const isFullEffortFamily =
+		isGpt56 || isGpt6Astra || isGpt6Sol || isGpt6Luna || isDaybreak;
 	const supportsMax = isFullEffortFamily;
-	const supportsUltra = isGpt56Sol || isGpt56Terra || isGpt6Astra || isDaybreak;
+	const supportsUltra =
+		isGpt56Sol || isGpt56Terra || isGpt6Astra || isGpt6Sol || isDaybreak;
 
 	// GPT-5.4 Mini is a first-class explicit model.
 	const isGpt54Mini = canonicalModelName === "gpt-5.4-mini";
@@ -666,13 +689,17 @@ export function getReasoningConfig(
 	// - Codex CLI: docs/config.md lists "none" as valid for model_reasoning_effort
 	// - gpt-5.2 and gpt-5.4 general models support: none, low, medium, high, xhigh
 	// - Codex/Pro models (including GPT-5 Codex, GPT-5.4 Pro, and legacy GPT-5.3/5.2 Codex aliases) do NOT support "none"
+	// The canonical family wins over the typed name: `gpt-5` / `gpt-5-<effort>`
+	// match isGpt51General by spelling but resolve to gpt-6-sol, which rejects
+	// "none" and would 400.
 	const supportsNone =
-		isGpt55General ||
-		isGpt54General ||
-		isGpt54Mini ||
-		isGpt54Nano ||
-		isGpt52General ||
-		(isGpt51General && !isLightweight);
+		!isFullEffortFamily &&
+		(isGpt55General ||
+			isGpt54General ||
+			isGpt54Mini ||
+			isGpt54Nano ||
+			isGpt52General ||
+			(isGpt51General && !isLightweight));
 
 	// Default based on model type (Codex CLI defaults + plugin opinionated tuning)
 	// Note: OpenAI docs say gpt-5.1 defaults to "none", but we default to "medium"

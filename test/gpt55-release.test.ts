@@ -18,11 +18,11 @@ describe("GPT-5.5 activation", () => {
 
 	it("maps GPT-5.5 aliases to the public Codex model id", () => {
 		expect(MODEL_MAP["gpt-5.5"]).toBe("gpt-5.5");
-		expect(MODEL_MAP["gpt-5-xhigh"]).toBe("gpt-5.5");
+		expect(MODEL_MAP["gpt-5-xhigh"]).toBe("gpt-6-sol");
 		expect(MODEL_MAP["gpt-5.5-fast"]).toBe("gpt-5.5");
 		expect(MODEL_MAP["gpt-5.5-fast-high"]).toBe("gpt-5.5");
 		expect(getNormalizedModel("gpt-5.5")).toBe("gpt-5.5");
-		expect(getNormalizedModel("gpt-5-xhigh")).toBe("gpt-5.5");
+		expect(getNormalizedModel("gpt-5-xhigh")).toBe("gpt-6-sol");
 		expect(getNormalizedModel("gpt-5.5-fast-medium")).toBe("gpt-5.5");
 		expect(isKnownModel("gpt-5.5")).toBe(true);
 		expect(isKnownModel("gpt-5-xhigh")).toBe(true);
@@ -58,7 +58,7 @@ describe("GPT-5.5 activation", () => {
 		expect(getModelFamily("gpt-5.5-fast")).toBe("gpt-5.4");
 	});
 
-	it("auto-falls-back from GPT-5.5 to GPT-5.6 Terra even when the global policy is off", () => {
+	it("auto-falls-back from GPT-5.5 to GPT-6 Sol even when the global policy is off", () => {
 		const fallback = resolveUnsupportedCodexFallbackModel({
 			requestedModel: "gpt-5.5-medium",
 			errorBody: {
@@ -70,10 +70,10 @@ describe("GPT-5.5 activation", () => {
 			fallbackToGpt52OnUnsupportedGpt53: false,
 		});
 
-		expect(fallback).toBe("gpt-5.6-terra");
+		expect(fallback).toBe("gpt-6-sol");
 	});
 
-	it("still falls back from GPT-5.5 to GPT-5.6 Terra when explicit policy opt-in is set", () => {
+	it("still falls back from GPT-5.5 to GPT-6 Sol when explicit policy opt-in is set", () => {
 		const fallback = resolveUnsupportedCodexFallbackModel({
 			requestedModel: "gpt-5.5-medium",
 			errorBody: {
@@ -85,7 +85,7 @@ describe("GPT-5.5 activation", () => {
 			fallbackToGpt52OnUnsupportedGpt53: false,
 		});
 
-		expect(fallback).toBe("gpt-5.6-terra");
+		expect(fallback).toBe("gpt-6-sol");
 	});
 
 	it("disables GPT-5.5 auto-fallback when CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1 is set", () => {
@@ -119,6 +119,6 @@ describe("GPT-5.5 activation", () => {
 			fallbackToGpt52OnUnsupportedGpt53: false,
 		});
 
-		expect(fallback).toBe("gpt-5.6-terra");
+		expect(fallback).toBe("gpt-6-sol");
 	});
 });

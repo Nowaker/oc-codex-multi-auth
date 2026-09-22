@@ -21,7 +21,7 @@ This is the default. It registers the OpenCode and TUI plugin entries without ch
 npx -y oc-codex-multi-auth@latest --modern
 ```
 
-Use this when the shipped 13 base OAuth model families and 59 OpenCode variant presets are required.
+Use this when the shipped 10 base OAuth model families and 53 OpenCode variant presets are required.
 
 ## Config-safe update
 
@@ -45,7 +45,7 @@ Use this when the user already manages `provider.openai`. It registers the OpenC
 npx -y oc-codex-multi-auth@latest --full
 ```
 
-Use this when the user needs direct selector IDs such as `openai/gpt-5.5-medium`, `openai/gpt-6-astra-high`, or `openai/gpt-5.6-sol-high` in addition to the compact bases.
+Use this when the user needs direct selector IDs such as `openai/gpt-5.5-medium`, `openai/gpt-6-astra-high`, `openai/gpt-6-sol-high`, or `openai/gpt-5.6-sol-high` in addition to the compact bases.
 
 ## Legacy install (older OpenCode)
 
@@ -53,7 +53,7 @@ Use this when the user needs direct selector IDs such as `openai/gpt-5.5-medium`
 npx -y oc-codex-multi-auth@latest --legacy
 ```
 
-Use this on older OpenCode versions that do not support variant-based model entries. Installs 59 explicit model IDs only.
+Use this on older OpenCode versions that do not support variant-based model entries. Installs 53 explicit model IDs only.
 
 ## When OpenCode already loads a local checkout
 
@@ -104,7 +104,7 @@ opencode run "Explain this repository" --model=openai/gpt-5.6-sol --variant=medi
 4. For a Codex-focused workflow, try:
 
 ```bash
-opencode run "Refactor the retry logic and update the tests" --model=openai/gpt-5-codex --variant=high
+opencode run "Refactor the retry logic and update the tests" --model=openai/gpt-6-sol --variant=high
 ```
 
 5. After `--full`, explicit IDs are valid:

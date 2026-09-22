@@ -112,6 +112,7 @@ import {
         PLUGIN_NAME,
         PROVIDER_ID,
         ACCOUNT_LIMITS,
+        MAX_QUOTA_FALLBACK_SWITCHES,
 } from "./lib/constants.js";
 import {
 	initLogger,
@@ -2823,9 +2824,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							};
 
 							// A degraded model must not degrade again without bound, even if a
-							// custom chain is cyclic. The attempted set already prevents
-							// revisiting a model; this caps the total hops per request.
-							const MAX_QUOTA_FALLBACK_SWITCHES = 3;
+							// custom chain is cyclic. See MAX_QUOTA_FALLBACK_SWITCHES.
 							let quotaFallbackSwitches = 0;
 
 							while (true) {

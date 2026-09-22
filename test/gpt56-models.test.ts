@@ -241,21 +241,25 @@ describe("GPT-5.6 Model Support", () => {
 	describe("unsupported-model fallback", () => {
 		// 5.6 shipped as a limited preview; accounts outside it must degrade
 		// rather than hard-fail.
-		it("degrades down the 5.6 tiers and out to 5.5", () => {
+		it("degrades down the 5.6 tiers to the gpt-5.6-luna terminal", () => {
 			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN["gpt-5.6-sol"]).toEqual([
 				"gpt-5.6-terra",
-				"gpt-5.6-luna",
 				"gpt-5.5",
-				"gpt-5.2",
+				"gpt-6-luna",
+				"gpt-5.6-luna",
 			]);
 			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN["gpt-5.6-terra"]).toEqual([
+				"gpt-5.5",
+				"gpt-6-luna",
 				"gpt-5.6-luna",
-				"gpt-5.5",
-				"gpt-5.2",
 			]);
+			// The terminal goes up, leading with its catalog upgrade.
 			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN["gpt-5.6-luna"]).toEqual([
+				"gpt-6-luna",
+				"gpt-6-sol",
+				"gpt-5.6-sol",
+				"gpt-5.6-terra",
 				"gpt-5.5",
-				"gpt-5.2",
 			]);
 		});
 	});

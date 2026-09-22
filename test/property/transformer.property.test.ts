@@ -48,12 +48,12 @@ describe("normalizeModel property tests", () => {
 
   it("handles undefined gracefully", () => {
     const result = normalizeModel(undefined);
-    expect(result).toBe("gpt-5.4");
+    expect(result).toBe("gpt-6-sol");
   });
 
   it("handles empty string gracefully", () => {
     const result = normalizeModel("");
-    expect(result).toBe("gpt-5.4");
+    expect(result).toBe("gpt-6-sol");
   });
 });
 

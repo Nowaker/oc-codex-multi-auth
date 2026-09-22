@@ -14,6 +14,19 @@ const STALE_MANAGED_MODEL_KEYS = new Set([
 	"gpt-5.2",
 	"gpt-5.3-codex",
 	"gpt-5.4",
+	// Retired per OpenAI's docs and dropped from the templates: gpt-5.4-mini left
+	// Codex (ChatGPT sign-in) on 2026-08-31; gpt-5-codex and the gpt-5.1-codex
+	// family were shut down on 2026-07-23 (developers.openai.com/api/docs/deprecations).
+	"gpt-5.4-mini",
+	"gpt-5-codex",
+	"gpt-5.1-codex",
+	"gpt-5.1-codex-max",
+	"gpt-5.1-codex-mini",
+	...["none", "low", "medium", "high", "xhigh"].map((e) => `gpt-5.4-mini-${e}`),
+	...["low", "medium", "high"].map((e) => `gpt-5-codex-${e}`),
+	...["low", "medium", "high"].map((e) => `gpt-5.1-codex-${e}`),
+	...["low", "medium", "high", "xhigh"].map((e) => `gpt-5.1-codex-max-${e}`),
+	...["medium", "high"].map((e) => `gpt-5.1-codex-mini-${e}`),
 ]);
 const STANDALONE_COMMANDS = new Set(["doctor", "status", "list", "limits", "dashboard", "health", "diag", "warm"]);
 const INSTALLER_COMMANDS = new Set(["install"]);
@@ -100,9 +113,9 @@ function printHelp() {
 		"  - Clears OpenCode plugin cache\n\n" +
 		"Options:\n" +
 		"  --plugin-only      Register plugins without changing provider.openai\n" +
-		"  --modern           Force compact modern config (13 base OAuth models + --variant presets)\n" +
-		"  --full             Install compact base models plus 59 explicit selector entries\n" +
-		"  --legacy           Force explicit legacy config (59 preset model entries)\n" +
+		"  --modern           Force compact modern config (10 base OAuth models + --variant presets)\n" +
+		"  --full             Install compact base models plus 53 explicit selector entries\n" +
+		"  --legacy           Force explicit legacy config (53 preset model entries)\n" +
 		"  --dry-run          Show actions without writing\n" +
 		"  --no-cache-clear   Skip clearing OpenCode cache\n"
 	);
@@ -1959,10 +1972,10 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 	log("\nDone. Restart OpenCode to (re)install the plugin.");
 	log("Example: opencode");
 	if (!pluginOnly && configMode === "modern") {
-		log("Note: Modern config intentionally shows 13 base OAuth model entries; use the variant picker for reasoning presets.");
+		log("Note: Modern config intentionally shows 10 base OAuth model entries; use the variant picker for reasoning presets.");
 	}
 	if (!pluginOnly && configMode === "legacy") {
-		log("Note: Legacy config writes 59 explicit preset entries and is also safe for older OpenCode versions.");
+		log("Note: Legacy config writes 53 explicit preset entries and is also safe for older OpenCode versions.");
 	}
 	if (!pluginOnly && configMode === "full") {
 		log("Note: Full config installs both compact base models and explicit preset entries for direct selector IDs.");

@@ -110,3 +110,17 @@ export const ACCOUNT_LIMITS = {
 	/** Number of consecutive auth failures before auto-removing account */
 	MAX_AUTH_FAILURES_BEFORE_REMOVAL: 3,
 } as const;
+
+/**
+ * Cap on quota-exhausted model hops within one request (index.ts).
+ *
+ * The attempted set already stops a request revisiting a model; this bounds
+ * total hops even under a cyclic custom chain. It must be at least the longest
+ * DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN row (gpt-6-astra's, 6 targets), or a
+ * request whose models are blocked one after another stops before reaching the
+ * tail of its own default chain. A hop only happens onto a model some account
+ * can serve right now, so a larger cap costs nothing when nothing is usable.
+ * Kept here rather than in fetch-helpers because test/index.test.ts replaces
+ * that module with a factory mock, which would read a new export as undefined.
+ */
+export const MAX_QUOTA_FALLBACK_SWITCHES = 6;
