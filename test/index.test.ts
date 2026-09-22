@@ -5389,6 +5389,37 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect(mockStorage.accounts[0]?.quotaExhaustedUntil).toBe(resetAt);
 		});
 
+		// Each hop lands on a model that looks usable, then 429s. gpt-5.5's default
+		// row needs four hops to reach gpt-6-luna; a cap of 3 stopped short.
+		it("follows the default chain past three quota hops to reach an entitled tier", async () => {
+			await makeManager([
+				{ ...accountRecord(), rateLimitResetTimes: { "gpt-5.4:gpt-5.5": Date.now() + 600_000 } },
+			]);
+			const config = await import("../lib/config.js");
+			vi.spyOn(config, "getRotationStrategy").mockReturnValue("sticky");
+			const blocked = new Set(["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"]);
+			vi.mocked(globalThis.fetch).mockImplementation(async (_input, init) =>
+				blocked.has(JSON.parse(String(init?.body)).model as string)
+					? new Response(
+						JSON.stringify({ error: { code: "rate_limit_exceeded", retry_after_ms: 600_000 } }),
+						{ status: 429 },
+					)
+					: new Response(JSON.stringify({ content: "ok" })),
+			);
+			const { sdk } = await setupPlugin();
+			const pending = send(sdk, "gpt-5.5");
+			// Drive short-retry backoff sleeps; far below the 600s blocks.
+			for (let step = 0; step < 60; step++) await vi.advanceTimersByTimeAsync(1_000);
+			const response = await pending;
+			const models = vi.mocked(globalThis.fetch).mock.calls.map(
+				([, init]) => JSON.parse(String(init?.body)).model as string,
+			);
+			expect(response.status).toBe(200);
+			// Short 429 retries may repeat a model; the order of distinct hops is what matters.
+			expect([...new Set(models)]).toEqual(["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna"]);
+			expect(models.at(-1)).toBe("gpt-6-luna");
+		});
+
 		it.each(["token-bucket", "cooldown"])("does not downgrade for %s-only blocking", async (block) => {
 			const manager = await makeManager([accountRecord()]);
 			const account = manager.getCurrentAccount();
