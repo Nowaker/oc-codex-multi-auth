@@ -12,18 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Action needed:** retired models are gone from the templates: `gpt-5.4-mini`, `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, `gpt-5.1-codex-mini`. Reinstall to clean them out of your config. (#264)
-- Getting ready for GPT-5.5's retirement on 2026-10-14: `gpt-5` now points to `gpt-6-sol`, and warm pings and fallbacks no longer rely on `gpt-5.5`. (#264)
-- Fallback chains now follow one order, so a blocked request can always reach every available model. (#264)
+- Getting ready for GPT-5.5's retirement on 2026-10-14: `gpt-5` now points to `gpt-6-sol`, and warm pings and fallbacks no longer rely on `gpt-5.5`, which stays selectable until then. (#264)
+- Fallback chains now follow one order, so a blocked request can reach every live general model. (#264)
 
 ### Fixed
 - Newer models were getting the old GPT-5.2 system prompt. They now get their own. (#264)
-- Quota fallback gave up after 3 model switches. It now tries up to 6. (#264)
-- `gpt-5` with `none` effort no longer errors on GPT-6 Sol. (#264)
+- Quota fallback gave up after 3 model switches. It now tries up to 6, and only switches onto a model some account can serve right now. (#264)
+- `gpt-5` with `none` effort no longer errors on GPT-6 Sol; the effort floors to `low` instead. (#264)
 
 ## [6.22.0] - 2026-09-22
 
 ### Added
-- The credential store is now snapshotted before every significant write, landing in `backups/codex-credential-snapshot-*.json`. Configurable retention via `credentialSnapshotsMaxCount` (default 10), disable with `credentialSnapshots: false`. (#262, thanks @Nowaker)
+- The credential store is now snapshotted before every significant write, landing in `backups/codex-credential-snapshot-*.json` (mode `0600` on POSIX only). Best-effort: a failed snapshot only warns and the write still goes through. Configurable retention via `credentialSnapshotsMaxCount` (default 10), disable with `credentialSnapshots: false`. (#262, thanks @Nowaker)
 - The plugin now tracks which build of itself OpenCode loaded (installed package vs. working checkout). Update checks are skipped for checkout builds, and `codex-status`/`codex-doctor` report the running build. (#260, thanks @Nowaker)
 - The status line can now show the whole account pool at once with `quotaStatus.mode: "overview"`, plus a new `"resets"` mode for banked reset credits and `quotaDisplay: "used"` for percent-consumed. (#261, thanks @Nowaker)
 
@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The test suite could write to a developer's real `~/.opencode` account store; it now runs in an isolated temp HOME with a storage guard against real-home writes. (#258, thanks @Nowaker)
 - A short configured wait (like a 5-second `retryAfter`) no longer aborts a request hours early; the retry budget now charges in proportion to the actual wait. (#258, thanks @Nowaker)
 - A failed account-file reload no longer empties a working pool; an empty read against a non-empty incumbent is now retried instead of replacing it. (#258, thanks @Nowaker)
-- The installer no longer replaces a registered local checkout (`file:///path/to/oc-codex-multi-auth`) with the published package name on reinstall. (#259, thanks @Nowaker)
+- The installer no longer replaces a registered local checkout (`file:///path/to/oc-codex-multi-auth`) with the published package name on reinstall; a registered path that no longer exists is kept but flagged with a warning. (#259, thanks @Nowaker)
 - Cache eviction could escape the OpenCode cache via a symlinked cache root; it now refuses to evict when the cache root resolves through a symlink. (#259)
 - ChatGPT Business seats sharing one workspace account id now render distinguishably instead of looking like duplicates. (#263, thanks @Nowaker)
 - The pool quota line no longer misreports as "fully spent" when one account's fetch fails; that account now keeps its last known reading marked stale. (#261)
@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An SSE event split across multiple `data:` lines is now parsed correctly per spec instead of failing as a truncated stream.
 - The 10MB SSE cap is now counted in bytes instead of UTF-16 code units, so multibyte streams can no longer overshoot it up to 4x.
 - A hostile reset-credits response (`null` body or non-array `credits`) no longer crashes the `codex-reset` tool.
-- A corrupt or huge persisted timestamp (like `1e308`) no longer strands an account forever; stamps beyond the 30-day horizon are dropped.
+- A corrupt or huge persisted timestamp (like `1e308`) no longer strands an account forever; stamps beyond the 30-day horizon are dropped, and a genuine block re-stamps on the next 429.
 - The V1-to-V3 migration no longer drops a legacy rate-limit stamp, which used to un-block a migrated account early.
 - A negative `x-codex-active-limit` header no longer shows a negative count, and email masking no longer breaks astral characters (like emoji) into garbled output.
 
@@ -64,16 +64,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.20.0] - 2026-09-14
 
 ### Added
-- Requests now fall back to a cheaper model when every account is quota-blocked upstream, instead of waiting or failing with 429. Configurable via `unsupportedCodexFallbackChain`, opt out per family with `CODEX_AUTH_DISABLE_*_AUTO_FALLBACK=1`. (#255, thanks @WarGloom)
+- Requests now fall back to a cheaper model when every account is quota-blocked upstream, instead of waiting or failing with 429, but local cooldowns never trigger it and strict pools still refuse it. Configurable via `unsupportedCodexFallbackChain`, opt out per family with `CODEX_AUTH_DISABLE_*_AUTO_FALLBACK=1`. (#255, thanks @WarGloom)
 - Spent subscription quota (5-hour or weekly) is now tracked separately from rate limits, with its own reset countdown in rotation, the status line, `codex-list`, `codex-status`, and `codex-limits`. (#255, thanks @WarGloom)
-- `oc-codex-multi-auth doctor --fix` now repairs accounts outside OpenCode: refreshes tokens, clears stale blocks, and persists rotated credentials, including keychain-backed pools. Use `--config-path` to target one JSON pool. (#255, thanks @WarGloom)
+- `oc-codex-multi-auth doctor --fix` now repairs accounts outside OpenCode: refreshes tokens, clears stale blocks, and persists rotated credentials, including keychain-backed pools. Use `--config-path` to target one JSON pool (this bypasses keychain routing). (#255, thanks @WarGloom)
 
 ### Fixed
 - Corrupt or wrongly-shaped storage files no longer report success from the standalone CLI; all commands now validate and exit nonzero with the real error. (#255)
 - Non-finite numbers (e.g. from `1e400`) in a hand-edited accounts file no longer poison rotation; they're sanitized on load and save.
 - An all-blocked pool now waits out the longest active block instead of the shortest, fixing a wake-to-still-blocked cycle.
-- A doctor-cleared quota stamp now stays cleared across processes instead of getting rewritten by another running instance.
-- `codex-health` no longer calls a real week-long quota block "stale state"; it now reports quota exhaustion under its own finding.
+- A doctor-cleared quota stamp now stays cleared across processes instead of getting rewritten by another running instance, unless a fresh 429 or usage poll re-stamps it.
+- `codex-health` no longer calls a real week-long quota block "stale state"; it now reports quota exhaustion under its own finding, which comes back after `--fix` clears it.
 - Spent subscription quota is now recorded once per account instead of once per model family, and the status line no longer badges every account as rate-limited. (#255, thanks @WarGloom)
 
 ### Internal
@@ -84,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - The compact status line now shows which day a quota resets, e.g. `Tue 02:25` or `Sep 15 02:25`, instead of just a bare time. (#251, thanks @dhaern)
-- Masked accounts in the status line are now distinguishable, e.g. `[us***@example.com]` instead of a flat `[*****]` for every account. (#252, thanks @dhaern)
+- Masked accounts in the status line are now distinguishable, e.g. `[us***@example.com]` instead of a flat `[*****]` for every account. A value it can't safely mask still shows `[*****]`, and a name or second address beside the email is dropped. (#252, thanks @dhaern)
 - `codex-limits` now reports banked rate-limit resets an account can redeem, e.g. `Resets: 2 banked (1 applicable now)`. (#254, thanks @Nowaker)
 
 ### Fixed
@@ -100,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.18.0] - 2026-09-04
 
 ### Added
-- Paid Credits are now protected when your subscription quota is spent: rotation skips an account before it can burn Credits. On by default, opt out with `autoProtectCredits: false` or `CODEX_AUTH_AUTO_PROTECT_CREDITS=0`. (#245, thanks @PENEKhun)
+- Paid Credits are now protected when your subscription quota is spent: accounts are polled every 30 minutes and rotation skips an exhausted one before it can burn Credits, but usage-endpoint errors fail open, so run `codex-limits` for immediate protection. On by default, opt out with `autoProtectCredits: false` or `CODEX_AUTH_AUTO_PROTECT_CREDITS=0`. (#245, thanks @PENEKhun)
 
 ### Fixed
 - A model id like `constructor` or `__proto__` no longer crashes the request path. (#250)
@@ -118,10 +118,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - GPT-6 Astra (`gpt-6-astra`) is now supported, with efforts `low` through `ultra`, and ships in the config templates. It's opt-in, neither `gpt-5` nor the plugin default resolves to it. Accounts outside the rollout auto-fall back through `gpt-6-astra → gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-5.5 → gpt-5.2`, or disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`. (#246)
 - Routing added for the Daybreak-gated cyber models: `gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, and `gpt-5.6-cyber`. They need Daybreak program approval and aren't in the config templates, so add the id by hand if you have access. None of them fall back to a general model, by design. (#246)
-- Astra defaults to the responses-lite request shape, override with `CODEX_AUTH_ASTRA_RESPONSES_LITE=0` (classic) or `=1` (force lite). (#246)
+- Astra defaults to the responses-lite request shape, override with `CODEX_AUTH_ASTRA_RESPONSES_LITE=0` (classic) or `=1` (force lite). That default is inferred, since the Codex catalog has no `gpt-6-astra` entry yet. (#246)
 
 ### Fixed
-- Default fallback chains no longer degrade onto retired models `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.4-nano` (withdrawn 2026-08-31). Chains now route through `gpt-5.6-terra`, `gpt-5.6-luna`, then `gpt-5.2` instead. (#246)
+- Default fallback chains no longer degrade onto retired models `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.4-nano` (withdrawn 2026-08-31). Chains now route through `gpt-5.6-terra`, `gpt-5.6-luna`, then `gpt-5.2` instead, and selecting `gpt-5.4-mini` costs one round trip before it upgrades to `gpt-5.6-luna`. (#246)
 - A capitalized reasoning effort like `"ULTRA"` or `"NONE"` used to bypass clamping and reach the backend as-is. Efforts are now case-folded before clamping, affecting every model family. (#247)
 - An unrecognized reasoning effort used to be sent as-is, causing a backend `400`. It now falls back to that model family's default effort and logs a warning. (#247)
 
@@ -173,7 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - The manual OAuth paste flow (`Codex OAuth (Manual URL Paste)`) could mangle or drop the authorization code: spaces, backslashes, and `..` segments in the code were corrupted by `new URL()` normalization, and some valid inputs (like a bare `code:state` colon, or a `state=` value, or a `#value` fragment) lost the code entirely. Parsing no longer relies on `new URL()` for these cases. A callback pasted without its scheme (e.g. `127.0.0.1:1455/auth/callback?code=...`) is now parsed correctly too. (#238)
 - An unexpected `URL` parsing error could crash the login prompt instead of falling back to treating the input as a raw code. (#238)
-- A bare authorization code and a callback missing its state now get different, clearer error messages. (#238)
+- A bare authorization code and a callback missing its state now get different, clearer error messages; the state is still required. (#238)
 
 ### Internal
 - Simplified the parser's result type from four variants to two and removed the now-unused `ParsedAuthInput` interface. (#238)
@@ -209,10 +209,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.14.0] - 2026-08-21
 
 ### Added
-- `OPENAI_BASE_URL` is now honored for ChatGPT OAuth requests, but only when `CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1` is set. Remote gateways require HTTPS, only literal loopback addresses can use plain HTTP, and a rejected value fails loudly instead of silently falling back. (#232)
+- `OPENAI_BASE_URL` is now honored for ChatGPT OAuth requests, but only when `CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1` is set. Remote gateways require HTTPS, only literal loopback addresses (never `localhost`) can use plain HTTP, URLs with credentials, a query string or a fragment are rejected, redirects are not followed, and a rejected value fails loudly instead of silently falling back. (#232)
 
 ### Fixed
-- Two OpenCode processes sharing one account file could burn each other's refresh tokens, killing the account until you logged in again. Refreshes are now serialized across processes on the same host. (#233)
+- Two OpenCode processes sharing one account file could burn each other's refresh tokens, killing the account until you logged in again. Refreshes are now serialized across processes on the same host and local filesystem; a shared network filesystem still needs outside coordination, and a process killed after the provider accepts a token but before the replacement is saved still needs a re-login. (#233)
 - Storage writes like `codex-note`, `codex-tag`, and account enable/disable no longer wait behind a refresh network call; the storage lock budget was also widened from about half a second to about five. (#233)
 - A consumed refresh token could get written back over a newer one in four places (health merge, startup email hydration, refresh-target resolution, flagged-account cleanup), each costing a re-login. All four are fixed. (#233)
 - `flagged-accounts.json` no longer stores a live OAuth access token. (#233)
@@ -230,7 +230,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Action needed:** logging in as a second member of a Business workspace overwrote the first member's account instead of adding a new one, billing one seat for the whole workspace and losing the other member's refresh token. Each seat now gets its own slot. Duplicate records from this bug are not auto-merged; remove the affected account slots and log in again for each member. Reported by @proamo, fixed by @lubshad. (#230, #231)
-- `codex-pool` entries scoped to one Business seat silently routed to every member of the workspace. Pool entries now use seat-scoped keys and migrate automatically on the next `codex-pool add`/`remove` (except while project-scoped account storage is active). (#231)
+- `codex-pool` entries scoped to one Business seat silently routed to every member of the workspace. Pool entries now use seat-scoped keys; existing workspace-wide entries are not rewritten on upgrade and keep matching every seat until the next `codex-pool add`/`remove` migrates them (skipped while project-scoped account storage is active). (#231)
 - A per-account circuit breaker could be inherited by the wrong account after `removeAccount` reshuffled slots. It's now keyed by stable workspace identity instead of position. (#231)
 - Three security advisories (two `hono` ReDoS advisories, one transitive) were pulled in through an unused `@openauthjs/openauth` dependency used for a single PKCE helper. That helper was reimplemented locally and the dependency removed; `npm run audit:ci` now reports 0. (#229)
 
@@ -241,7 +241,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.12.1] - 2026-08-12
 
 ### Fixed
-- A pool change that had already saved to disk could be reported as a fatal lock error, most often on Windows where an antivirus scanner or the search indexer holds the lock directory open. Release failures are now just a warning, since the config was already saved. Reported by @AceRothstein71. (#224, #225)
+- A pool change that had already saved to disk could be reported as a fatal lock error, most often on Windows where an antivirus scanner or the search indexer holds the lock directory open. Release failures are now just a warning, since the config was already saved; a leftover lock directory is reclaimed as stale within ten seconds. Reported by @AceRothstein71. (#224, #225)
 - A lock going stale mid-change could crash the whole plugin process instead of failing just that one call. (#224, #225)
 - Windows lock contention (`EPERM`/`EBUSY`) wasn't recognized as contention, so the retry guidance for it never kicked in there. (#224, #228)
 - Parallel `codex-pool` calls each waited out the full retry budget one after another. Now, once one call finds the lock held externally, the rest give up quickly instead of repeating the same wait. (#224, #228)
@@ -268,17 +268,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An account with no weekly quota left kept getting retried on every prompt, failing and rotating away each time instead of being remembered as spent. The plugin now reads the quota headers the backend already sends on every response, not just when a request fails. Windows the plan has switched off no longer block an account that still has quota. Reported by @Grelo4ka. (#218, #219)
 - A short rate limit could overwrite a week-long quota block with a much shorter one from a separate in-flight request. Quota blocks are now monotonic: whichever one runs longer wins. (#219)
 - An ordinary throttle only understood one of three reset-time formats and fell back to a 60-second default, retrying before the real reset. It now reads all three formats. (#219)
-- A second opencode process sharing the same account file could erase a weekly quota block on save. Saves now merge blocks across processes and keep the longer one instead of last-writer-wins. (#219)
+- A second opencode process sharing the same account file could erase a weekly quota block on save. Saves now merge blocks across processes and keep the longer one instead of last-writer-wins; `codex-doctor --fix` still clears blocks. (#219)
 
 ### Internal
 - Regression tests for all four fixes above are pinned against the pre-fix build, so each one is proven to fail without its fix.
-- A known limitation of the cross-process quota merge is tracked rather than fixed: a record with no stable account id can't be matched across processes. (#221)
+- A known limitation of the cross-process quota merge is tracked rather than fixed: a record with no stable account id can't be matched across processes, so its on-disk block is dropped. The same miss can also let a save overwrite a newly rotated single-use refresh token, a pre-existing issue tracked separately. (#221)
 - `ci.yml` now supports `workflow_dispatch`, so the full CI gate can be run on demand from the Actions tab. (#220)
 
 ## [6.11.3] - 2026-08-02
 
 ### Fixed
-- A successful `opencode auth login` could add an account that was already disabled, annotated with a re-auth note listing all four required OAuth scopes as missing, which is what happens when scope metadata is absent rather than actually denied. Enforcement now only fires when the granted scope is genuinely known. Accounts wrongly disabled by 6.11.2 are automatically re-enabled and their note cleared on next load; accounts you disabled by hand stay disabled. Reported by @Grelo4ka. (#213, #214)
+- A successful `opencode auth login` could add an account that was already disabled, annotated with a re-auth note listing all four required OAuth scopes as missing, which is what happens when scope metadata is absent rather than actually denied. Enforcement now only fires when the granted scope is genuinely known; an explicit partial grant still disables the account. Accounts wrongly disabled by 6.11.2 are automatically re-enabled and their note cleared on next load; accounts you disabled by hand stay disabled. Reported by @Grelo4ka. (#213, #214)
 - A record could show two contradictory re-auth notes at once, with the stale one listed first. Notes are now replaced instead of appended. (#215)
 - One transient storage read failure disabled the plugin until OpenCode was restarted, because a rejected account-load promise stayed cached forever. It's now cleared on failure, so the next request gets a fresh attempt. (#216)
 
@@ -337,7 +337,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.9.1] - 2026-07-18
 
 ### Fixed
-- `gpt-5.6-sol` was still rejected through the plugin after the 6.8.2 fix. The GPT-5.6 tiers now present the host (opencode) identity by default instead of the Codex CLI identity, since some accounts fail sol entitlement checks under the Codex CLI identity. `CODEX_AUTH_CLIENT_IDENTITY=codex|opencode` (alias `host`) forces one identity for all models. Reported by @Grelo4ka. (#196, #201)
+- `gpt-5.6-sol` was still rejected through the plugin after the 6.8.2 fix. The GPT-5.6 tiers now present the host (opencode) identity by default instead of the Codex CLI identity, since some accounts fail sol entitlement checks under the Codex CLI identity. `CODEX_AUTH_CLIENT_IDENTITY=codex|opencode` (alias `host`) forces one identity for all models. (#196, #201)
 - The advertised opencode version now self-syncs with the real host build instead of a baked-in constant; `CODEX_AUTH_HOST_VERSION` overrides it. (#201)
 - `CODEX_AUTH_CLIENT_VERSION` and `CODEX_AUTH_HOST_VERSION` values are now sanitized, so a badly quoted env value can no longer corrupt the `User-Agent`. (#201)
 
@@ -345,13 +345,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - New `modelAccountPools` config field pins a model to a preferred set of accounts (e.g. keep `gpt-5.6-sol` on just the accounts inside the Sol preview) instead of burning rotation attempts on accounts that will reject it. Falls back to the general pool if every preferred account is unavailable. Contributed by @lubshad. (#200)
-- New `codex-pool` tool manages those mappings (`status`, `set`, `add`, `remove`, `clear`, plus `dryRun=true` previews) using ordinary 1-based account numbers. Requires an OpenCode restart to take effect. Contributed by @lubshad. (#200)
+- New `codex-pool` tool manages those mappings (`status`, `set`, `add`, `remove`, `clear`, plus `dryRun=true` previews) using ordinary 1-based account numbers. Requires an OpenCode restart to take effect, and references that don't resolve in the current project are reported but never automatically pruned. Contributed by @lubshad. (#200)
 - `codex-status`, `codex-dashboard`, and `codex-metrics` now report `accountPoolMode` (`general`/`preferred`/`general-fallback`) and `configuredAccountPoolSize`. Contributed by @lubshad. (#200)
 
 ## [6.8.2] - 2026-07-16
 
 ### Fixed
-- `gpt-5.6-sol` was rejected through the plugin while working fine in the Codex CLI/TUI for the same account. Requests now carry a Codex CLI `User-Agent` (`codex_cli_rs/<version> (<os>; <arch>)`), opt out with `CODEX_AUTH_DISABLE_CODEX_USER_AGENT=1` and override the version with `CODEX_AUTH_CLIENT_VERSION`. The plugin also no longer pins the `openai-organization` header by default, since it isn't sent by upstream Codex and could shift entitlement checks to the wrong workspace; restore it with `CODEX_AUTH_SEND_ORGANIZATION_HEADER=1`. Follow-up to the 6.8.1 fix. (#196)
+- `gpt-5.6-sol` was rejected through the plugin while working fine in the Codex CLI/TUI for the same account. Requests now carry a Codex CLI `User-Agent` (`codex_cli_rs/<version> (<os>; <arch>)`), opt out with `CODEX_AUTH_DISABLE_CODEX_USER_AGENT=1` and override the version with `CODEX_AUTH_CLIENT_VERSION`. The plugin also no longer pins the `openai-organization` header by default, since it isn't sent by upstream Codex and could shift entitlement checks to the wrong workspace; restore it with `CODEX_AUTH_SEND_ORGANIZATION_HEADER=1`. Follow-up to the 6.8.1 fix, still needs verification by an affected preview account. (#196)
 
 ## [6.8.1] - 2026-07-15
 
@@ -384,12 +384,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.7.0] - 2026-07-10
 
 ### Added
-- GPT-5.6 support: `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, plus bare `gpt-5.6` as an alias for Sol. Effort follows the Codex catalog: Sol/Terra go up to `max`/`ultra`, Luna stops at `max`, and `none`/`minimal` floor to `low`. (#189)
+- GPT-5.6 support: `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, plus bare `gpt-5.6` as an alias for Sol. Effort follows the Codex catalog: Sol/Terra go up to `max`/`ultra` (`ultra` is sent as `max`), Luna stops at `max`, `none`/`minimal` floor to `low`, and `max`/`ultra` on pre-5.6 models step down to `xhigh`, then `high`. (#189)
 - GPT-5.6 is opt-in: the `gpt-5` alias still resolves to `gpt-5.5`/`gpt-5.4`. Without access, requests fall back `gpt-5.6-sol` -> `gpt-5.6-terra` -> `gpt-5.6-luna` -> `gpt-5.5` instead of failing. (#189)
 
 ### Fixed
 - GPT-5.6 models now use Codex's responses-lite request shape, so they get their tools instead of losing them in a field they don't read. (#189)
-- **Breaking:** system instructions now come from the Codex model catalog instead of the old `gpt_5_2_prompt.md` file, changing the system prompt for existing `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.5` users. (#190)
+- **Breaking:** system instructions now come from the Codex model catalog instead of the old `gpt_5_2_prompt.md` file, changing the system prompt for existing `gpt-5.2`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.5` users. Models the catalog doesn't cover keep their old prompt file. (#190)
 - Catalog instructions now cache per model id instead of per family, so `gpt-5.5` and `gpt-5.4` no longer serve each other's prompt. (#190)
 - `models.json` is now fetched once and shared, instead of once per catalog model. (#190)
 - `minimal` reasoning effort now floors to `low` for GPT-5.6, matching the existing `none` rule. (#189)
@@ -407,7 +407,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.5.0] - 2026-06-30
 
 ### Added
-- New `oc-codex-multi-auth warm` CLI command warms up every enabled account's quota window directly, with no token cost. Supports `--json` and exits non-zero if any account fails. (#182)
+- New `oc-codex-multi-auth warm` CLI command warms up every enabled account's quota window directly, with no token cost, skipping disabled accounts. Supports `--json` and exits non-zero if any account fails. (#182)
 
 ## [6.4.1] - 2026-06-30
 
@@ -419,15 +419,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `rotationStrategy` config (env `CODEX_AUTH_ROTATION_STRATEGY`) picks the account load-balancing algorithm: `hybrid` (default), `sticky` (drain one account first, then move to the next), or `round-robin`. (#183)
-- New `codex-warm` tool primes every enabled account's quota window with one minimal request at session start. (#182)
+- New `codex-warm` tool primes every enabled account's quota window with one minimal billable request at session start. Disabled accounts are skipped. (#182)
 
 ### Fixed
 - Local token-bucket depletion now gets a short auto-expiring rate-limit window, so account selection actually rotates off it instead of returning a spurious 503. (#183)
 - `codex-doctor --fix` now clears stale rate-limit/cooldown state on accounts whose token refresh succeeds, so a dark account pool can recover without hand-editing JSON. (fixes #171)
 - `codex-doctor --fix` reports `N account(s) need re-login` instead of silently failing when a credential is genuinely dead. (#171)
-- `codex-doctor` now flags a disabled duplicate account (from a re-login) that shadows an enabled account sharing the same email, since email-only merges must not collapse distinct multi-org accounts (#64). (#171)
+- `codex-doctor` now flags a disabled duplicate account (from a re-login) that shadows an enabled account sharing the same email. It gets a `codex-remove` hint rather than being auto-removed, since email-only merges must not collapse distinct multi-org accounts (#64). (#171)
 - `codex-health` now surfaces the same recovery diagnostics as `codex-doctor` (stale cooldowns, disabled duplicates), read-only. (#171)
-- Storage dedup by email is now case-insensitive and no longer disables the canonical account when merging a disabled duplicate. (#171)
+- Storage dedup by email is now case-insensitive and no longer disables the canonical account when merging a disabled duplicate; genuinely user-disabled accounts still fail closed. (#171)
 - `codex-doctor`/`codex-health` now flag a disabled account that holds a fresh login credential, so you know to re-enable it if intended. (#171)
 - Cancelling during a retry/backoff wait now surfaces a proper `AbortError` with the real reason instead of a generic error. (#176)
 
@@ -443,7 +443,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.3.3] - 2026-06-17
 
 ### Fixed
-- A stored account whose token is invalidated server-side (HTTP 401) is now treated as an account-health failure: the token refunds, the refresh-token group cools down, and the request rotates to the next healthy account. (#172, fixes #171)
+- A stored account whose token is invalidated server-side (HTTP 401) is now treated as an account-health failure: the token refunds, the refresh-token group cools down (or is removed past `MAX_AUTH_FAILURES_BEFORE_REMOVAL`), and the request rotates to the next healthy account. (#172, fixes #171)
 - `codex-health`/`codex-doctor` now flag `token-invalid` on an invalidated-token error, so `codex-doctor --fix` can repair routing without manual `activeIndex` edits. (#172)
 
 ## [6.3.2] - 2026-06-10
@@ -570,7 +570,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Beginner commands: `codex-help`, `codex-setup` (with a wizard), `codex-doctor fix`, and `codex-next` for guided setup and recovery.
 - `codex-tag` and `codex-note` for tagging and annotating accounts, plus tag filtering in `codex-list`.
-- `codex-switch`, `codex-label`, and `codex-remove` now support interactive picking when you don't give an index.
+- `codex-switch`, `codex-label`, and `codex-remove` now support interactive picking in compatible terminals when you don't give an index.
 - `codex-export` can auto-timestamp backups; `codex-import` adds a `dryRun` preview and backs up automatically before applying.
 - New `beginnerSafeMode` config key (and `CODEX_AUTH_BEGINNER_SAFE_MODE` env var) for more conservative retry behavior.
 - A one-time startup health summary now tells you what to do next.
@@ -600,7 +600,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Import preview and apply now share one analysis path, so deduplication and counts stay consistent.
-- Deactivated workspaces are now removed as a group instead of dropping healthy sibling accounts that share the same refresh token; rotation restarts cleanly on a healthy account.
+- Deactivated workspaces: refresh-token variants are removed together, rotation restarts on a healthy account, and a zero-removal case cools the account down instead.
 
 ## [5.4.3] - 2026-03-06
 
@@ -666,7 +666,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [5.2.0] - 2026-02-13
 
 ### Added
-- Support for `gpt-5.3-codex-spark` and its reasoning variants.
+- Support for `gpt-5.3-codex-spark` and its reasoning variants. Spark is entitlement-gated, and adding it to your config template is an optional manual step.
 - Configurable fallback chains for unsupported models via `fallbackOnUnsupportedCodexModel` and `unsupportedCodexFallbackChain`.
 
 ### Changed
@@ -733,7 +733,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `gpt-5.3-codex` now defaults to `xhigh` reasoning effort; `none`/`minimal` are normalized to a supported level.
 - Prompt caching now recognizes `gpt-5.3-codex` (cache file `gpt-5.3-codex-instructions.md`).
-- Upstream requests now reuse `CODEX_THREAD_ID` for correlation when available.
+- Config templates and model docs now list `gpt-5.3-codex` instead of `gpt-5.2-codex`.
+
+## [4.13.0] - 2026-02-04
+
+### Added
+- New `codex-metrics` tool shows live request, error, and latency counters for the running plugin.
+- 401 errors now include `diagnostics` (`requestId`, `cfRay`, `correlationId`, `threadId`) to speed up debugging.
+- New `fetchTimeoutMs` and `streamStallTimeoutMs` options (with env overrides) to tune upstream timeouts.
+
+### Changed
+- Each upstream request now gets a correlation id and reuses `CODEX_THREAD_ID` / `prompt_cache_key` when available.
+- `request_user_input` is removed from the tool list in Default mode and kept in Plan mode.
+- Bridge prompts now block destructive git commands unless you ask for them.
+- `gpt-5.2-codex` now defaults to `xhigh` effort when no effort or variant is set.
+
+### Fixed
+- Non-streaming SSE responses no longer hang on a stalled read.
 
 ## [4.12.5] - 2026-02-04
 
@@ -741,7 +757,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project-scoped account files now live under `~/.opencode/projects/<project-key>/openai-codex-accounts.json` instead of inside `<project>/.opencode/`.
 
 ### Added
-- Legacy `<project>/.opencode/openai-codex-accounts.json` data now migrates automatically to the new location on first load.
+- Legacy `<project>/.opencode/openai-codex-accounts.json` data now migrates automatically to the new location on first load, but only when the new project-scoped path is empty.
 
 ## [4.12.4] - 2026-02-03
 
@@ -934,12 +950,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Account labels now show as `N. email` instead of `Account N (email)`.
 
+### Internal
+- Published under the legacy `opencode-openai-codex-auth-multi` package name, not `oc-chatgpt-multi-auth`.
+
 ## [4.6.0] - 2026-01-25
 
 ### Added
 - Context overflow handler: "prompt too long" / context length exceeded errors now return a helpful synthetic response instead of a raw 400, suggesting `/compact`, `/clear`, or `/undo` to reduce context size, so a session doesn't get locked.
 - Missing tool result injection: cancelled tool calls (esc mid-execution) now get a synthetic `"Operation cancelled by user"` output injected, preventing "missing tool_result" API errors.
 - 34 new unit tests for context overflow and tool injection.
+
+### Internal
+- Published under the legacy `opencode-openai-codex-auth-multi` package name, not `oc-chatgpt-multi-auth`.
 
 ## [4.5.0] - 2026-01-24
 
@@ -953,7 +975,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hybrid selection now prefers healthy accounts with available tokens.
 
 ### Internal
-- Not published on npm this release (tag/release only).
+- Published under the legacy `opencode-openai-codex-auth-multi` package name, not `oc-chatgpt-multi-auth`.
 
 ## Legacy 4.4.0 (Package-Only) - 2026-01-23
 
@@ -963,7 +985,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Always retries when all accounts are rate-limited (waits for reset).
 
 ### Notes
-New retry options: `retryAllAccountsRateLimited` (default `true`), `retryAllAccountsMaxWaitMs` (default `0` = unlimited), `retryAllAccountsMaxRetries` (default `Infinity`).
+- New retry options: `retryAllAccountsRateLimited` (default `true`), `retryAllAccountsMaxWaitMs` (default `0` = unlimited), `retryAllAccountsMaxRetries` (default `Infinity`).
+- Not published on npm (tag/release only).
 
 ## [4.3.1] - 2026-01-23
 
@@ -977,3 +1000,4 @@ New retry options: `retryAllAccountsRateLimited` (default `true`), `retryAllAcco
 ### Internal
 - Dependency bumps: `@opencode-ai` plugin/sdk `1.1.34`, `hono` `4.11.5`, `vitest` `4.0.18`, `@types/node` `25.0.10`, `@typescript-eslint` `8.53.1`.
 - Thanks @andremxmx for reporting the multi-account ID issue. (#4)
+- Published under the legacy `opencode-openai-codex-auth-multi` package name, not `oc-chatgpt-multi-auth`.
