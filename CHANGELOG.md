@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file. Dates are I
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.23.0] - 2026-09-23
+
+### Added
+- **GPT-6 Sol and GPT-6 Luna.** `gpt-6-sol` (low through ultra) and `gpt-6-luna` (low through max) joined the Codex model catalog on 2026-09-22 and now route, clamp effort, and use the responses-lite request shape like Astra. Both ship in the config templates, and both are covered by `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK`. Bare `gpt-6` still selects Astra. (#264)
+
+### Changed
+- **Retired models are no longer shipped.** `gpt-5.4-mini` (retired from Codex on 2026-08-31) and `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, `gpt-5.1-codex-mini` (shut down 2026-07-23) are gone from both templates, which now carry 10 base models / 53 variants, and reinstalling prunes them from an existing config. A hand-typed id still routes and is rescued by the fallback chain. (#264)
+- **Nothing depends on GPT-5.5 any more.** OpenAI retires GPT-5.5 from Codex with ChatGPT sign-in on 2026-10-14. The `gpt-5` alias and any unrecognized `gpt-5*` name now resolve to `gpt-6-sol`, the `warm` ping starts at `gpt-6-luna`, and the fallback chains end at `gpt-5.6-luna`. `gpt-5.5` itself stays selectable until the retirement date. A missing model id now defaults to `gpt-6-sol` instead of retired `gpt-5.4`, and `gpt-5-mini` maps to `gpt-6-luna` instead of `gpt-5.4-mini`. (#264)
+- **Fallback chains follow one order.** `gpt-6-astra > gpt-6-sol > gpt-5.6-sol > gpt-5.6-terra > gpt-5.5 > gpt-6-luna > gpt-5.6-luna`, with each row the tail of that order after its own model. The resolver reads the chain of the model it is currently on, so rows that disagreed could strand a request partway down; every entry point now reaches every live general model. `gpt-5.2`, which left the catalog on 2026-09-09, is no longer the terminal of every chain. (#264)
+
+### Fixed
+- **Catalog models were getting the legacy GPT-5.2 prompt.** openai/codex moved each model's instructions from `base_instructions` to `model_messages.instructions_template` on 2026-09-07, so every catalog model (5.5, the 5.6 tiers, Astra, Daybreak) silently fell back to `gpt_5_2_prompt.md`. The loader now renders the template the way Codex does. (#264)
+- **Quota fallback could stop before the end of its chain.** A request whose models turned out quota-blocked one after another was capped at 3 model hops, fewer than the default chains need, so it waited instead of reaching a tier with headroom. The cap is now 6, and a hop still happens only onto a model some account can serve right now. (#264)
+- **The `gpt-5` alias no longer sends an effort GPT-6 Sol rejects.** `gpt-5` and `gpt-5-<effort>` now resolve to `gpt-6-sol`, which rejects `none`. Effort support is now decided by the model an id resolves to rather than by how it is spelled, so a configured `none` (or fast-session mode) floors to `low` instead of returning a 400. (#264)
+
 ## [6.22.0] - 2026-09-22
 
 ### Added
