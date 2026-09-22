@@ -307,12 +307,15 @@ export function extractCatalogInstructions(
 	rawCatalog: string,
 	slug: string,
 ): string | null {
-	let parsed: { models?: CatalogModelEntry[] };
+	let parsed: { models?: CatalogModelEntry[] } | null;
 	try {
-		parsed = JSON.parse(rawCatalog) as { models?: CatalogModelEntry[] };
+		parsed = JSON.parse(rawCatalog) as { models?: CatalogModelEntry[] } | null;
 	} catch {
 		return null;
 	}
+	// Valid JSON is not necessarily an object: "null" parses, and reading
+	// `.models` off it threw instead of reporting "no entry".
+	if (typeof parsed !== "object" || parsed === null) return null;
 	const models = Array.isArray(parsed.models) ? parsed.models : [];
 	const entry = models.find((model) => model?.slug === slug);
 	const instructions = entry?.base_instructions;

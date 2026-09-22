@@ -1093,7 +1093,8 @@ describe("install-oc-codex-multi-auth script", () => {
 					"other-plugin",
 					"oc-chatgpt-multi-auth@1.2.3",
 					"/absent/node_modules/oc-codex-multi-auth",
-					"file:///absent/node_modules/oc-chatgpt-multi-auth/dist",
+					// pathToFileURL, not a literal: Windows rejects a drive-less file URL.
+					pathToFileURL(resolve("/absent/node_modules/oc-chatgpt-multi-auth/dist")).href,
 					"/absent/.cache/opencode/packages/oc-codex-multi-auth@latest",
 				]),
 			).toEqual(["oc-codex-multi-auth", "other-plugin"]);

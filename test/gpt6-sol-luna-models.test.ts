@@ -344,6 +344,14 @@ describe("catalog instructions after openai/codex #43604", () => {
 		expect(extractCatalogInstructions(catalog, "gpt-5.6-sol")).toBe("LEGACY");
 	});
 
+	// Valid JSON that is not an object used to throw on `.models`.
+	it("returns null, not a throw, for a catalog that parses to a non-object", () => {
+		for (const raw of ["null", "42", '"text"', "true", "[]", '{"models":null}', '{"models":[null,1]}']) {
+			expect(() => extractCatalogInstructions(raw, SOL), raw).not.toThrow();
+			expect(extractCatalogInstructions(raw, SOL), raw).toBeNull();
+		}
+	});
+
 	it("returns null when neither source has text", () => {
 		const catalog = JSON.stringify({
 			models: [
