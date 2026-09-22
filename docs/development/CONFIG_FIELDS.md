@@ -392,10 +392,10 @@ Not part of `PluginConfigSchema`, but used by runtime modules:
 | `CODEX_AUTH_PREWARM=0` | Disable startup prewarm when legacy transform is enabled (native mode does not prewarm) |
 | `OPENAI_BASE_URL=https://gateway.example/v1` | OpenAI-compatible OAuth inference gateway; requires `CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1` |
 | `CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1` | Explicitly allow the trusted gateway to receive the ChatGPT OAuth access token (HTTPS required, HTTP only on loopback) |
-| `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1` | Disable the automatic `gpt-6-astra -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-6-luna -> gpt-5.6-luna -> gpt-5.5` rollout fallback chain (also covers `gpt-6-sol` and `gpt-6-luna` selected directly) |
-| `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.6-sol -> gpt-5.6-terra -> gpt-6-luna -> gpt-5.6-luna -> gpt-5.5` preview fallback chain |
+| `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1` | Disable the automatic `gpt-6-astra -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.5 -> gpt-6-luna -> gpt-5.6-luna` rollout fallback chain (also covers `gpt-6-sol` and `gpt-6-luna` selected directly) |
+| `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.5 -> gpt-6-luna -> gpt-5.6-luna` preview fallback chain |
 | `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.5 -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-6-luna -> gpt-5.6-luna` fallback |
-| `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` | Disable the automatic `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5` fallback |
+| `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` | Disable the automatic `gpt-5-codex -> gpt-5.6-terra -> gpt-5.6-luna` fallback |
 | `CODEX_AUTH_CLIENT_IDENTITY=codex` | Force one client identity for all models: `codex` or `opencode` (alias `host`) |
 | `CODEX_AUTH_CLIENT_VERSION=0.150.0` | Override the Codex CLI version advertised in the `codex_cli_rs` User-Agent |
 | `CODEX_AUTH_HOST_VERSION=1.18.0` | Override the opencode version advertised in the `opencode` User-Agent |

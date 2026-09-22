@@ -109,7 +109,7 @@ describe('Configuration Parsing', () => {
 
 		it('should preserve "minimal" effort for non-codex models', () => {
 			const gpt5MinimalConfig = { reasoningEffort: 'minimal' as const };
-			const gpt5MinimalReasoning = getReasoningConfig('gpt-5', gpt5MinimalConfig);
+			const gpt5MinimalReasoning = getReasoningConfig('gpt-5.5', gpt5MinimalConfig);
 
 			expect(gpt5MinimalReasoning.effort).toBe('minimal');
 		});

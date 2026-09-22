@@ -790,8 +790,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			// Terra's row crosses to GPT-6 Luna before its own-generation Luna.
-			expect(terraFallback).toBe('gpt-6-luna');
+			expect(terraFallback).toBe('gpt-5.5');
 
 			const lunaFallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.6-luna',
@@ -800,7 +799,9 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: false,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(lunaFallback).toBe('gpt-5.5');
+			// gpt-5.6-luna is the chain's terminal; its row goes up, leading with
+			// gpt-6-luna, its catalog upgrade.
+			expect(lunaFallback).toBe('gpt-6-luna');
 
 			// Once the walk lands on gpt-5.5 with every 5.6 tier already attempted,
 			// it goes up to gpt-6-sol, the catalog's named upgrade for 5.5. It used
@@ -2230,11 +2231,11 @@ describe("fallback chain walker", () => {
 			attemptedModels: ["gpt-5.6-terra"],
 		});
 		expect(first).not.toBe("gpt-5.6-terra");
-		expect(first).toBe("gpt-6-luna");
+		expect(first).toBe("gpt-5.5");
 
 		const allBlocked = pickFallbackChainTarget({
 			currentModel: "gpt-5.6-sol",
-			attemptedModels: ["gpt-5.6-terra", "gpt-6-luna", "gpt-5.6-luna", "gpt-5.5"],
+			attemptedModels: ["gpt-5.6-terra", "gpt-5.5", "gpt-6-luna", "gpt-5.6-luna"],
 		});
 		expect(allBlocked).toBeUndefined();
 	});

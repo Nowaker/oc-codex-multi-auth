@@ -23,7 +23,7 @@ import {
 } from "../request/fetch-helpers.js";
 import { getReasoningConfig } from "../request/request-transformer.js";
 import { shapeBodyForModel } from "../request/helpers/responses-lite.js";
-import { GPT_55_MODEL_ID } from "../request/helpers/model-map.js";
+import { GPT_6_LUNA_MODEL_ID } from "../request/helpers/model-map.js";
 import { sanitizeCodexApiErrorMessage } from "../codex-usage.js";
 import { getCodexInstructions } from "../prompts/codex.js";
 import { parseRateLimitReason } from "./rate-limits.js";
@@ -35,18 +35,16 @@ const log = createLogger("warm-request");
 /**
  * Model used for the warm ping.
  *
- * GPT-5.5 is the generally-available anchor the shared fallback chain degrades
- * *toward* (every 5.6 preview tier lands on it), and it ships in the installer's
- * model catalog. The previous entry point, `gpt-5.4`, was dropped from that
- * catalog and is removed from user config as a stale key, so it is the weaker
- * anchor to start from.
+ * GPT-6 Luna: listed for every plan in the Codex catalog, and the cheapest
+ * general tier. It replaced GPT-5.5, which OpenAI's Codex model docs retire
+ * from Codex with ChatGPT sign-in on 2026-10-14; an anchor that stops working
+ * would turn every warm ping into a fallback walk. An account outside the
+ * GPT-6 rollout degrades onto gpt-5.6-luna through the shared chain.
  *
- * Note this was *not* the cause of the `HTTP 400` in #210 — that was the missing
- * request content type, fixed in `attemptWarm`. The error body which would have
- * shown it was read but discarded, so warming reported a bare `HTTP 400` and the
- * retired model looked like the likeliest explanation.
+ * The HTTP 400 in #210 was the missing request content type, fixed in
+ * `attemptWarm`, not the choice of model.
  */
-const WARM_MODEL: string = GPT_55_MODEL_ID;
+const WARM_MODEL: string = GPT_6_LUNA_MODEL_ID;
 
 /**
  * Absolute ceiling on warm attempts, independent of the chain's shape.

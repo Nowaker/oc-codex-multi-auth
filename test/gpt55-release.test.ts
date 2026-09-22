@@ -18,11 +18,11 @@ describe("GPT-5.5 activation", () => {
 
 	it("maps GPT-5.5 aliases to the public Codex model id", () => {
 		expect(MODEL_MAP["gpt-5.5"]).toBe("gpt-5.5");
-		expect(MODEL_MAP["gpt-5-xhigh"]).toBe("gpt-5.5");
+		expect(MODEL_MAP["gpt-5-xhigh"]).toBe("gpt-6-sol");
 		expect(MODEL_MAP["gpt-5.5-fast"]).toBe("gpt-5.5");
 		expect(MODEL_MAP["gpt-5.5-fast-high"]).toBe("gpt-5.5");
 		expect(getNormalizedModel("gpt-5.5")).toBe("gpt-5.5");
-		expect(getNormalizedModel("gpt-5-xhigh")).toBe("gpt-5.5");
+		expect(getNormalizedModel("gpt-5-xhigh")).toBe("gpt-6-sol");
 		expect(getNormalizedModel("gpt-5.5-fast-medium")).toBe("gpt-5.5");
 		expect(isKnownModel("gpt-5.5")).toBe(true);
 		expect(isKnownModel("gpt-5-xhigh")).toBe(true);

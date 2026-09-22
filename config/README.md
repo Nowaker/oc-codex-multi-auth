@@ -86,7 +86,7 @@ If your OpenCode runtime supports global compaction tuning, you can also set val
 
 - Served over the **responses-lite** path. Astra's catalog entry landed in openai/codex commit `ed391d4d` (2026-09-03) and reads `use_responses_lite: true`, `tool_mode: "code_mode_only"`, `multi_agent_version: "v2"`, so the shape is read rather than inferred. The `CODEX_AUTH_ASTRA_RESPONSES_LITE` switch that 6.17.0 carried while this was unverifiable has been removed.
 - Rollout gate: Astra reached a limited set of organizations first, so accounts outside it auto-fallback  
-  `gpt-6-astra → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-6-luna → gpt-5.6-luna → gpt-5.5`  
+  `gpt-6-astra → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-5.5 → gpt-6-luna → gpt-5.6-luna`  
   (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`).
 - Efforts are low through `ultra`, per OpenAI's Codex model list. `ultra` is sent as `max` on the wire, as with 5.6.
 - Bare `gpt-6` is a plugin-side alias for `gpt-6-astra`, unchanged by the Sol/Luna additions. `gpt-6-astra-pro` is not a Codex-routable id and collapses onto `gpt-6-astra`.
@@ -113,7 +113,7 @@ If your OpenCode runtime supports global compaction tuning, you can also set val
 
 - Served over the **responses-lite** path (`use_responses_lite`).
 - Preview entitlement: accounts without access auto-fallback  
-  `gpt-5.6-sol → gpt-5.6-terra → gpt-6-luna → gpt-5.6-luna → gpt-5.5`  
+  `gpt-5.6-sol → gpt-5.6-terra → gpt-5.5 → gpt-6-luna → gpt-5.6-luna`  
   (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`).
 - Default client identity for every responses-lite model (5.6, GPT-6 Astra/Sol/Luna, Daybreak) is host/opencode (`originator: opencode`); other families default to Codex CLI identity.
 - `ultra` is accepted as a client-side alias and sent as `max` on the wire (no subagent orchestration in this plugin).
@@ -151,36 +151,39 @@ A barebones debug template is available at [`minimal-opencode.json`](./minimal-o
 
 Current defaults are strict entitlement handling except for common default-selector entitlement gates:
 
-- **GPT-6 Astra** auto-fallback: `gpt-6-astra → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-6-luna → gpt-5.6-luna → gpt-5.5`
+- **GPT-6 Astra** auto-fallback: `gpt-6-astra → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-5.5 → gpt-6-luna → gpt-5.6-luna`
 - **Daybreak** cyber tiers: no fallback chain, deliberately
-- **GPT-5.6** auto-fallback: `gpt-5.6-sol → gpt-5.6-terra → gpt-6-luna → gpt-5.6-luna → gpt-5.5`
-- **`gpt-5.5`** and canonical **`gpt-5-codex`** can auto-fallback through `gpt-6-sol`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-luna`, then `gpt-5.6-luna` when the backend reports the selected model is not supported
+- **GPT-5.6** auto-fallback: `gpt-5.6-sol → gpt-5.6-terra → gpt-5.5 → gpt-6-luna → gpt-5.6-luna`
+- **`gpt-5.5`** can auto-fallback through `gpt-6-sol`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-luna`, then `gpt-5.6-luna`; canonical **`gpt-5-codex`** can auto-fallback through `gpt-5.6-terra`, then `gpt-5.6-luna` when the backend reports the selected model is not supported
 - `unsupportedCodexPolicy: "strict"` returns other entitlement errors directly
 - set `unsupportedCodexPolicy: "fallback"` (or `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback`) to enable the full fallback chain for manual/legacy selectors
 - `fallbackToGpt52OnUnsupportedGpt53: true` keeps the legacy `gpt-5.3-codex -> gpt-5.2-codex` edge inside fallback mode
 - user-typed `gpt-5.5-pro*` is canonicalized to `gpt-5.5` before fallback because GPT-5.5 Pro is ChatGPT-only, not a Codex-routable model; `gpt-6-astra-pro*` is canonicalized to `gpt-6-astra` for the same reason
-- legacy Codex selector `gpt-5.1-codex` normalizes to canonical `gpt-5-codex`, while `gpt-5.2-codex` and `gpt-5.3-codex` route as distinct backend model IDs; if canonical Codex or a gated model fails entitlement, default auto-fallback can retry through `gpt-5.6-terra`, then `gpt-5.5`
+- legacy Codex selector `gpt-5.1-codex` normalizes to canonical `gpt-5-codex`, while `gpt-5.2-codex` and `gpt-5.3-codex` route as distinct backend model IDs; if canonical Codex or a gated model fails entitlement, default auto-fallback can retry through `gpt-5.6-terra`, then `gpt-5.6-luna`
 - set `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1` to disable GPT-6 Astra/Sol/Luna auto-fallback
 - set `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1` to disable GPT-5.6 auto-fallback
 - set `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` to disable GPT-5.5 auto-fallback
 - set `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` to disable canonical Codex/GPT-5.4-family auto-fallback
-- `gpt-5.4-pro -> gpt-6-sol -> gpt-5.6-terra -> gpt-5.5` applies when you manually select `gpt-5.4-pro`
+- `gpt-5.4-pro -> gpt-6-sol -> gpt-5.6-terra -> gpt-5.6-luna` applies when you manually select `gpt-5.4-pro`
 - `unsupportedCodexFallbackChain` lets you override fallback order per model
+- a single request hops across at most 6 quota-exhausted models (`MAX_QUOTA_FALLBACK_SWITCHES`, was 3)
 
-Default chains when generic fallback policy is enabled (and empty override map):
+Default chains when generic fallback policy is enabled (and empty override map). The general rows follow one order, most capable first (`gpt-6-astra > gpt-6-sol > gpt-5.6-sol > gpt-5.6-terra > gpt-5.5 > gpt-6-luna > gpt-5.6-luna`), and each row is that order's tail after its own model:
 
-- `gpt-6-astra → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-6-luna → gpt-5.6-luna → gpt-5.5` (also auto under default strict for rollout gates)
-- `gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-6-luna → gpt-5.6-luna → gpt-5.5`
-- `gpt-6-luna → gpt-5.6-luna → gpt-5.5`
-- `gpt-5.6-sol → gpt-5.6-terra → gpt-6-luna → gpt-5.6-luna → gpt-5.5` (also auto under default strict for preview gates)
+- `gpt-6-astra → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-5.5 → gpt-6-luna → gpt-5.6-luna` (also auto under default strict for rollout gates)
+- `gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-5.5 → gpt-6-luna → gpt-5.6-luna`
+- `gpt-5.6-sol → gpt-5.6-terra → gpt-5.5 → gpt-6-luna → gpt-5.6-luna` (also auto under default strict for preview gates)
+- `gpt-5.6-terra → gpt-5.5 → gpt-6-luna → gpt-5.6-luna`
 - `gpt-5.5 → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-6-luna → gpt-5.6-luna`
-- `gpt-5-codex → gpt-5.6-terra → gpt-5.5`
+- `gpt-6-luna → gpt-5.6-luna → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-5.5`
+- `gpt-5.6-luna → gpt-6-luna → gpt-6-sol → gpt-5.6-sol → gpt-5.6-terra → gpt-5.5`
+- `gpt-5-codex → gpt-5.6-terra → gpt-5.6-luna`
 
-> GPT-5.2 was removed from every fallback chain's terminal after openai/codex #44250 (2026-09-09) removed `gpt-5.2` from the catalog. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-6-sol`, `gpt-5.4-mini` -> `gpt-6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
-- `gpt-5.4 → gpt-6-sol → gpt-5.6-terra → gpt-5.5`
-- `gpt-5.4-mini → gpt-6-luna → gpt-5.6-luna → gpt-5.5`
-- `gpt-5.4-nano → gpt-6-luna → gpt-5.6-luna → gpt-5.5`
-- `gpt-5.4-pro → gpt-6-sol → gpt-5.6-terra → gpt-5.5` (if you manually select `gpt-5.4-pro`)
+> The terminal is `gpt-5.6-luna`, not `gpt-5.5`: OpenAI's Codex model docs say GPT-5.5 retires from Codex with ChatGPT sign-in on 2026-10-14, while 5.6 Luna is listed for every plan with no retirement date. `gpt-5.2`, the terminal before that, left the catalog in openai/codex #44250 (2026-09-09). GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-6-sol`, `gpt-5.4-mini` -> `gpt-6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
+- `gpt-5.4 → gpt-6-sol → gpt-5.6-terra → gpt-5.6-luna`
+- `gpt-5.4-mini → gpt-6-luna → gpt-5.6-luna`
+- `gpt-5.4-nano → gpt-6-luna → gpt-5.6-luna`
+- `gpt-5.4-pro → gpt-6-sol → gpt-5.6-terra → gpt-5.6-luna` (if you manually select `gpt-5.4-pro`)
 - `gpt-5.3-codex → gpt-5-codex → gpt-5.2-codex`
 - `gpt-5.3-codex-spark → gpt-5-codex → gpt-5.3-codex → gpt-5.2-codex` (only if Spark IDs are added manually)
 - `gpt-5.2-codex → gpt-5-codex`

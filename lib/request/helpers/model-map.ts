@@ -388,15 +388,20 @@ export const MODEL_MAP: Record<string, string> = {
 	"gpt-5-codex-mini-high": "gpt-5.1-codex-mini",
 
 	// ============================================================================
-	// GPT-5 General Purpose Models (LEGACY - maps to gpt-5.5 latest)
+	// GPT-5 General Purpose Models (LEGACY - maps to gpt-6-sol)
+	//
+	// Was gpt-5.5, which OpenAI's Codex model docs retire from Codex with
+	// ChatGPT sign-in on 2026-10-14, naming gpt-6-sol as the replacement on
+	// paid plans. gpt-6-sol rejects none/minimal; the effort clamp floors both
+	// to low.
 	// ============================================================================
-	"gpt-5": GPT_55_MODEL_ID,
-	"gpt-5-none": GPT_55_MODEL_ID,
-	"gpt-5-minimal": GPT_55_MODEL_ID,
-	"gpt-5-low": GPT_55_MODEL_ID,
-	"gpt-5-medium": GPT_55_MODEL_ID,
-	"gpt-5-high": GPT_55_MODEL_ID,
-	"gpt-5-xhigh": GPT_55_MODEL_ID,
+	"gpt-5": GPT_6_SOL_MODEL_ID,
+	"gpt-5-none": GPT_6_SOL_MODEL_ID,
+	"gpt-5-minimal": GPT_6_SOL_MODEL_ID,
+	"gpt-5-low": GPT_6_SOL_MODEL_ID,
+	"gpt-5-medium": GPT_6_SOL_MODEL_ID,
+	"gpt-5-high": GPT_6_SOL_MODEL_ID,
+	"gpt-5-xhigh": GPT_6_SOL_MODEL_ID,
 	// gpt-5.4-mini retired from Codex on 2026-08-31; OpenAI's Codex model docs
 	// name gpt-6-luna as its replacement.
 	"gpt-5-mini": GPT_6_LUNA_MODEL_ID,

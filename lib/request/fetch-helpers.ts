@@ -118,24 +118,23 @@ export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> 
 	// The general rows follow one order, most capable first:
 	//
 	//   gpt-6-astra > gpt-6-sol > gpt-5.6-sol > gpt-5.6-terra
-	//     > gpt-6-luna > gpt-5.6-luna > gpt-5.5
+	//     > gpt-5.5 > gpt-6-luna > gpt-5.6-luna
 	//
 	// and each row is that order's tail after its own model. The resolver walks
 	// the chain of whichever model it is CURRENTLY on, so a row that is not a
-	// suffix of the others dead-ends: with 6-sol listing 6-luna first, a walk
-	// from gpt-5.5 went 6-sol > 6-luna > 5.6-luna and stopped, never trying 5.6
-	// Sol or Terra. With suffix rows every walk reaches gpt-5.5, whose row lists
-	// the rest, so every entry point covers every live general model.
+	// suffix of the others dead-ends the walk early. Every walk ends on the
+	// terminal, `gpt-5.6-luna`, whose row lists everything else (minus Astra),
+	// so every entry point reaches every live general model.
+	//
+	// The terminal is `gpt-5.6-luna`, not `gpt-5.5`: OpenAI's Codex model docs
+	// say GPT-5.5 retires from Codex with ChatGPT sign-in on 2026-10-14. 5.6
+	// Luna is listed for every plan and has no retirement date. `gpt-5.2`, the
+	// terminal before that, left the catalog in openai/codex #44250.
 	//
 	// A GPT-6 tier crosses to the matching 5.6 tier before its GPT-6 sibling:
 	// Sol and Luna joined the catalog on 2026-09-22 (openai/codex 49e95cc7), so
 	// an entitlement 400 on one GPT-6 tier most likely means the account is not
 	// in the GPT-6 rollout yet, and the sibling would fail the same way.
-	//
-	// `gpt-5.2` is gone from every row. openai/codex #44250 (2026-09-09) removed
-	// it from the catalog, so the old `gpt-5.2` terminal spent an account's last
-	// attempt on a model Codex itself no longer offers. `gpt-5.5` is the oldest
-	// general model still `visibility: "list"`, and it is the new terminal.
 	//
 	// Astra is never a target: it is the frontier tier, so nothing degrades
 	// into it. The Daybreak tiers are absent entirely. They are cyber-specialty
@@ -146,32 +145,26 @@ export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> 
 		GPT_6_SOL_MODEL_ID,
 		GPT_56_SOL_MODEL_ID,
 		GPT_56_TERRA_MODEL_ID,
+		GPT_55_MODEL_ID,
 		GPT_6_LUNA_MODEL_ID,
 		GPT_56_LUNA_MODEL_ID,
-		GPT_55_MODEL_ID,
 	],
 	[GPT_6_SOL_MODEL_ID]: [
 		GPT_56_SOL_MODEL_ID,
 		GPT_56_TERRA_MODEL_ID,
+		GPT_55_MODEL_ID,
 		GPT_6_LUNA_MODEL_ID,
 		GPT_56_LUNA_MODEL_ID,
-		GPT_55_MODEL_ID,
 	],
 	[GPT_56_SOL_MODEL_ID]: [
 		GPT_56_TERRA_MODEL_ID,
+		GPT_55_MODEL_ID,
 		GPT_6_LUNA_MODEL_ID,
 		GPT_56_LUNA_MODEL_ID,
-		GPT_55_MODEL_ID,
 	],
-	[GPT_56_TERRA_MODEL_ID]: [GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
-	[GPT_6_LUNA_MODEL_ID]: [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
-	[GPT_56_LUNA_MODEL_ID]: [GPT_55_MODEL_ID],
-
-	// gpt-5.5 is the one row that goes up. The catalog names `gpt-6-sol` as its
-	// `upgrade`, so the order above minus Astra follows. The set reachable from
-	// gpt-5.5 is 6 models, exactly WARM_ATTEMPT_HARD_CEILING
-	// (lib/accounts/warm-request.ts): any wider and warming would give up before
-	// trying every entitled model.
+	[GPT_56_TERRA_MODEL_ID]: [GPT_55_MODEL_ID, GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID],
+	// The catalog names `gpt-6-sol` as gpt-5.5's `upgrade`, so its row leads
+	// with it rather than being a plain suffix.
 	[GPT_55_MODEL_ID]: [
 		GPT_6_SOL_MODEL_ID,
 		GPT_56_SOL_MODEL_ID,
@@ -179,22 +172,42 @@ export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> 
 		GPT_6_LUNA_MODEL_ID,
 		GPT_56_LUNA_MODEL_ID,
 	],
+	// The two Luna tiers end the order, so both rows go up after trying each
+	// other: a walk hops between them, and whichever row it is on then has to
+	// list the rest, or the walk dead-ends. gpt-5.6-luna leads with gpt-6-luna,
+	// its catalog `upgrade`. The warm ping starts at gpt-6-luna and reaches 6
+	// models, exactly WARM_ATTEMPT_HARD_CEILING (lib/accounts/warm-request.ts).
+	[GPT_6_LUNA_MODEL_ID]: [
+		GPT_56_LUNA_MODEL_ID,
+		GPT_6_SOL_MODEL_ID,
+		GPT_56_SOL_MODEL_ID,
+		GPT_56_TERRA_MODEL_ID,
+		GPT_55_MODEL_ID,
+	],
+	[GPT_56_LUNA_MODEL_ID]: [
+		GPT_6_LUNA_MODEL_ID,
+		GPT_6_SOL_MODEL_ID,
+		GPT_56_SOL_MODEL_ID,
+		GPT_56_TERRA_MODEL_ID,
+		GPT_55_MODEL_ID,
+	],
 
-	// GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31T19:00:00Z.
-	// Each retired id leads with the successor its catalog `upgrade` names: as
-	// of openai/codex 49e95cc7 that is gpt-5.4 -> gpt-6-sol and
-	// gpt-5.4-mini -> gpt-6-luna (previously 5.6 terra/luna). `gpt-5.4-mini`
-	// has since left the catalog entirely (#44250), but Codex keeps migrating
-	// saved selections of it to Luna, so this row keeps doing the same.
-	"gpt-5.4": [GPT_6_SOL_MODEL_ID, GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID],
-	"gpt-5.4-mini": [GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
+	// Retired ids lead with the successor OpenAI names for them: gpt-5.4 ->
+	// gpt-6-sol, gpt-5.4-mini -> gpt-6-luna (Codex models docs; both retired
+	// from Codex on 2026-08-31). `gpt-5.4-mini` has since left the catalog
+	// entirely (#44250), but Codex keeps migrating saved selections of it to
+	// Luna, so this row keeps doing the same. Each row ends on the terminal.
+	"gpt-5.4": [GPT_6_SOL_MODEL_ID, GPT_56_TERRA_MODEL_ID, GPT_56_LUNA_MODEL_ID],
+	"gpt-5.4-mini": [GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID],
 	// `gpt-5.4-nano` never had a catalog entry, so no upgrade directive to
 	// follow; it takes the budget line like its mini sibling.
-	"gpt-5.4-nano": [GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
+	"gpt-5.4-nano": [GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID],
 	// GPT-5.4 Pro has no catalog entry either; it inherits the 5.4 line's
 	// successor rather than degrading onto retired gpt-5.4 first.
-	"gpt-5.4-pro": [GPT_6_SOL_MODEL_ID, GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID],
-	"gpt-5-codex": [GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID],
+	"gpt-5.4-pro": [GPT_6_SOL_MODEL_ID, GPT_56_TERRA_MODEL_ID, GPT_56_LUNA_MODEL_ID],
+	// gpt-5-codex was shut down on 2026-07-23 (API deprecations page); a
+	// hand-typed selection still gets a way out.
+	"gpt-5-codex": [GPT_56_TERRA_MODEL_ID, GPT_56_LUNA_MODEL_ID],
 	// Legacy selectors normalize to `gpt-5-codex` before lookup during the
 	// request path. Keep these historical entries for direct helper callers and
 	// custom-chain documentation; the canonical `gpt-5-codex` edge above is the

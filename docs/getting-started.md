@@ -174,13 +174,13 @@ opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5 --v
 opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5-fast --variant=medium
 opencode run "Inspect the retry logic and summarize it" --model=openai/gpt-6-sol --variant=high
 
-# Optional GPT-6 Astra (requires rollout access; auto-falls back astra→gpt-6-sol→sol→terra→gpt-6-luna→luna→gpt-5.5)
+# Optional GPT-6 Astra (requires rollout access; auto-falls back astra→gpt-6-sol→sol→terra→gpt-5.5→gpt-6-luna→luna)
 opencode run "Create a short TODO list for this repo" --model=openai/gpt-6-astra --variant=medium
 
 # Optional GPT-6 Sol / Luna (added 2026-09-22; same auto-fallback opt-out as Astra)
 opencode run "Create a short TODO list for this repo" --model=openai/gpt-6-sol --variant=medium
 
-# Optional GPT-5.6 (requires account entitlement; auto-falls back sol→terra→gpt-6-luna→luna→gpt-5.5)
+# Optional GPT-5.6 (requires account entitlement; auto-falls back sol→terra→gpt-5.5→gpt-6-luna→luna)
 opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.6-sol --variant=medium
 
 # Direct selector IDs, only after installing with --full

@@ -230,9 +230,9 @@ export function normalizeModel(model: string | undefined): string {
 		return "gpt-5-codex";
 	}
 
-	// 18. GPT-5 family (any variant) - default to 5.5 latest general model
+	// 18. GPT-5 family (any other variant) - same target as the gpt-5 alias
 	if (normalized.includes("gpt-5") || normalized.includes("gpt 5")) {
-		return GPT_55_MODEL_ID;
+		return DEFAULT_NORMALIZED_MODEL;
 	}
 
 	// Default fallback

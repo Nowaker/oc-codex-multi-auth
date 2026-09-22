@@ -280,14 +280,14 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 	});
 
 	describe("unsupported-model fallback", () => {
-		it("degrades Astra through GPT-6 Sol and the 5.6 tiers out to 5.5", () => {
+		it("degrades Astra through GPT-6 Sol and the 5.6 tiers to the gpt-5.6-luna terminal", () => {
 			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[ASTRA]).toEqual([
 				"gpt-6-sol",
 				"gpt-5.6-sol",
 				"gpt-5.6-terra",
+				"gpt-5.5",
 				"gpt-6-luna",
 				"gpt-5.6-luna",
-				"gpt-5.5",
 			]);
 		});
 

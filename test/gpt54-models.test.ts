@@ -342,8 +342,8 @@ describe("GPT-5.4 Model Support", () => {
 
 		it("should route gpt-5.4x patterns through generic GPT-5 fallback to the latest GPT-5 model", () => {
 			// Boundary-aware matching prevents accidental 5.4 family match, then generic GPT-5 fallback applies.
-			expect(normalizeModel("gpt-5.40")).toBe("gpt-5.5");
-			expect(normalizeModel("gpt-5.44")).toBe("gpt-5.5");
+			expect(normalizeModel("gpt-5.40")).toBe("gpt-6-sol");
+			expect(normalizeModel("gpt-5.44")).toBe("gpt-6-sol");
 		});
 
 		it("should handle empty/undefined model names defaulting to gpt-6-sol", () => {
@@ -355,7 +355,7 @@ describe("GPT-5.4 Model Support", () => {
 	describe("GPT-5.4 vs Other Models Priority", () => {
 		it("should prioritize gpt-5.4 over gpt-5.3/gpt-5.2 in pattern matching", () => {
 			expect(normalizeModel("gpt-5.4")).toBe("gpt-5.4");
-			expect(normalizeModel("gpt-5.3")).toBe("gpt-5.5");
+			expect(normalizeModel("gpt-5.3")).toBe("gpt-6-sol");
 			expect(normalizeModel("gpt-5.2")).toBe("gpt-5.2");
 		});
 
@@ -391,10 +391,10 @@ describe("GPT-5.4 Model Support", () => {
 
 	describe("GPT-5.4 Integration with Existing Models", () => {
 		it("should map legacy gpt-5 aliases to the latest GPT-5 model while preserving mini/nano variants", () => {
-			expect(normalizeModel("gpt-5")).toBe("gpt-5.5");
+			expect(normalizeModel("gpt-5")).toBe("gpt-6-sol");
 			expect(normalizeModel("gpt-5-mini")).toBe("gpt-6-luna");
 			expect(normalizeModel("gpt-5-nano")).toBe("gpt-5.4-nano");
-			expect(getNormalizedModel("gpt-5")).toBe("gpt-5.5");
+			expect(getNormalizedModel("gpt-5")).toBe("gpt-6-sol");
 		});
 
 		it("should coexist with gpt-5.2 model", () => {

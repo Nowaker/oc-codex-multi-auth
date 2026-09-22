@@ -87,11 +87,11 @@ The gateway override is fail-closed. Remote gateways require HTTPS, literal loop
 
 **Auto-fallback (preview entitlement gates):**
 
-- GPT-6 Astra: `gpt-6-astra` → `gpt-6-sol` → `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-6-luna` → `gpt-5.6-luna` → `gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`)
+- GPT-6 Astra: `gpt-6-astra` → `gpt-6-sol` → `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-5.5` → `gpt-6-luna` → `gpt-5.6-luna` (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`)
 - GPT-6 Sol and GPT-6 Luna share the same `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK` opt-out and fall back down the same tail of that order
 - Cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`): no chain. They fail loudly rather than silently answering from a general model.
-- GPT-5.6: `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-6-luna` → `gpt-5.6-luna` → `gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`)
-- GPT-5.5 / canonical Codex also have default auto-fallback, now through `gpt-6-sol` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-6-luna` / `gpt-5.6-luna`; broader fallback chains require `unsupportedCodexPolicy: "fallback"`. `gpt-5.2` was removed as the terminal of every chain after openai/codex #44250 (2026-09-09) removed `gpt-5.2` from the catalog. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-6-sol`, `gpt-5.4-mini` -> `gpt-6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
+- GPT-5.6: `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-5.5` → `gpt-6-luna` → `gpt-5.6-luna` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`)
+- GPT-5.5 / canonical Codex also have default auto-fallback: GPT-5.5 through `gpt-6-sol` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-6-luna` / `gpt-5.6-luna`, canonical Codex through `gpt-5.6-terra` / `gpt-5.6-luna`; broader fallback chains require `unsupportedCodexPolicy: "fallback"`. `gpt-5.2` was removed as the terminal of every chain after openai/codex #44250 (2026-09-09) removed `gpt-5.2` from the catalog; the terminal is now `gpt-5.6-luna` (not `gpt-5.5`), since OpenAI's Codex model docs say GPT-5.5 retires from Codex with ChatGPT sign-in on 2026-10-14 while 5.6 Luna has no retirement date. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-6-sol`, `gpt-5.4-mini` -> `gpt-6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
 
 ### 4. Account rotation and model pools
 
