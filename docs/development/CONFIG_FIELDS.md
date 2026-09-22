@@ -72,7 +72,7 @@ This field differs slightly between the modern and legacy shipped templates.
 
 ### Modern template fields
 
-Modern templates define 13 base model families and expose 59 presets through `variants`.
+Modern templates define 15 base model families and expose 70 presets through `variants`.
 
 Example:
 
@@ -138,7 +138,7 @@ opencode run "task" --model=openai/gpt-5.6-sol --variant=medium
 
 ### Legacy template fields
 
-Legacy templates expose each preset as its own model key (59 explicit entries).
+Legacy templates expose each preset as its own model key (70 explicit entries).
 
 Example:
 
@@ -195,6 +195,8 @@ Examples:
 | `openai/gpt-6-astra-ultra` | `gpt-6-astra` |
 | `openai/gpt-6` | `gpt-6-astra` |
 | `openai/gpt-6-astra-pro-high` | `gpt-6-astra` (Astra Pro is not a Codex-routable id) |
+| `openai/gpt-6-sol-xhigh` | `gpt-6-sol` |
+| `openai/gpt-6-luna-max` | `gpt-6-luna` |
 | `openai/gpt-daybreak-blue-xhigh` | `gpt-daybreak-blue-latest` |
 | `openai/gpt-5.6-cyber-max` | `gpt-5.6-cyber` (never `gpt-5.6-sol`) |
 | `openai/gpt-5.4-mini-xhigh` | `gpt-5.4-mini` |
@@ -210,7 +212,7 @@ the family actually sent to the backend are therefore not always the same
 string; `MODEL_MAP` in `lib/request/helpers/model-map.ts` is the authoritative
 mapping.
 
-This normalization is why legacy aliases and snapshot-like IDs can still route to a stable family while preserving the user-facing config surface. GPT-6 Astra, the Daybreak tiers and the GPT-5.6 tiers all trigger the responses-lite request shape after normalization.
+This normalization is why legacy aliases and snapshot-like IDs can still route to a stable family while preserving the user-facing config surface. GPT-6 Astra/Sol/Luna, the Daybreak tiers and the GPT-5.6 tiers all trigger the responses-lite request shape after normalization.
 
 ## Plugin Runtime Config
 
@@ -390,10 +392,10 @@ Not part of `PluginConfigSchema`, but used by runtime modules:
 | `CODEX_AUTH_PREWARM=0` | Disable startup prewarm when legacy transform is enabled (native mode does not prewarm) |
 | `OPENAI_BASE_URL=https://gateway.example/v1` | OpenAI-compatible OAuth inference gateway; requires `CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1` |
 | `CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1` | Explicitly allow the trusted gateway to receive the ChatGPT OAuth access token (HTTPS required, HTTP only on loopback) |
-| `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1` | Disable the automatic `gpt-6-astra -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` rollout fallback chain |
-| `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.6-sol -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.5` preview fallback chain |
-| `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.5 -> gpt-5.6-terra -> gpt-5.6-luna -> gpt-5.2` fallback |
-| `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` | Disable the automatic `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5 -> gpt-5.2` fallback |
+| `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1` | Disable the automatic `gpt-6-astra -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-6-luna -> gpt-5.6-luna -> gpt-5.5` rollout fallback chain (also covers `gpt-6-sol` and `gpt-6-luna` selected directly) |
+| `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.6-sol -> gpt-5.6-terra -> gpt-6-luna -> gpt-5.6-luna -> gpt-5.5` preview fallback chain |
+| `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` | Disable the automatic `gpt-5.5 -> gpt-6-sol -> gpt-5.6-sol -> gpt-5.6-terra -> gpt-6-luna -> gpt-5.6-luna` fallback |
+| `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` | Disable the automatic `gpt-5-codex -> gpt-5.6-terra -> gpt-5.5` fallback |
 | `CODEX_AUTH_CLIENT_IDENTITY=codex` | Force one client identity for all models: `codex` or `opencode` (alias `host`) |
 | `CODEX_AUTH_CLIENT_VERSION=0.150.0` | Override the Codex CLI version advertised in the `codex_cli_rs` User-Agent |
 | `CODEX_AUTH_HOST_VERSION=1.18.0` | Override the opencode version advertised in the `opencode` User-Agent |

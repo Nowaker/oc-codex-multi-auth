@@ -76,6 +76,8 @@ describe("buildWarmRequestBody (#182)", () => {
 			"gpt-5.6-sol",
 			"gpt-5.6-terra",
 			"gpt-5.6-luna",
+			"gpt-6-sol",
+			"gpt-6-luna",
 			"gpt-5.2",
 			"gpt-5.4-pro",
 			"gpt-5-codex",
@@ -113,9 +115,11 @@ describe("warm fallback chain invariants (#210)", () => {
 		expect(reachable.length).toBeLessThanOrEqual(WARM_ATTEMPT_HARD_CEILING);
 		expect(reachable).toEqual([
 			"gpt-5.5",
+			"gpt-6-sol",
+			"gpt-5.6-sol",
 			"gpt-5.6-terra",
+			"gpt-6-luna",
 			"gpt-5.6-luna",
-			"gpt-5.2",
 		]);
 	});
 
@@ -226,7 +230,7 @@ describe("warmAccountWindow (#182)", () => {
 			(fetchImpl.mock.calls[1] as [string, RequestInit])[1].body as string,
 		);
 		expect(firstBody.model).toBe("gpt-5.5");
-		expect(secondBody.model).toBe("gpt-5.6-terra");
+		expect(secondBody.model).toBe("gpt-6-sol");
 	});
 
 	it("stops after the bounded attempt budget when no model is entitled (#210)", async () => {
@@ -240,9 +244,9 @@ describe("warmAccountWindow (#182)", () => {
 		const fetchImpl = vi.fn(async () => unsupported());
 
 		await expect(warmAccountWindow({ ...PARAMS, fetchImpl })).rejects.toThrow(
-			/tried gpt-5\.5, gpt-5\.6-terra, gpt-5\.6-luna, gpt-5\.2/,
+			/tried gpt-5\.5, gpt-6-sol, gpt-5\.6-sol, gpt-5\.6-terra, gpt-6-luna, gpt-5\.6-luna/,
 		);
-		expect(fetchImpl).toHaveBeenCalledTimes(4);
+		expect(fetchImpl).toHaveBeenCalledTimes(6);
 	});
 
 	it("does not retry a 400 that is not an entitlement error, and surfaces its detail", async () => {

@@ -49,9 +49,9 @@ That file controls plugin behavior such as retry policy, rotation strategy, begi
 
 1. Load the selected template set:
    - default / `--plugin-only`: preserve `provider.openai`
-   - `--modern`: `config/opencode-modern.json` (compact 13 bases / 59 variants)
+   - `--modern`: `config/opencode-modern.json` (compact 15 bases / 70 variants)
    - `--full`: modern bases merged with `config/opencode-legacy.json` explicit entries
-   - `--legacy`: `config/opencode-legacy.json` only (59 explicit IDs)
+   - `--legacy`: `config/opencode-legacy.json` only (70 explicit IDs)
 2. Back up an existing `~/.config/opencode/opencode.json` only when the merged result changes.
 3. Normalize the plugin list so it ends with plain `oc-codex-multi-auth`.
 4. Merge `provider.openai` with the selected shipped template block; `--plugin-only` skips this step entirely.
@@ -84,12 +84,12 @@ Important detail:
 
 It currently ships:
 
-- 13 base model families
-- 59 total variants
-- GPT-6 Astra (responses-lite path)
+- 15 base model families
+- 70 total variants
+- GPT-6 Astra, Sol, and Luna (responses-lite path)
 - GPT-5.6 Sol / Terra / Luna (responses-lite path)
 - `gpt-5.5` and `gpt-5.5-fast` at 1,050,000 context / 128,000 output
-- GPT-6 Astra and the GPT-5.6 tiers at 1,050,000 context / 128,000 output
+- GPT-6 Astra/Sol/Luna and the GPT-5.6 tiers at 1,050,000 context / 128,000 output
 - `gpt-5.4-mini`, `gpt-5.4-nano`, and Codex families at 400,000 context / 128,000 output
 - `gpt-5.1` at 272,000 context / 128,000 output
 - `store: false` plus `include: ["reasoning.encrypted_content"]`
@@ -98,6 +98,8 @@ Base families:
 
 ```text
 gpt-6-astra
+gpt-6-sol
+gpt-6-luna
 gpt-5.6-sol
 gpt-5.6-terra
 gpt-5.6-luna
@@ -123,7 +125,7 @@ It preserves `provider.openai` exactly.
 
 ### Modern installer mode
 
-`--modern` writes the 13 modern base model entries from `config/opencode-modern.json`. Reasoning presets are selected through the separate variant picker.
+`--modern` writes the 15 modern base model entries from `config/opencode-modern.json`. Reasoning presets are selected through the separate variant picker.
 
 Example shape:
 
@@ -172,8 +174,8 @@ opencode run "task" --model=openai/gpt-5.6-sol --variant=high
 
 `--full` combines:
 
-- the 13 modern base model entries from `config/opencode-modern.json`
-- the 59 explicit preset entries from `config/opencode-legacy.json`
+- the 15 modern base model entries from `config/opencode-modern.json`
+- the 70 explicit preset entries from `config/opencode-legacy.json`
 
 Use it when scripts require direct selector IDs:
 
@@ -190,7 +192,7 @@ opencode run "task" --model=openai/gpt-5.6-sol-high
 
 It currently ships:
 
-- 59 explicit model entries
+- 70 explicit model entries
 - separate model IDs such as `gpt-5.5-medium`, `gpt-5.5-fast-medium`, `gpt-5.5-high`, `gpt-5.6-sol-xhigh`, and `gpt-5.4-mini-xhigh`
 - the same OpenAI provider defaults (`store: false`, `reasoning.encrypted_content`)
 
@@ -208,7 +210,7 @@ At runtime, OpenCode passes `provider.openai.options` and `provider.openai.model
 2. Reads per-model definitions.
 3. Applies request-shaping behavior (`native` by default, `legacy` when explicitly enabled).
 4. Normalizes selected model IDs to canonical upstream Codex/ChatGPT model families before the final API call.
-5. For GPT-6 Astra, the Daybreak-gated cyber tiers and GPT-5.6 Sol/Terra/Luna, applies the responses-lite request shape and default `opencode` client identity.
+5. For GPT-6 Astra/Sol/Luna, the Daybreak-gated cyber tiers and GPT-5.6 Sol/Terra/Luna, applies the responses-lite request shape and default `opencode` client identity.
 6. Resolves preferred accounts via `modelAccountPools`, then selects an account with `rotationStrategy`.
 
 Examples:

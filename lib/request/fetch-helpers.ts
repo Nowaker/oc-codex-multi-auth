@@ -28,6 +28,8 @@ import {
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
 	GPT_6_ASTRA_MODEL_ID,
+	GPT_6_LUNA_MODEL_ID,
+	GPT_6_SOL_MODEL_ID,
 } from "./helpers/model-map.js";
 import { stripEffortSuffix } from "./helpers/effort-suffix.js";
 import {
@@ -113,67 +115,86 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
-	// GPT-6 Astra launched 2026-09-03 to a limited set of organizations first,
-	// reaching Plus/Pro/Business/Enterprise only "in the coming days", so an
-	// entitlement 400 is the expected result for most accounts today. Degrade
-	// into the 5.6 tiers, which are the closest thing in capability.
+	// The general rows follow one order, most capable first:
 	//
-	// The Daybreak tiers are deliberately absent from this table. They are
-	// cyber-specialty models (`model_specialty: "cyber"`); silently degrading a
-	// Daybreak request onto a general model would answer a security-research
-	// prompt with a model that was never asked for. They fail loudly instead.
+	//   gpt-6-astra > gpt-6-sol > gpt-5.6-sol > gpt-5.6-terra
+	//     > gpt-6-luna > gpt-5.6-luna > gpt-5.5
+	//
+	// and each row is that order's tail after its own model. The resolver walks
+	// the chain of whichever model it is CURRENTLY on, so a row that is not a
+	// suffix of the others dead-ends: with 6-sol listing 6-luna first, a walk
+	// from gpt-5.5 went 6-sol > 6-luna > 5.6-luna and stopped, never trying 5.6
+	// Sol or Terra. With suffix rows every walk reaches gpt-5.5, whose row lists
+	// the rest, so every entry point covers every live general model.
+	//
+	// A GPT-6 tier crosses to the matching 5.6 tier before its GPT-6 sibling:
+	// Sol and Luna joined the catalog on 2026-09-22 (openai/codex 49e95cc7), so
+	// an entitlement 400 on one GPT-6 tier most likely means the account is not
+	// in the GPT-6 rollout yet, and the sibling would fail the same way.
+	//
+	// `gpt-5.2` is gone from every row. openai/codex #44250 (2026-09-09) removed
+	// it from the catalog, so the old `gpt-5.2` terminal spent an account's last
+	// attempt on a model Codex itself no longer offers. `gpt-5.5` is the oldest
+	// general model still `visibility: "list"`, and it is the new terminal.
+	//
+	// Astra is never a target: it is the frontier tier, so nothing degrades
+	// into it. The Daybreak tiers are absent entirely. They are cyber-specialty
+	// models (`model_specialty: "cyber"`); silently degrading a Daybreak request
+	// onto a general model would answer a security-research prompt with a model
+	// that was never asked for. They fail loudly instead.
 	[GPT_6_ASTRA_MODEL_ID]: [
+		GPT_6_SOL_MODEL_ID,
 		GPT_56_SOL_MODEL_ID,
 		GPT_56_TERRA_MODEL_ID,
+		GPT_6_LUNA_MODEL_ID,
 		GPT_56_LUNA_MODEL_ID,
 		GPT_55_MODEL_ID,
-		"gpt-5.2",
 	],
-	// GPT-5.6 shipped as a limited preview. Accounts outside it get
-	// `model_not_supported_with_chatgpt_account`, so degrade down the 5.6 tiers
-	// and then out to the generally-available 5.5 family.
-	//
-	// `gpt-5.2` repeats on every tier on purpose. The resolver walks the chain
-	// of whichever model it is currently on, so once a request hops from
-	// gpt-5.5 to terra it reads terra's list; a terminal that lived only on
-	// gpt-5.5's list would never be reached.
+	[GPT_6_SOL_MODEL_ID]: [
+		GPT_56_SOL_MODEL_ID,
+		GPT_56_TERRA_MODEL_ID,
+		GPT_6_LUNA_MODEL_ID,
+		GPT_56_LUNA_MODEL_ID,
+		GPT_55_MODEL_ID,
+	],
 	[GPT_56_SOL_MODEL_ID]: [
 		GPT_56_TERRA_MODEL_ID,
+		GPT_6_LUNA_MODEL_ID,
 		GPT_56_LUNA_MODEL_ID,
 		GPT_55_MODEL_ID,
-		"gpt-5.2",
 	],
-	[GPT_56_TERRA_MODEL_ID]: [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
-	[GPT_56_LUNA_MODEL_ID]: [GPT_55_MODEL_ID, "gpt-5.2"],
+	[GPT_56_TERRA_MODEL_ID]: [GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
+	[GPT_6_LUNA_MODEL_ID]: [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
+	[GPT_56_LUNA_MODEL_ID]: [GPT_55_MODEL_ID],
+
+	// gpt-5.5 is the one row that goes up. The catalog names `gpt-6-sol` as its
+	// `upgrade`, so the order above minus Astra follows. The set reachable from
+	// gpt-5.5 is 6 models, exactly WARM_ATTEMPT_HARD_CEILING
+	// (lib/accounts/warm-request.ts): any wider and warming would give up before
+	// trying every entitled model.
+	[GPT_55_MODEL_ID]: [
+		GPT_6_SOL_MODEL_ID,
+		GPT_56_SOL_MODEL_ID,
+		GPT_56_TERRA_MODEL_ID,
+		GPT_6_LUNA_MODEL_ID,
+		GPT_56_LUNA_MODEL_ID,
+	],
 
 	// GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31T19:00:00Z.
-	// The catalog marks both `visibility: "hide"` and carries an explicit
-	// `upgrade` directive naming the replacement — gpt-5.4 -> gpt-5.6-terra,
-	// gpt-5.4-mini -> gpt-5.6-luna. `gpt-5.4-nano` has no catalog entry at all.
-	//
-	// Every tail below used to lead with those three, so an entitlement failure
-	// on gpt-5.5 or gpt-5-codex spent its whole attempt budget on retired ids
-	// and then hard-failed without ever trying a live model.
-	//
-	// The tails now end at the live models: `gpt-5.6-terra` and `gpt-5.6-luna`
-	// (the catalog's own named replacements, and its top-priority entries) then
-	// `gpt-5.2`, the only other general model still `visibility: "list"`. The
-	// retired ids are not re-appended after them: if terra, luna and 5.2 have
-	// all been refused, the account has no general Codex entitlement left and a
-	// model OpenAI retired four days ago cannot rescue it. Selecting `gpt-5.4`
-	// or `gpt-5.4-mini` directly still degrades, through their own keys below.
-	[GPT_55_MODEL_ID]: [GPT_56_TERRA_MODEL_ID, GPT_56_LUNA_MODEL_ID, "gpt-5.2"],
-	// Each retired id leads with the successor its own catalog entry names.
-	"gpt-5.4": [GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
-	"gpt-5.4-mini": [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
-	// `gpt-5.4-nano` has no catalog entry, so no upgrade directive to follow. It
-	// was previously a dead end with no chain of its own, which made it a
-	// terminal failure for anyone who selected it; give it the same way out.
-	"gpt-5.4-nano": [GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
+	// Each retired id leads with the successor its catalog `upgrade` names: as
+	// of openai/codex 49e95cc7 that is gpt-5.4 -> gpt-6-sol and
+	// gpt-5.4-mini -> gpt-6-luna (previously 5.6 terra/luna). `gpt-5.4-mini`
+	// has since left the catalog entirely (#44250), but Codex keeps migrating
+	// saved selections of it to Luna, so this row keeps doing the same.
+	"gpt-5.4": [GPT_6_SOL_MODEL_ID, GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID],
+	"gpt-5.4-mini": [GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
+	// `gpt-5.4-nano` never had a catalog entry, so no upgrade directive to
+	// follow; it takes the budget line like its mini sibling.
+	"gpt-5.4-nano": [GPT_6_LUNA_MODEL_ID, GPT_56_LUNA_MODEL_ID, GPT_55_MODEL_ID],
 	// GPT-5.4 Pro has no catalog entry either; it inherits the 5.4 line's
 	// successor rather than degrading onto retired gpt-5.4 first.
-	"gpt-5.4-pro": [GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
-	"gpt-5-codex": [GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID, "gpt-5.2"],
+	"gpt-5.4-pro": [GPT_6_SOL_MODEL_ID, GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID],
+	"gpt-5-codex": [GPT_56_TERRA_MODEL_ID, GPT_55_MODEL_ID],
 	// Legacy selectors normalize to `gpt-5-codex` before lookup during the
 	// request path. Keep these historical entries for direct helper callers and
 	// custom-chain documentation; the canonical `gpt-5-codex` edge above is the
@@ -194,8 +215,11 @@ const DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV: Record<string, string> = {
 	[GPT_56_SOL_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK",
 	[GPT_56_TERRA_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK",
 	[GPT_56_LUNA_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK",
-	// Astra is mid-rollout, so the same reasoning applies one generation up.
+	// Every GPT-6 tier is mid-rollout, so the same reasoning applies one
+	// generation up. One switch covers the generation, like the 5.6 one.
 	[GPT_6_ASTRA_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK",
+	[GPT_6_SOL_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK",
+	[GPT_6_LUNA_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK",
 };
 
 /**
@@ -207,8 +231,7 @@ const DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV: Record<string, string> = {
  * own a row in DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: membership here gates
  * *whether* auto-fallback is allowed to continue, but the resolver still reads
  * `chain[currentModel]`, so a member with no row of its own returns undefined
- * either way. `gpt-5.2` is deliberately absent for that reason. It is the last
- * resort in every tail and has no row, so listing it would be a no-op.
+ * either way.
  */
 const DEFAULT_AUTO_FALLBACK_CONTINUATION_MODELS = new Set([
 	"gpt-5.4",

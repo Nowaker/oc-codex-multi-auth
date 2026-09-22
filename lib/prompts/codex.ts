@@ -52,6 +52,8 @@ export type ModelFamily =
 	| "codex-max"
 	| "codex"
 	| "gpt-6-astra"
+	| "gpt-6-sol"
+	| "gpt-6-luna"
 	| "gpt-daybreak-blue"
 	| "gpt-daybreak-red"
 	| "gpt-5.6-cyber"
@@ -73,6 +75,8 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = [
 	"codex-max",
 	"codex",
 	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 	"gpt-daybreak-blue",
 	"gpt-daybreak-red",
 	"gpt-5.6-cyber",
@@ -94,13 +98,12 @@ const PROMPT_FILES: Record<ModelFamily, string> = {
 	"gpt-5-codex": "gpt_5_codex_prompt.md",
 	"codex-max": "gpt-5.1-codex-max_prompt.md",
 	codex: "gpt_5_codex_prompt.md",
-	// Fallback only. The 5.6 tiers and Daybreak source their real instructions
-	// from the model catalog (see CATALOG_SLUGS); this file is used only when
-	// the release tag has no usable catalog entry for the slug.
-	//
-	// Astra reads this file: its catalog entry exists but ships an empty
-	// `base_instructions`, which the loader treats as absent.
+	// Fallback only. The GPT-6 and 5.6 tiers and Daybreak source their real
+	// instructions from the model catalog (see CATALOG_SLUGS); this file is used
+	// only when the release tag has no usable catalog entry for the slug.
 	"gpt-6-astra": "gpt_5_2_prompt.md",
+	"gpt-6-sol": "gpt_5_2_prompt.md",
+	"gpt-6-luna": "gpt_5_2_prompt.md",
 	"gpt-daybreak-blue": "gpt_5_2_prompt.md",
 	"gpt-daybreak-red": "gpt_5_2_prompt.md",
 	"gpt-5.6-cyber": "gpt_5_2_prompt.md",
@@ -125,6 +128,8 @@ const CACHE_FILES: Record<ModelFamily, string> = {
 	"codex-max": "codex-max-instructions.md",
 	codex: "codex-instructions.md",
 	"gpt-6-astra": "gpt-6-astra-instructions.md",
+	"gpt-6-sol": "gpt-6-sol-instructions.md",
+	"gpt-6-luna": "gpt-6-luna-instructions.md",
 	"gpt-daybreak-blue": "gpt-daybreak-blue-instructions.md",
 	"gpt-daybreak-red": "gpt-daybreak-red-instructions.md",
 	"gpt-5.6-cyber": "gpt-5.6-cyber-instructions.md",
@@ -164,12 +169,13 @@ const CATALOG_SLUGS: ReadonlySet<string> = new Set([
 	// Present in the catalog as of rust-v0.153.0.
 	"gpt-daybreak-blue-latest",
 	"gpt-daybreak-red-latest",
-	// Astra has a catalog entry as of openai/codex ed391d4d, but its
-	// `base_instructions` is an empty string where every sibling carries 11k to
-	// 21k characters. extractCatalogInstructions treats empty as absent, so
-	// Astra still reads its prompt file. Listed here so it switches over on its
-	// own if OpenAI later fills the field in, with no code change.
+	// Astra's first catalog entry (openai/codex ed391d4d) shipped an empty
+	// `base_instructions`; its text now lives in `instructions_template`.
 	"gpt-6-astra",
+	// Added to the catalog 2026-09-22 (openai/codex 49e95cc7). A release tag
+	// that predates them has no entry, and they fall back to the prompt file.
+	"gpt-6-sol",
+	"gpt-6-luna",
 ]);
 
 const CATALOG_PATH = "codex-rs/models-manager/models.json";
@@ -273,10 +279,27 @@ async function fetchCatalogText(tag: string): Promise<string> {
 interface CatalogModelEntry {
 	slug?: string;
 	base_instructions?: string;
+	model_messages?: {
+		instructions_template?: string | null;
+		instructions_variables?: { personality_default?: string | null } | null;
+	} | null;
 }
 
+/** Codex's `PERSONALITY_PLACEHOLDER` (codex-rs/protocol/src/openai_models.rs). */
+const PERSONALITY_PLACEHOLDER = "{{ personality }}";
+
 /**
- * Pull one model's `base_instructions` out of a raw models.json payload.
+ * Pull one model's base instructions out of a raw models.json payload.
+ *
+ * openai/codex #43604 (2026-09-07) dropped `base_instructions` from every
+ * bundled catalog entry; the text now lives in
+ * `model_messages.instructions_template`. rust-v0.155.1 carries only the
+ * template for all nine of its models, so reading `base_instructions` alone
+ * served the legacy prompt file to every catalog model. The template is rendered the
+ * way Codex renders it with personality disabled
+ * (codex-rs/models-manager/src/model_info.rs): the placeholder takes
+ * `personality_default`, which is "" for every entry that carries one.
+ * `base_instructions` still wins when present, for tags that predate the move.
  *
  * @returns The instructions, or null when the tag predates the slug.
  */
@@ -293,9 +316,17 @@ export function extractCatalogInstructions(
 	const models = Array.isArray(parsed.models) ? parsed.models : [];
 	const entry = models.find((model) => model?.slug === slug);
 	const instructions = entry?.base_instructions;
-	return typeof instructions === "string" && instructions.length > 0
-		? instructions
-		: null;
+	if (typeof instructions === "string" && instructions.length > 0) {
+		return instructions;
+	}
+	const template = entry?.model_messages?.instructions_template;
+	if (typeof template !== "string" || template.length === 0) {
+		return null;
+	}
+	const personality =
+		entry?.model_messages?.instructions_variables?.personality_default ?? "";
+	const rendered = template.split(PERSONALITY_PLACEHOLDER).join(personality);
+	return rendered.trim().length > 0 ? rendered : null;
 }
 
 const CODEX_IDENTITY_LINE_PATTERNS = [
@@ -349,6 +380,14 @@ export function getModelFamily(normalizedModel: string): ModelFamily {
 	// `gpt-5.6-cyber` for the Sol family and serve it Sol's instructions.
 	if (/\bgpt(?:-| )5\.6(?:-| )cyber(?:\b|[- ])/i.test(normalizedModel)) {
 		return "gpt-5.6-cyber";
+	}
+	// Sol and Luna must precede the bare `gpt-6` branch, which would otherwise
+	// claim both for Astra and share its rotation state.
+	if (/\bgpt(?:-| )6(?:-| )sol(?:\b|[- ])/i.test(normalizedModel)) {
+		return "gpt-6-sol";
+	}
+	if (/\bgpt(?:-| )6(?:-| )luna(?:\b|[- ])/i.test(normalizedModel)) {
+		return "gpt-6-luna";
 	}
 	if (/\bgpt(?:-| )6(?:\b|[- ])/i.test(normalizedModel)) {
 		return "gpt-6-astra";
@@ -693,7 +732,7 @@ export function prewarmCodexInstructions(models: string[] = []): void {
 	// The Daybreak tiers are deliberately absent: they are `visibility: "hide"`
 	// opt-in ids, so prewarming them for every user would warm a cache almost
 	// nobody reads. Callers that do use them pass them in explicitly.
-	const candidates = models.length > 0 ? models : ["gpt-5-codex", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.2", "gpt-5.1"];
+	const candidates = models.length > 0 ? models : ["gpt-5-codex", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.2", "gpt-5.1"];
 	for (const model of candidates) {
 		void getCodexInstructions(model).catch((error) => {
 			logDebug("Codex instruction prewarm failed", {

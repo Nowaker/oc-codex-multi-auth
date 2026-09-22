@@ -13,7 +13,7 @@ Public overview of how `oc-codex-multi-auth` installs config, handles ChatGPT Pl
 - The plugin registers **24** `codex-*` tools via **24 per-file factories** under `lib/tools/` (`codex-list`, `codex-switch`, `codex-warm`, and 21 others).
 - OpenCode loads `dist/tui.js` as the TUI plugin for active-session quota status.
 - Request handling stays stateless for the ChatGPT-backed Codex API with `store: false`, `stream: true`, and `reasoning.encrypted_content`. Legacy transformation mode enforces all three unconditionally. Native mode carries them through the shipped config templates and the host payload.
-- GPT-6 Astra, the Daybreak cyber tiers and the GPT-5.6 tiers use the responses-lite request path; older models keep the classic shape.
+- GPT-6 Astra/Sol/Luna, the Daybreak cyber tiers and the GPT-5.6 tiers use the responses-lite request path; older models keep the classic shape.
 - Account, config, backup, log, and TUI quota state lives under `~/.opencode` and `~/.config/opencode`.
 - Per-project account pools are enabled by default under `~/.opencode/projects/<project-key>/...`.
 
@@ -34,9 +34,9 @@ Install modes:
 | Flag | Config written |
 | --- | --- |
 | (default) / `--plugin-only` | Register plugin entries; preserve `provider.openai` |
-| `--modern` | Compact modern: 13 base model families + variant picker (59 variants total) |
+| `--modern` | Compact modern: 15 base model families + variant picker (70 variants total) |
 | `--full` | Compact modern bases **plus** explicit legacy selector IDs |
-| `--legacy` | Explicit-only catalog (59 model entries) |
+| `--legacy` | Explicit-only catalog (70 model entries) |
 
 Standalone read/ops commands (no OpenCode agent loop required): `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm`. See [tools-and-cli.md](tools-and-cli.md).
 
@@ -46,7 +46,7 @@ Standalone read/ops commands (no OpenCode agent loop required): `doctor`, `statu
 
 - OAuth login modes: default-browser callback, open-URL-manually callback, device code, and manual URL paste
 - account manager lifecycle and local account storage (V3)
-- request URL/body/header transformation (native or legacy, plus responses-lite for GPT-6 Astra, Daybreak and GPT-5.6)
+- request URL/body/header transformation (native or legacy, plus responses-lite for GPT-6 Astra/Sol/Luna, Daybreak and GPT-5.6)
 - health-aware account selection, `rotationStrategy`, and `modelAccountPools`
 - retry budgets, circuit breaking (per account, workspace identity, and model family), rate-limit backoff, and failover
 - recoverable error detection with a recovery toast in the current plugin runtime, plus beginner-safe next-action guidance
@@ -68,7 +68,7 @@ oc-codex-multi-auth index.ts
   |- rewrite OpenAI SDK URL to chatgpt.com/backend-api/codex/responses by default
   |- preserve OPENAI_BASE_URL when CODEX_AUTH_ALLOW_OPENAI_BASE_URL=1 explicitly trusts a compatible gateway
   |- shape body for native or legacy transform mode
-  |- for lite models (GPT-6 Astra, Daybreak, GPT-5.6): apply responses-lite reshape (per attempt)
+  |- for lite models (GPT-6 Astra/Sol/Luna, Daybreak, GPT-5.6): apply responses-lite reshape (per attempt)
   |- force stream:true, store:false, reasoning.encrypted_content
   |- select/refresh a healthy account (pools + rotationStrategy)
   |- attach OAuth headers + client identity (originator / User-Agent)
@@ -81,16 +81,17 @@ The gateway override is fail-closed. Remote gateways require HTTPS, literal loop
 
 **Native mode** (default) keeps the host payload shape. It normalizes the model name, sets the backend instruction identity line, and upserts one `## Backend Model Identity` developer message naming the outgoing model, refreshed again when fallback changes the model. `store: false` and the `reasoning.encrypted_content` include are not added by the native transform. They ride the provider options in `opencode.json`, which the shipped config templates write. **Legacy mode** applies compatibility rewrites for older OpenCode/AI SDK behavior through `lib/request/request-transformer.ts`. It sets `store: false` and the include itself, filters unsupported `item_reference` payloads, and strips IDs that cannot be used with `store: false`.
 
-**Responses-lite:** for `gpt-6-astra`, the Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`), `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, the plugin reshapes the request the way Codex does: tool definitions move into `input` as a leading `additional_tools` developer item, Codex instructions follow as a developer message, top-level `instructions` is emptied, `tools` is omitted, `parallel_tool_calls` is forced off, `reasoning.context` is set to `all_turns`, image `detail` fields are stripped, and `x-openai-internal-codex-responses-lite: true` is sent. Lite reshape is applied per request attempt against the model actually being sent, so a sol → gpt-5.5 fallback re-serializes into the classic shape and keeps its tools.
+**Responses-lite:** for `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, the Daybreak-gated cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`), `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, the plugin reshapes the request the way Codex does: tool definitions move into `input` as a leading `additional_tools` developer item, Codex instructions follow as a developer message, top-level `instructions` is emptied, `tools` is omitted, `parallel_tool_calls` is forced off, `reasoning.context` is set to `all_turns`, image `detail` fields are stripped, and `x-openai-internal-codex-responses-lite: true` is sent. Lite reshape is applied per request attempt against the model actually being sent, so a sol → gpt-5.5 fallback re-serializes into the classic shape and keeps its tools.
 
 **Client identity:** by default every responses-lite model uses the host/opencode identity (`originator: opencode` with an `opencode/...` User-Agent). Other families default to the Codex CLI identity. Override with `CODEX_AUTH_CLIENT_IDENTITY`.
 
 **Auto-fallback (preview entitlement gates):**
 
-- GPT-6 Astra: `gpt-6-astra` → `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-5.6-luna` → `gpt-5.5` → `gpt-5.2` (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`)
+- GPT-6 Astra: `gpt-6-astra` → `gpt-6-sol` → `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-6-luna` → `gpt-5.6-luna` → `gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK=1`)
+- GPT-6 Sol and GPT-6 Luna share the same `CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK` opt-out and fall back down the same tail of that order
 - Cyber tiers (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`, `gpt-5.6-cyber`): no chain. They fail loudly rather than silently answering from a general model.
-- GPT-5.6: `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-5.6-luna` → `gpt-5.5` → `gpt-5.2` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`)
-- GPT-5.5 / canonical Codex also have default auto-fallback, now through `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.2`; broader fallback chains require `unsupportedCodexPolicy: "fallback"`. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-5.6-terra`, `gpt-5.4-mini` -> `gpt-5.6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
+- GPT-5.6: `gpt-5.6-sol` → `gpt-5.6-terra` → `gpt-6-luna` → `gpt-5.6-luna` → `gpt-5.5` (disable with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`)
+- GPT-5.5 / canonical Codex also have default auto-fallback, now through `gpt-6-sol` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-6-luna` / `gpt-5.6-luna`; broader fallback chains require `unsupportedCodexPolicy: "fallback"`. `gpt-5.2` was removed as the terminal of every chain after openai/codex #44250 (2026-09-09) removed `gpt-5.2` from the catalog. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31; the catalog marks both `visibility: "hide"` and names their replacements (`gpt-5.4` -> `gpt-6-sol`, `gpt-5.4-mini` -> `gpt-6-luna`), and `gpt-5.4-nano` has no catalog entry. The default chains therefore end at live models rather than leading with retired ones.
 
 ### 4. Account rotation and model pools
 

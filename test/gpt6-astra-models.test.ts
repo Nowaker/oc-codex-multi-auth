@@ -280,13 +280,14 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 	});
 
 	describe("unsupported-model fallback", () => {
-		it("degrades Astra into the 5.6 tiers and out to 5.5", () => {
+		it("degrades Astra through GPT-6 Sol and the 5.6 tiers out to 5.5", () => {
 			expect(DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN[ASTRA]).toEqual([
+				"gpt-6-sol",
 				"gpt-5.6-sol",
 				"gpt-5.6-terra",
+				"gpt-6-luna",
 				"gpt-5.6-luna",
 				"gpt-5.5",
-				"gpt-5.2",
 			]);
 		});
 
@@ -348,11 +349,10 @@ describe("GPT-6 Astra and Daybreak Model Support", () => {
 			expect(extractCatalogInstructions(catalog, RED)).toBe("RED PROMPT");
 		});
 
-		// Astra now has a catalog entry, but its `base_instructions` is an empty
-		// string where every sibling carries 11k to 21k characters. Empty must
-		// read as absent so Astra falls through to its prompt file rather than
+		// An entry with an empty `base_instructions` and no template must read
+		// as absent so the model falls through to its prompt file rather than
 		// being handed no instructions at all.
-		it("treats Astra's empty base_instructions as absent", () => {
+		it("treats an empty base_instructions with no template as absent", () => {
 			const withAstra = JSON.stringify({
 				models: [{ slug: ASTRA, base_instructions: "" }],
 			});

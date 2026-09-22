@@ -27,7 +27,7 @@ opencode auth login
 opencode run "Explain this repository" --model=openai/gpt-5.5 --variant=medium
 ```
 
-`--modern` writes the **compact modern** config so the model picker shows **13 base OAuth model families** and **59 variants**. The `--variant` presets shown above are defined by that catalog, so install with `--modern` (or `--full` / `--legacy`) if you want them. Rerunning `--modern` also removes explicit preset entries and stale base models left by earlier plugin catalogs.
+`--modern` writes the **compact modern** config so the model picker shows **15 base OAuth model families** and **70 variants**. The `--variant` presets shown above are defined by that catalog, so install with `--modern` (or `--full` / `--legacy`) if you want them. Rerunning `--modern` also removes explicit preset entries and stale base models left by earlier plugin catalogs.
 
 The **default** install takes no flag and does not write a model catalog at all:
 
@@ -43,7 +43,7 @@ If you want direct explicit selector IDs such as `openai/gpt-5.5-medium` (modern
 npx -y oc-codex-multi-auth@latest --full
 ```
 
-If you explicitly want the older explicit-only layout (59 individual model keys):
+If you explicitly want the older explicit-only layout (70 individual model keys):
 
 ```bash
 npx -y oc-codex-multi-auth@latest --legacy
@@ -143,11 +143,13 @@ The repository ships two supported templates:
 
 The templates include the supported GPT-5/Codex families, required `store: false` handling, and `reasoning.encrypted_content` for multi-turn sessions.
 
-Current templates expose **13 base model families** and **59 presets** overall (59 modern variants or 59 legacy explicit entries):
+Current templates expose **15 base model families** and **70 presets** overall (70 modern variants or 70 legacy explicit entries):
 
 | Base family | Notes |
 |-------------|-------|
 | `gpt-6-astra` | responses-lite; frontier model (2026-09-03) |
+| `gpt-6-sol` | responses-lite; workhorse coding model (2026-09-22) |
+| `gpt-6-luna` | responses-lite; fast, affordable model (2026-09-22) |
 | `gpt-5.6-sol` | responses-lite; flagship 5.6 tier |
 | `gpt-5.6-terra` | responses-lite |
 | `gpt-5.6-luna` | responses-lite |
@@ -161,7 +163,7 @@ Current templates expose **13 base model families** and **59 presets** overall (
 | `gpt-5.1` | |
 | `gpt-5-codex` | canonical Codex |
 
-On OpenCode `v1.0.210+`, the modern template shows the 13 base entries because additional presets are selected through `--variant` instead of separate model keys.
+On OpenCode `v1.0.210+`, the modern template shows the 15 base entries because additional presets are selected through `--variant` instead of separate model keys.
 
 `gpt-5.5-pro` is not shipped in the Codex templates because it is ChatGPT-only, not Codex-routable. Add entitlement-gated Spark variants manually only when your workspace supports them.
 
@@ -175,10 +177,13 @@ opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5 --v
 opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5-fast --variant=medium
 opencode run "Inspect the retry logic and summarize it" --model=openai/gpt-5-codex --variant=high
 
-# Optional GPT-6 Astra (requires rollout access; auto-falls back astra→sol→terra→luna→gpt-5.5)
+# Optional GPT-6 Astra (requires rollout access; auto-falls back astra→gpt-6-sol→sol→terra→gpt-6-luna→luna→gpt-5.5)
 opencode run "Create a short TODO list for this repo" --model=openai/gpt-6-astra --variant=medium
 
-# Optional GPT-5.6 (requires account entitlement; auto-falls back sol→terra→luna→gpt-5.5)
+# Optional GPT-6 Sol / Luna (added 2026-09-22; same auto-fallback opt-out as Astra)
+opencode run "Create a short TODO list for this repo" --model=openai/gpt-6-sol --variant=medium
+
+# Optional GPT-5.6 (requires account entitlement; auto-falls back sol→terra→gpt-6-luna→luna→gpt-5.5)
 opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.6-sol --variant=medium
 
 # Direct selector IDs, only after installing with --full

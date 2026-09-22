@@ -14,6 +14,8 @@ import {
 	GPT_56_SOL_MODEL_ID,
 	GPT_56_TERRA_MODEL_ID,
 	GPT_6_ASTRA_MODEL_ID,
+	GPT_6_LUNA_MODEL_ID,
+	GPT_6_SOL_MODEL_ID,
 	getNormalizedModel,
 } from "./helpers/model-map.js";
 import {
@@ -87,8 +89,15 @@ export function normalizeModel(model: string | undefined): string {
 	if (/\bgpt(?:-| )5\.6(?:-| )cyber(?:\b|[- ])/.test(normalized)) {
 		return GPT_56_CYBER_MODEL_ID;
 	}
+	// Sol and Luna must precede the catch-all `gpt-6` branch below.
+	if (/\bgpt(?:-| )6(?:-| )sol(?:\b|[- ])/.test(normalized)) {
+		return GPT_6_SOL_MODEL_ID;
+	}
+	if (/\bgpt(?:-| )6(?:-| )luna(?:\b|[- ])/.test(normalized)) {
+		return GPT_6_LUNA_MODEL_ID;
+	}
 	// GPT-6 Astra Pro is not a Codex-routable id (see MODEL_MAP), so every
-	// `gpt-6*` spelling collapses onto the one shipped tier.
+	// other `gpt-6*` spelling collapses onto the frontier tier.
 	if (/\bgpt(?:-| )6(?:\b|[- ])/.test(normalized)) {
 		return GPT_6_ASTRA_MODEL_ID;
 	}
@@ -583,11 +592,17 @@ export function getReasoningConfig(
 		canonicalModelName === DAYBREAK_BLUE_MODEL_ID ||
 		canonicalModelName === DAYBREAK_RED_MODEL_ID ||
 		canonicalModelName === GPT_56_CYBER_MODEL_ID;
+	// GPT-6 Sol/Luna repeat the 5.6 Sol/Luna split, read from the catalog:
+	// Sol low..ultra, Luna low..max, neither accepts none/minimal.
+	const isGpt6Sol = canonicalModelName === GPT_6_SOL_MODEL_ID;
+	const isGpt6Luna = canonicalModelName === GPT_6_LUNA_MODEL_ID;
 
-	/** Families whose whole effort range is low..ultra with no none/minimal. */
-	const isFullEffortFamily = isGpt56 || isGpt6Astra || isDaybreak;
+	/** Families whose whole effort range is low..max(+ultra) with no none/minimal. */
+	const isFullEffortFamily =
+		isGpt56 || isGpt6Astra || isGpt6Sol || isGpt6Luna || isDaybreak;
 	const supportsMax = isFullEffortFamily;
-	const supportsUltra = isGpt56Sol || isGpt56Terra || isGpt6Astra || isDaybreak;
+	const supportsUltra =
+		isGpt56Sol || isGpt56Terra || isGpt6Astra || isGpt6Sol || isDaybreak;
 
 	// GPT-5.4 Mini is a first-class explicit model.
 	const isGpt54Mini = canonicalModelName === "gpt-5.4-mini";

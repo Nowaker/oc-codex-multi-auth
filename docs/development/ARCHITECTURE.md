@@ -1,6 +1,6 @@
 # Architecture
 
-Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, ChatGPT Plus/Pro OAuth flow, Codex/GPT-5 request bridge (including GPT-6 Astra and GPT-5.6 responses-lite), multi-account rotation, `codex-*` tool registry, TUI quota status plugin, and local storage model.
+Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, ChatGPT Plus/Pro OAuth flow, Codex/GPT-5 request bridge (including GPT-6 Astra/Sol/Luna and GPT-5.6 responses-lite), multi-account rotation, `codex-*` tool registry, TUI quota status plugin, and local storage model.
 
 > Reflects the codebase as of the current `main` branch. This file is the maintainer architecture source of truth; `docs/architecture.md` is the shorter public-facing overview.
 
@@ -62,7 +62,7 @@ lib/request/fetch-helpers.ts + lib/request/request-transformer.ts
   |- native mode: preserve host payload shape
   |- legacy mode: apply compatibility rewrites
   |- legacy mode: force store:false, stream:true, and reasoning.encrypted_content
-  |- GPT-6 Astra / Daybreak / GPT-5.6: responses-lite reshape + opencode client identity
+  |- GPT-6 Astra/Sol/Luna / Daybreak / GPT-5.6: responses-lite reshape + opencode client identity
   |- other models: codex_cli_rs client identity (default)
   |- resolve modelAccountPools preferred accounts
   |- select/refresh account (hybrid health scoring)
@@ -157,8 +157,8 @@ High-level provider fetch flow:
    - `include: ["reasoning.encrypted_content"]` or equivalent inclusion
 
    Legacy transformation mode (`transformRequestBody`) sets all three unconditionally. Native mode leaves them to the shipped config templates (`store: false`, `reasoning.encrypted_content`) and the host payload (`stream`).
-5. Normalize model aliases and fallback candidates (including GPT-6 Astra, the Daybreak cyber tiers, and the GPT-5.6 Sol/Terra/Luna tiers).
-6. For responses-lite models (GPT-6 Astra, Daybreak, GPT-5.6), apply the responses-lite reshape (`lib/request/helpers/responses-lite.ts`): tools move into `input` as `additional_tools`, instructions become a developer message, top-level `tools`/`instructions` are cleared for lite shape, image `detail` is stripped, and `x-openai-internal-codex-responses-lite: true` is set.
+5. Normalize model aliases and fallback candidates (including GPT-6 Astra/Sol/Luna, the Daybreak cyber tiers, and the GPT-5.6 Sol/Terra/Luna tiers).
+6. For responses-lite models (GPT-6 Astra/Sol/Luna, Daybreak, GPT-5.6), apply the responses-lite reshape (`lib/request/helpers/responses-lite.ts`): tools move into `input` as `additional_tools`, instructions become a developer message, top-level `tools`/`instructions` are cleared for lite shape, image `detail` is stripped, and `x-openai-internal-codex-responses-lite: true` is set.
 7. Resolve client identity with `lib/request/helpers/client-identity.ts`. Responses-lite models default to `originator: opencode`, other models to `codex_cli_rs`. Override with `CODEX_AUTH_CLIENT_IDENTITY`.
 8. Resolve accounts and `preferred`/`strict` policy from `modelAccountPools` and `modelAccountPoolModes`; only preferred pools fall back to the general pool when unavailable.
 9. Resolve account/workspace selection with the configured `rotationStrategy` (default `hybrid` health scoring), cooldown, token bucket, and explicit `CODEX_AUTH_ACCOUNT_ID` constraints.
@@ -305,20 +305,20 @@ A screen that renders nothing is skipped in the rotation rather than shown blank
 
 The default installer preserves `provider.openai`. `--modern` writes the modern OpenCode template (`config/opencode-modern.json`):
 
-- 13 base model families in the picker:
-  - `gpt-6-astra`
+- 15 base model families in the picker:
+  - `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`
   - `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
   - `gpt-5.5`, `gpt-5.5-fast`
   - `gpt-5.4-mini`, `gpt-5.4-nano`
   - `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`
-- 59 effective variants through OpenCode's variant selector
+- 70 effective variants through OpenCode's variant selector
 - `store: false`
 - `reasoning.encrypted_content`
 - large context/output metadata for supported model families
 
-`--full` adds 59 explicit selector IDs for scripts. `--legacy` writes the explicit-only template (59 entries) for older OpenCode versions.
+`--full` adds 70 explicit selector IDs for scripts. `--legacy` writes the explicit-only template (70 entries) for older OpenCode versions.
 
-Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for `gpt-6-astra` → the GPT-5.6 tiers → `gpt-5.5` → `gpt-5.2`, and for `gpt-5.5` / `gpt-5-codex` through `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.2`. The same terminal `gpt-5.2` ends each GPT-5.6 tier's own chain, and `gpt-5.2` repeats on every tier row on purpose, because the resolver reads the chain of whichever model the request is currently on. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31 and are no longer fallback targets. Full generic fallback can be enabled through config or environment variables.
+Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for `gpt-6-astra` → `gpt-6-sol`/`gpt-6-luna` → the GPT-5.6 tiers → `gpt-5.5`, and for `gpt-5.5` / `gpt-5-codex` through `gpt-6-sol` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-6-luna` / `gpt-5.6-luna`. The same terminal `gpt-5.5` ends each higher tier's own chain, and it repeats on every tier row on purpose, because the resolver reads the chain of whichever model the request is currently on. `gpt-5.2` was removed as every chain's terminal after openai/codex #44250 (2026-09-09) removed it from the catalog. GPT-5.4 and GPT-5.4 Mini were retired from Codex on 2026-08-31 and are no longer fallback targets. Full generic fallback can be enabled through config or environment variables.
 
 ---
 
@@ -361,7 +361,7 @@ Unsupported-model behavior is strict by default. Default auto-fallbacks still co
 9. Account pool limits stay at `ACCOUNT_LIMITS` (max 20, 30s auth cooldown, remove after 3 consecutive auth failures).
 10. Codex CLI hydrate from `~/.codex` stays on unless `CODEX_AUTH_SYNC_CODEX_CLI=0`.
 11. Startup prewarm runs only for legacy request transform when not disabled via `CODEX_AUTH_PREWARM=0`.
-12. Installer help/post-install strings must match the live catalog (13 modern bases / 59 variants; 59 legacy explicit).
+12. Installer help/post-install strings must match the live catalog (15 modern bases / 70 variants; 70 legacy explicit).
 13. Tool additions require a per-file factory, registry wiring, and focused test/docs updates.
 14. Boolean environment overrides are truthy only for the literal string `"1"`.
 15. Docs, package metadata, GitHub About text, and plugin metadata should lead with OpenCode, ChatGPT OAuth, Codex/GPT-5 routing, multi-account rotation, account switching, health checks, diagnostics, and recovery tools.

@@ -5418,13 +5418,14 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			vi.spyOn(config, "getRotationStrategy").mockReturnValue("sticky");
 			vi.mocked(config.getModelAccountPool).mockImplementation((_config, model) => model === "gpt-5.6-terra"
 				? [state === "blocked" ? "acc-1" : state === "unresolved" ? "missing" : "disabled"]
-				: model === "gpt-5.6-luna" ? ["acc-2"] : []);
+				// gpt-6-luna follows terra in gpt-5.6-sol's chain.
+				: model === "gpt-6-luna" ? ["acc-2"] : []);
 			vi.mocked(config.getModelAccountPoolMode).mockReturnValue("strict");
 			const { sdk } = await setupPlugin();
 			expect((await send(sdk)).status).toBe(200);
 			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 			const init = vi.mocked(globalThis.fetch).mock.calls[0]?.[1];
-			expect(JSON.parse(String(init?.body)).model).toBe("gpt-5.6-luna");
+			expect(JSON.parse(String(init?.body)).model).toBe("gpt-6-luna");
 			expect(new Headers(init?.headers).get("x-test-account")).toBe("acc-2");
 		});
 
