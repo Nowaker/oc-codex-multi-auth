@@ -7,6 +7,33 @@ function isFutureReset(window: QuotaOverviewWindow, now: number): boolean {
 		typeof window.resetAtMs === "number" && Number.isFinite(window.resetAtMs) && window.resetAtMs > now;
 }
 
+export function resolveNextQuotaRecovery(
+	accounts: readonly QuotaOverviewAccount[],
+	now: number,
+): QuotaOverviewRecovery | undefined {
+	const current = computeWeightedLeftPercent(accounts);
+	if (current === undefined) return undefined;
+	let earliest: number | undefined;
+	for (const account of accounts) {
+		for (const window of account.windows) {
+			if (isFutureReset(window, now) && window.resetAtMs !== undefined) {
+				earliest = Math.min(earliest ?? Infinity, window.resetAtMs);
+			}
+		}
+	}
+	if (earliest === undefined) return undefined;
+	const atMs = earliest;
+	const refilled = accounts.map((account) => ({
+		...account,
+		windows: account.windows.map((window) =>
+			typeof window.resetAtMs === "number" && Number.isFinite(window.resetAtMs) && window.resetAtMs <= atMs
+				? { ...window, leftPercent: 100 } : window),
+	}));
+	const recovered = computeWeightedLeftPercent(refilled);
+	if (recovered === undefined || recovered - current < 1) return undefined;
+	return { atMs, deltaPercent: recovered - current };
+}
+
 /** Simulate known ordinary windows once; deltas telescope rather than repeating cumulative gains. */
 export function resolveQuotaRecoveryEvents(
 	accounts: readonly QuotaOverviewAccount[],

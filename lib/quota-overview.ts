@@ -30,7 +30,7 @@
 
 import { maskEmailForDisplay } from "./account-display.js";
 import { computeWeightedLeftPercent, resolveGoverningWindow } from "./quota-capacity.js";
-import { resolveQuotaRecoveryEvents } from "./quota-recovery.js";
+import { resolveNextQuotaRecovery, resolveQuotaRecoveryEvents } from "./quota-recovery.js";
 export { computeWeightedLeftPercent, resolveGoverningWindow } from "./quota-capacity.js";
 import { formatPlanMultiplier, getPlanWeight } from "./plan-allotment.js";
 import {
@@ -60,6 +60,8 @@ export const OVERVIEW_RESET_LEFT_PERCENT = 25;
 export type QuotaOverviewWindow = {
 	/** Percentage of this window still free, 0-100. */
 	leftPercent?: number;
+	/** Unrounded headroom retained for threshold decisions, not display. */
+	exactLeftPercent?: number;
 	resetAtMs?: number;
 };
 
@@ -203,7 +205,7 @@ export function resolveQuotaOverviewRecovery(
 	accounts: readonly QuotaOverviewAccount[],
 	now: number = Date.now(),
 ): QuotaOverviewRecovery | undefined {
-	return resolveQuotaRecoveryEvents(accounts, now)[0];
+	return resolveNextQuotaRecovery(accounts, now);
 }
 
 /**

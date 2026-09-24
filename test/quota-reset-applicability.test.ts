@@ -8,6 +8,23 @@ import { isTuiQuotaOverviewSnapshot, readTuiQuotaOverviewSnapshot, writeTuiQuota
 import { toOverviewAccount, toQuotaOverviewAccounts } from "../lib/tui-quota-overview.js";
 
 describe("reset applicability cache", () => {
+	it.each([
+		{ usedPercent: 79.8, eligible: false },
+		{ usedPercent: 80, eligible: true },
+	])("uses unrounded adapter usage at the threshold: $usedPercent", ({ usedPercent, eligible }) => {
+		const accounts = [100, usedPercent].map((used, index) => toOverviewAccount({
+			fingerprint: `fixture-${index}`, index: index + 1,
+			usage: parseCodexUsagePayload({
+				plan_type: "plus",
+				rate_limit: { primary_window: { used_percent: used, limit_window_seconds: 18000 } },
+				rate_limit_reset_credits: { available_count: 1, applicable_available_count: index === 0 ? 1 : 0 },
+			}),
+		}));
+		const snapshot = { version: 1, fetchedAt: 1000, accounts };
+		const candidates = formatQuotaResetsCandidates(toQuotaOverviewAccounts(snapshot), { minUsedPercent: 90 });
+		expect(candidates.length > 0).toBe(eligible);
+	});
+
 	it.each([null, 0, 1])("preserves applicability %s across real cache serialization", async (applicable) => {
 		// Given
 		const dir = await mkdtemp(join(tmpdir(), "quota-applicability-"));

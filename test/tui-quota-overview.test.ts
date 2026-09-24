@@ -404,13 +404,13 @@ describe("toQuotaOverviewAccounts", () => {
 				index: 1,
 				planType: "pro",
 				resetCredits: 1,
-				windows: [{ leftPercent: 0, resetAtMs: NOW + 86_400_000 }],
+				windows: [{ leftPercent: 0, exactLeftPercent: 0, resetAtMs: NOW + 86_400_000 }],
 			},
 			{
 				index: 2,
 				planType: "team",
 				resetCredits: undefined,
-				windows: [{ leftPercent: 60, resetAtMs: undefined }],
+				windows: [{ leftPercent: 60, exactLeftPercent: 60, resetAtMs: undefined }],
 			},
 		]);
 	});
