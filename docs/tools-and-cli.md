@@ -26,7 +26,7 @@ Registered from **24 per-file factories** under `lib/tools/` via `createToolRegi
 | `codex-switch` | Switch the active account (interactive picker when index omitted) |
 | `codex-warm` | Open every enabled account's usage window (one minimal request each) |
 | `codex-status` | Active account, model family, routing / pool mode |
-| `codex-limits` | Live 5-hour and weekly Codex usage per account (fetched via `fetchCodexUsage`) |
+| `codex-limits` | Live 5-hour and weekly Codex usage per account, plus what the pool holds between them (fetched via `fetchCodexUsage`) |
 | `codex-reset` | Inspect or redeem banked rate-limit reset credit |
 | `codex-dashboard` | Read-only snapshot report of account eligibility, retry budgets, and refresh queue health |
 
@@ -140,7 +140,7 @@ Bin: `oc-codex-multi-auth` (also via `npx -y oc-codex-multi-auth@latest …`).
 | `doctor` | Local account/config diagnostics |
 | `status` | Account/config status |
 | `list` | List configured accounts |
-| `limits` | Live 5-hour and weekly quota usage from the usage endpoint |
+| `limits` | Live 5-hour and weekly quota usage from the usage endpoint, plus the pool total |
 | `dashboard` | Prints guidance (does not start a full dashboard server) |
 | `health` | Local token/account health summary |
 | `diag` | Alias for `doctor --deep` |
@@ -161,6 +161,59 @@ oc-codex-multi-auth warm
 ```
 
 `warm` exits non-zero if any account failed. Disabled accounts are skipped. `limits` exits 1 when it cannot load storage or any account's usage fetch fails.
+
+### What `limits` reports
+
+Each account is listed with its windows, the plan it is on, and what one of
+that plan's seats is worth beside the others. The report closes with what the
+pool holds between them:
+
+```text
+- [0] work@example.com id:c487c4
+  Weekly limit: 100% used (resets 15:14 on Sep 30)
+  Plan: pro (20x)
+  Resets: 1 banked
+- [1] team@example.com id:989a40
+  Weekly limit: 79% used (resets 08:33 on Oct 01)
+  Plan: self_serve_business_prolite (5x)
+Pool: 93% used of 81x across 11 accounts
+```
+
+The ratio is appended only when the plan publishes one, so Free, Go and
+Enterprise carry no badge rather than asserting a `1x` baseline OpenAI never
+set. They still weigh one baseline seat in the total.
+
+`81x` is what those accounts add up to in 1x seats, and the percentage is a
+**weighted** mean taken over exactly that sum, not a plain average: a spent Pro
+seat costs the pool twenty times what a spent Plus seat does. Each account is
+judged by whichever of its windows has the least headroom, since that is the
+one that would stop a request. An account whose usage could not be read is left
+out of both figures rather than counted as full or as empty. Percentages follow
+[`quotaDisplay`](configuration.md#quota-percentage-display), so the same pool
+reads `7% left` under the default wording. See
+[plan allotments](plan-allotments.md) for the per-seat ratios and their source.
+
+`--json` carries the same figures as data, with both percentages stated so a
+consumer never has to know which way `quotaDisplay` was pointing:
+
+```json
+{
+  "pool": {
+    "leftPercent": 7,
+    "usedPercent": 93,
+    "allotment": 81,
+    "countedAccounts": 11
+  },
+  "poolSummary": "93% used of 81x across 11 accounts",
+  "accounts": [
+    { "planType": "pro", "planMultiplier": "20x" }
+  ]
+}
+```
+
+`pool` is `null` when no account reported a readable window. The `codex-limits`
+tool renders the same `Pool:` line and carries the same `pool` object in
+`format="json"`.
 
 A successful warm request can clear unchanged cooldown state, the responding
 model's own rate-limit marker, and that family's blanket marker, not other

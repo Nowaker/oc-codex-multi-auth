@@ -894,15 +894,22 @@ async function loadWarmRuntime(env) {
 }
 
 async function loadLimitsRuntime(env) {
-	const [storageMod, usageMod, shutdownMod, loggerMod, configMod] =
+	const [storageMod, usageMod, shutdownMod, loggerMod, configMod, planMod] =
 		await loadDistModules(
-			["storage.js", "codex-usage.js", "shutdown.js", "logger.js", "config.js"],
+			[
+				"storage.js",
+				"codex-usage.js",
+				"shutdown.js",
+				"logger.js",
+				"config.js",
+				"plan-allotment.js",
+			],
 			"limits",
 		);
 	// Fetching usage can refresh (and therefore persist) a token, so the same
 	// process-owns-termination rule as `warm` applies.
 	shutdownMod.setShutdownOwnsProcess(true);
-	return { storageMod, usageMod, shutdownMod, loggerMod, configMod };
+	return { storageMod, usageMod, shutdownMod, loggerMod, configMod, planMod };
 }
 
 export async function runWarmCommand(parsed, options = {}) {
@@ -1066,8 +1073,14 @@ export async function runLimitsCommand(parsed, options = {}) {
 		return { exitCode: 1, action: "limits", storagePath };
 	}
 
-	const { storageMod, usageMod, loggerMod, configMod } = runtime;
+	const { storageMod, usageMod, loggerMod, configMod, planMod } = runtime;
 	const quotaDisplay = configMod.getQuotaDisplay(configMod.loadPluginConfig());
+	// The badge is decoration; the report is the point. A runtime that arrived
+	// without the plan module drops the `(5x)` rather than failing the account
+	// it was attached to - the per-account catch below would otherwise turn one
+	// missing module into an "Error:" line against every account in the pool.
+	const planMultiplierOf = (planType) =>
+		planMod?.formatPlanMultiplier?.(planType) ?? null;
 	// Point dist storage at the resolved accounts file so a refreshed token is
 	// persisted to the SAME file the rest of the toolchain reads.
 	storageMod.setStoragePathDirect(storagePath);
@@ -1114,6 +1127,10 @@ export async function runLimitsCommand(parsed, options = {}) {
 	const normalizedTag =
 		typeof parsed.tag === "string" ? parsed.tag.trim().toLowerCase() : "";
 	const results = [];
+	// Only accounts that answered contribute to the pool total. An account that
+	// failed to report is left out entirely rather than counted as full or as
+	// empty, since either would state capacity nobody measured.
+	const poolMembers = [];
 	let failedCount = 0;
 
 	for (const index of indices) {
@@ -1169,7 +1186,13 @@ export async function runLimitsCommand(parsed, options = {}) {
 					loggerMod.logWarn("Failed to persist recovered usage quota");
 				}
 			}
+			poolMembers.push({
+				planType: usage.planType,
+				primary: usage.primary,
+				secondary: usage.secondary,
+			});
 			entry.planType = usage.planType;
+			entry.planMultiplier = planMultiplierOf(usage.planType);
 			entry.credits = usage.credits;
 			// Raw counts stay in `resetCredits` and the rendered line lives in
 			// its own field: embedding the English summary inside the counts
@@ -1191,11 +1214,25 @@ export async function runLimitsCommand(parsed, options = {}) {
 		results.push(entry);
 	}
 
+	const pool = usageMod.summarizeUsagePool(poolMembers);
 	const payload = {
 		command: "limits",
 		storagePath,
 		totalAccounts: accounts.length,
 		shownAccounts: results.length,
+		// Both percentages are stated so a consumer never has to know which way
+		// `quotaDisplay` was pointing to read them.
+		pool: pool
+			? {
+				leftPercent: pool.leftPercent,
+				usedPercent: 100 - pool.leftPercent,
+				allotment: pool.allotment,
+				countedAccounts: pool.countedAccounts,
+			}
+			: null,
+		poolSummary: pool
+			? usageMod.formatUsagePoolSummary(pool, quotaDisplay)
+			: null,
 		accounts: results,
 	};
 	printLimitsResult(payload, parsed.json);
@@ -1228,12 +1265,16 @@ function printLimitsResult(payload, json) {
 		if ((account.limits ?? []).length === 0) {
 			console.log("  No usage windows reported yet.");
 		}
-		if (account.planType) console.log(`  Plan: ${account.planType}`);
+		if (account.planType) {
+			const allotment = account.planMultiplier ? ` (${account.planMultiplier})` : "";
+			console.log(`  Plan: ${account.planType}${allotment}`);
+		}
 		if (account.credits) console.log(`  Credits: ${account.credits}`);
 		if (account.resetCredits && account.resetCredits.available > 0) {
 			console.log(`  Resets: ${account.resetCreditsSummary}`);
 		}
 	}
+	if (payload.poolSummary) console.log(`Pool: ${payload.poolSummary}`);
 	if (payload.nextAction) console.log(`Next: ${payload.nextAction}`);
 }
 

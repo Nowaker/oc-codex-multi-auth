@@ -17,10 +17,11 @@ vi.mock("../scripts/install-oc-codex-multi-auth-core.js", async (importOriginal)
 				return { storageMod, usageMod, warmReqMod, warmMod, recoveryMod };
 			},
 			loadLimitsRuntime: async () => {
-				const [storageMod, usageMod, loggerMod, configMod] = await Promise.all([
-					import("../lib/storage.js"), import("../lib/codex-usage.js"), import("../lib/logger.js"), import("../lib/config.js"),
+				const [storageMod, usageMod, loggerMod, configMod, planMod] = await Promise.all([
+					import("../lib/storage.js"), import("../lib/codex-usage.js"), import("../lib/logger.js"),
+					import("../lib/config.js"), import("../lib/plan-allotment.js"),
 				]);
-				return { storageMod, usageMod, loggerMod, configMod };
+				return { storageMod, usageMod, loggerMod, configMod, planMod };
 			},
 			...options,
 		});
@@ -913,11 +914,12 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const recoveryMod = await import("../lib/accounts/warm-recovery.js");
 		const loggerMod = await import("../lib/logger.js");
 		const configMod = await import("../lib/config.js");
+		const planMod = await import("../lib/plan-allotment.js");
 		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
 		const result = await runInstaller([command, "--json"], {
 			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
 			loadWarmRuntime: async () => ({ storageMod, usageMod, warmReqMod, warmMod, recoveryMod }),
-			loadLimitsRuntime: async () => ({ storageMod, usageMod, loggerMod, configMod }),
+			loadLimitsRuntime: async () => ({ storageMod, usageMod, loggerMod, configMod, planMod }),
 		});
 		const stored = JSON.parse(await readFile(join(tempHome, ".opencode", "oc-codex-multi-auth-accounts.json"), "utf-8"));
 		expect(result.exitCode).toBe(0);
@@ -1144,6 +1146,135 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const printed = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
 		expect(printed).toContain("5h limit: 82% left");
 		expect(printed).toContain("Weekly limit: 58% left");
+	});
+
+	it("limits: names what a seat is worth and what the pool adds up to", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => usagePayload,
+			text: async () => JSON.stringify(usagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const printed = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(printed).toContain("Plan: plus (1x)");
+		// The weekly window governs at 58% left, so that is what the pool holds.
+		expect(printed).toContain("Pool: 58% left of 1x across 1 account");
+	});
+
+	it("limits: weighs the pool total by plan rather than averaging seats", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [
+			freshAccount({ refreshToken: "rt-pro", accountId: "acct_pro" }),
+			freshAccount({ refreshToken: "rt-plus", accountId: "acct_plus" }),
+		]);
+		const payloadFor = (planType: string, usedPercent: number) => ({
+			plan_type: planType,
+			rate_limit: {
+				secondary_window: {
+					used_percent: usedPercent,
+					limit_window_seconds: 604_800,
+					reset_at: Math.floor(Date.now() / 1000) + 86_400,
+				},
+			},
+		});
+		// A spent 20x seat beside an untouched 1x seat. A plain mean would call
+		// this pool half full; weighting reports the 5% it actually holds.
+		const payloads = [payloadFor("pro", 100), payloadFor("plus", 0)];
+		let call = 0;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+			const body = payloads[Math.min(call++, payloads.length - 1)];
+			return {
+				ok: true,
+				status: 200,
+				json: async () => body,
+				text: async () => JSON.stringify(body),
+			} as unknown as Response;
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const printed = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(printed).toContain("Plan: pro (20x)");
+		expect(printed).toContain("Plan: plus (1x)");
+		expect(printed).toContain("Pool: 5% left of 21x across 2 accounts");
+	});
+
+	it("limits: --json carries the pool figures and each seat's ratio", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => usagePayload,
+			text: async () => JSON.stringify(usagePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		// Both percentages are present regardless of `quotaDisplay`, so a
+		// consumer never has to know which way the wording was pointing.
+		expect(output.pool).toEqual({
+			leftPercent: 58,
+			usedPercent: 42,
+			allotment: 1,
+			countedAccounts: 1,
+		});
+		expect(output.accounts[0].planMultiplier).toBe("1x");
+	});
+
+	it("limits: a plan with no published ratio carries no badge", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		await writeAccounts(tempHome, [freshAccount()]);
+		const freePayload = {
+			plan_type: "free",
+			rate_limit: {
+				secondary_window: {
+					used_percent: 40,
+					limit_window_seconds: 2_592_000,
+					reset_at: Math.floor(Date.now() / 1000) + 86_400,
+				},
+			},
+		};
+		vi.spyOn(globalThis, "fetch").mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => freePayload,
+			text: async () => JSON.stringify(freePayload),
+		} as unknown as Response);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+
+		await runInstaller(["limits", "--json"], {
+			env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
+		});
+
+		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
+		// Free states no per-seat ratio, so the badge is withheld rather than
+		// asserting a 1x baseline OpenAI never published. It still weighs 1.
+		expect(output.accounts[0].planMultiplier).toBeNull();
+		expect(output.pool.allotment).toBe(1);
 	});
 
 	it("limits: reports consumption instead of headroom when quotaDisplay is used", async () => {

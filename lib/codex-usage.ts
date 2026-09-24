@@ -16,6 +16,12 @@ import {
 	type QuotaDisplayMode,
 } from "./quota-display.js";
 import {
+	computePoolAllotment,
+	computeWeightedLeftPercent,
+	resolveGoverningWindow,
+	type QuotaOverviewAccount,
+} from "./quota-overview.js";
+import {
 	isQuotaWindowExhausted,
 	MAX_QUOTA_RESET_HORIZON_MS,
 } from "./quota-windows.js";
@@ -341,6 +347,94 @@ export function hasUsageWindow(window: LimitWindow): boolean {
 			typeof window.usedPercent === "number" ||
 			window.resetAtMs,
 	);
+}
+
+/**
+ * One account's contribution to a pool total: its plan, and the two windows
+ * that govern ordinary model requests.
+ *
+ * Code review and the additional limits are deliberately absent. They do not
+ * stop an ordinary request, so counting them would let a spent code-review
+ * allowance report the pool as emptier than it is.
+ */
+export type UsagePoolMember = Pick<
+	CodexUsageSummary,
+	"planType" | "primary" | "secondary"
+>;
+
+export type UsagePoolSummary = {
+	/** Weighted mean headroom across the counted accounts, 0-100. */
+	leftPercent: number;
+	/** What those accounts add up to in 1x seats: `81` renders as `81x`. */
+	allotment: number;
+	/** How many accounts both figures were taken over. */
+	countedAccounts: number;
+};
+
+function toUsagePoolAccount(
+	member: UsagePoolMember,
+	index: number,
+): QuotaOverviewAccount {
+	return {
+		index: index + 1,
+		planType: member.planType ?? undefined,
+		// A window the plan has switched off still reports `used_percent: 0`,
+		// so it has to be dropped here or it contributes a full quota nobody
+		// has. This is the same filter the pool status line applies.
+		windows: [member.primary, member.secondary]
+			.filter((window) => hasUsageWindow(window))
+			.map((window) => ({
+				leftPercent: getUsageLeftPercent(window.usedPercent),
+				resetAtMs: window.resetAtMs,
+			})),
+	};
+}
+
+/**
+ * What a set of accounts holds between them: one weighted percentage, and the
+ * allotment that percentage is taken over.
+ *
+ * The weighting is the pool status line's rather than a second opinion on it.
+ * A Pro seat spent to 50% has given up twenty times the capacity a Business
+ * Standard seat does at 50%, so an unweighted average over mixed plans
+ * describes a pool nobody has; delegating to `lib/quota-overview.ts` is what
+ * keeps the figure `codex-limits` prints and the figure the prompt status line
+ * shows from drifting apart.
+ *
+ * Returns nothing when no account reported a readable window. A quota that
+ * could not be read is not capacity we know we have, and averaging over an
+ * empty set would report `0%` as though the pool were spent.
+ */
+export function summarizeUsagePool(
+	members: readonly UsagePoolMember[],
+): UsagePoolSummary | undefined {
+	const accounts = members.map(toUsagePoolAccount);
+	const leftPercent = computeWeightedLeftPercent(accounts);
+	const allotment = computePoolAllotment(accounts);
+	if (leftPercent === undefined || allotment === undefined) return undefined;
+	// Counted through the same resolver the two figures use, so the account
+	// count can never describe a different set than the percentage does.
+	const countedAccounts = accounts.filter((account) => {
+		const governing = resolveGoverningWindow(account);
+		return (
+			typeof governing?.leftPercent === "number" &&
+			Number.isFinite(governing.leftPercent)
+		);
+	}).length;
+	return { leftPercent, allotment, countedAccounts };
+}
+
+/** `91% used of 81x across 11 accounts`. */
+export function formatUsagePoolSummary(
+	summary: UsagePoolSummary,
+	mode: QuotaDisplayMode = DEFAULT_QUOTA_DISPLAY_MODE,
+): string {
+	const accounts = `${summary.countedAccounts} account${
+		summary.countedAccounts === 1 ? "" : "s"
+	}`;
+	return `${formatNamedQuotaPercent(summary.leftPercent, mode)} of ${
+		summary.allotment
+	}x across ${accounts}`;
 }
 
 /**
