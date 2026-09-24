@@ -510,9 +510,14 @@ function formatRecoveryEventForms(
 	events: readonly QuotaOverviewRecovery[],
 	now: number,
 ): string[] {
-	if (events.length === 0) return [];
-	const long = events.map((event) => formatRecovery(event, { mode: "free", now, words: true }));
-	const short = events.map((event) => formatRecovery(event, { mode: "free", now, words: false }));
+	const buckets = new Map<string, number>();
+	for (const event of events) {
+		const duration = formatCompactDuration(event.atMs - now);
+		if (duration) buckets.set(duration, (buckets.get(duration) ?? 0) + event.deltaPercent);
+	}
+	if (buckets.size === 0) return [];
+	const long = [...buckets].map(([duration, delta]) => `+${delta}% in ${duration}`);
+	const short = [...buckets].map(([duration, delta]) => `+${delta}% ${duration}`);
 	const forms = [long.join(", ")];
 	for (let count = short.length; count > 0; count -= 1) {
 		forms.push(short.slice(0, count).join(", "));
