@@ -755,6 +755,7 @@ describe("getQuotaStatus", () => {
 		expect(getQuotaStatus({ quotaStatus: { mode: "overview" } })).toEqual({
 			screens: ["overview"],
 			rotateMs: 5_000,
+			resetsMinUsedPercent: 100,
 			layout: "accounts",
 			accountNames: "number",
 			order: "number",
@@ -789,6 +790,7 @@ describe("getQuotaStatus", () => {
 		).toEqual({
 			screens: ["overview", "resets"],
 			rotateMs: 8_000,
+			resetsMinUsedPercent: 100,
 			layout: "aggregate",
 			accountNames: "label",
 			order: "most-used",

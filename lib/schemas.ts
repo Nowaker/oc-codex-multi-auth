@@ -83,7 +83,7 @@ export const PluginConfigSchema = z.object({
 			z.array(QuotaStatusScreenSchema),
 		]).optional(),
 		rotateMs: z.number().min(1_000).optional(),
-		layout: z.enum(["accounts", "aggregate", "count"]).optional(),
+		layout: z.enum(["accounts", "aggregate", "count", "total"]).optional(),
 		accountNames: z.enum(["number", "label", "none"]).optional(),
 		order: z.enum([
 			"number",
@@ -103,7 +103,8 @@ export const PluginConfigSchema = z.object({
 			z.boolean(),
 		]).optional(),
 		resetCredits: z.boolean().optional(),
-		recovery: z.boolean().optional(),
+		recovery: z.union([z.boolean(), z.literal("all")]).optional(),
+		resetsMinUsedPercent: z.number().min(0).max(100).optional(),
 		accounts: z.boolean().optional(),
 		rows: z.number().int().min(1).max(4).optional(),
 		showFor: z.enum(["always", "codex-models"]).optional(),

@@ -602,11 +602,13 @@ export function formatQuotaOverviewStatusText(params: {
 export function formatQuotaResetsStatusLines(params: {
 	accounts: readonly QuotaOverviewAccount[];
 	options: QuotaOverviewOptions;
+	resetsMinUsedPercent?: number;
 	width?: number;
 	availableChars?: number;
 	maxRows?: number;
 }): string[] {
 	const candidates = formatQuotaResetsCandidates(params.accounts, {
+		minUsedPercent: params.resetsMinUsedPercent,
 		maskEmail: params.options.maskEmail,
 		names: params.options.names,
 		now: params.options.now,

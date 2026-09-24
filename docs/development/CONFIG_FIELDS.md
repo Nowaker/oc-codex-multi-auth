@@ -230,14 +230,15 @@ Defaults come from `lib/config.ts` / `lib/schemas.ts`. Environment overrides win
 | `quotaDisplay` | `free` | `CODEX_AUTH_QUOTA_DISPLAY` | Word quota percentages as `free` headroom or `used` consumption; presentation only |
 | `quotaStatus.mode` | `active` | (file only) | Screen, or list of screens to alternate between: `active`, `overview`, `resets` |
 | `quotaStatus.rotateMs` | `5000` | (file only) | How long each screen stays up when `mode` is a list; minimum 1000 |
-| `quotaStatus.layout` | `accounts` | (file only) | `accounts`, `aggregate` (collapse a shared percentage), or `count` (`3 accounts`) |
+| `quotaStatus.layout` | `accounts` | (file only) | `accounts`, `aggregate` (collapse a shared percentage), `count` (`3 accounts`), or `total` (no account segments/count) |
 | `quotaStatus.accountNames` | `number` | (file only) | `number` (`#1`), `label` (`codex-label` label or email local part), or `none` |
 | `quotaStatus.order` | `number` | (file only) | `number`, `most-used`, `least-used`, `renewing-earliest`, `renewing-latest` |
 | `quotaStatus.multipliers` | `false` | (file only) | `5x` / `20x` plan allotment badges |
 | `quotaStatus.allotment` | `false` | (file only) | `24% of 26x`: what the weighted pool adds up to in 1x seats |
 | `quotaStatus.resetTimes` | `low` | (file only) | `never`, `low` (at or below 25% headroom), or `always` |
 | `quotaStatus.resetCredits` | `false` | (file only) | `1r` for banked rate-limit resets redeemable now |
-| `quotaStatus.recovery` | `false` | (file only) | `+12% in 3d`: how far the pool total moves at the next reset |
+| `quotaStatus.recovery` | `false` | (file only) | `true`: next signed movement; `"all"`: all known incremental capacity returns, always positive |
+| `quotaStatus.resetsMinUsedPercent` | `100` | (file only) | Exact total weighted usage threshold (0-100) for the reset-credit screen, independent of `quotaDisplay` |
 | `quotaStatus.rows` | `1` | (file only) | Ceiling on the rows the line may take (1-4). A rendering that fits on one row still takes one |
 | `quotaStatus.showFor` | `always` | (file only) | `always`, or `codex-models` to hide the line unless the session runs a model this plugin routes |
 

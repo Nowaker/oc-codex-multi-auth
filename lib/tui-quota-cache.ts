@@ -372,6 +372,7 @@ export type TuiQuotaOverviewAccount = {
 	planType?: string;
 	/** Banked rate-limit resets redeemable now. */
 	resetCredits?: number;
+	resetCreditsApplicable?: number | null;
 	limits: TuiQuotaLimit[];
 };
 
@@ -404,6 +405,8 @@ function isTuiQuotaOverviewAccount(
 		(value.label === undefined || typeof value.label === "string") &&
 		(value.planType === undefined || typeof value.planType === "string") &&
 		isOptionalFiniteNumber(value.resetCredits) &&
+		(value.resetCreditsApplicable === undefined || value.resetCreditsApplicable === null ||
+			(typeof value.resetCreditsApplicable === "number" && Number.isInteger(value.resetCreditsApplicable) && value.resetCreditsApplicable >= 0)) &&
 		Array.isArray(value.limits) &&
 		value.limits.every(isTuiQuotaLimit)
 	);

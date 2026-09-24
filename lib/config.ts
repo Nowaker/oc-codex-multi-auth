@@ -1214,6 +1214,7 @@ const QUOTA_OVERVIEW_LAYOUTS: readonly QuotaOverviewLayout[] = [
 	"accounts",
 	"aggregate",
 	"count",
+	"total",
 ];
 const QUOTA_OVERVIEW_NAMES: readonly QuotaOverviewNames[] = [
 	"number",
@@ -1246,7 +1247,7 @@ export interface QuotaStatusConfig {
 	 */
 	screens: QuotaStatusScreen[];
 	rotateMs: number;
-	/** One segment per account, one per distinct percentage, or just a count. */
+	/** Per-account segments, grouped percentages, a count, or only the total. */
 	layout: QuotaOverviewLayout;
 	/** `#1`, the account's own name, or nothing at all. */
 	accountNames: QuotaOverviewNames;
@@ -1259,8 +1260,10 @@ export interface QuotaStatusConfig {
 	resetTimes: QuotaOverviewResetTimes;
 	/** `1r` for banked rate-limit resets redeemable now. */
 	resetCredits: boolean;
-	/** `+12% in 3d`: how far the pool total moves at the next reset. */
-	recovery: boolean;
+	/** Next reset's delta, or all future capacity returns when set to `all`. */
+	recovery: boolean | "all";
+	/** Minimum pool usage before showing actionable reset credits. */
+	resetsMinUsedPercent: number;
 	/**
 	 * Rows the line may occupy. A ceiling rather than a height: a rendering
 	 * that fits on one row still takes one, so raising this costs nothing until
@@ -1344,6 +1347,7 @@ export function getQuotaStatus(pluginConfig: PluginConfig): QuotaStatusConfig {
 				: pickEnum(resetTimes, QUOTA_OVERVIEW_RESET_TIMES, "low"),
 		resetCredits: config?.resetCredits ?? false,
 		recovery: config?.recovery ?? false,
+		resetsMinUsedPercent: config?.resetsMinUsedPercent ?? 100,
 		rows:
 			typeof config?.rows === "number" && Number.isFinite(config.rows)
 				? Math.min(MAX_QUOTA_STATUS_ROWS, Math.max(1, Math.trunc(config.rows)))

@@ -297,7 +297,7 @@ The label's own width and height are deliberately **not** measured, and both wer
 
 `rows` is therefore a plain ceiling (1-4, default 1), not a measurement. It costs nothing until the content needs the room, since a candidate that fits on one row still returns one row. A second row is one `text` node with a newline in it, so the renderer measures it and the node sizes itself; `alignSelf: "flex-start"` keeps it on the top row, since the host centres this slot against a label that wraps.
 
-A screen that renders nothing is skipped in the rotation rather than shown blank, which is what lets `resets` sit in the list permanently and surface only on the day every account is spent.
+A screen that renders nothing is skipped in the rotation rather than shown blank. `resets` surfaces at `resetsMinUsedPercent` total weighted usage (default 100), only for known applicable credits. Capacity recovery simulation lives in `lib/quota-recovery.ts` and shares governing-window/weighted-total arithmetic from `lib/quota-capacity.ts`; `recovery: "all"` reports chronological incremental returns without inventing recurring windows.
 
 ---
 
