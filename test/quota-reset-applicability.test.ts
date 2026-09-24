@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseCodexUsagePayload } from "../lib/codex-usage.js";
 import { formatQuotaResetsCandidates } from "../lib/quota-overview.js";
-import { isTuiQuotaOverviewSnapshot, readTuiQuotaOverviewSnapshot, writeTuiQuotaOverviewSnapshot } from "../lib/tui-quota-cache.js";
+import { isTuiQuotaOverviewSnapshot, readTuiQuotaOverviewSnapshot, writeTuiQuotaOverviewSnapshot, type TuiQuotaOverviewSnapshot } from "../lib/tui-quota-cache.js";
 import { toOverviewAccount, toQuotaOverviewAccounts } from "../lib/tui-quota-overview.js";
 
 describe("reset applicability cache", () => {
@@ -20,7 +20,7 @@ describe("reset applicability cache", () => {
 				rate_limit_reset_credits: { available_count: 1, applicable_available_count: index === 0 ? 1 : 0 },
 			}),
 		}));
-		const snapshot = { version: 1, fetchedAt: 1000, accounts };
+		const snapshot = { version: 1 as const, fetchedAt: 1000, accounts } satisfies TuiQuotaOverviewSnapshot;
 		const candidates = formatQuotaResetsCandidates(toQuotaOverviewAccounts(snapshot), { minUsedPercent: 90 });
 		expect(candidates.length > 0).toBe(eligible);
 	});
