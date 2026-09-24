@@ -57,6 +57,7 @@ describe("TUI status configuration reload", () => {
 				resetTimes: "low",
 				resetCredits: false,
 				recovery: false,
+				resetsMinUsedPercent: 100,
 				rows: 1,
 				showFor: "always",
 			},
@@ -76,6 +77,15 @@ describe("TUI status configuration reload", () => {
 		expect(after.quotaStatus.multipliers).toBe(true);
 		expect(after.quotaStatus.recovery).toBe(true);
 		expect(after.quotaDisplay).toBe("used");
+	});
+
+	it("reloads forecast options without restarting the TUI module", () => {
+		writeConfig({ quotaStatus: { layout: "accounts", recovery: true } });
+		const before = read();
+		writeConfig({ quotaStatus: { layout: "total", recovery: "all", resetsMinUsedPercent: 75 } });
+		const after = read();
+		expect(after.quotaStatus).toMatchObject({ layout: "total", recovery: "all", resetsMinUsedPercent: 75 });
+		expect(same(before, after)).toBe(false);
 	});
 
 	it("follows a switch back to the serving-account line", () => {
@@ -159,6 +169,7 @@ describe("TUI status configuration reload", () => {
 			{ ...base, quotaStatus: { ...base.quotaStatus, rotateMs: 9_000 } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, layout: "count" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, layout: "aggregate" } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, layout: "total" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, accountNames: "label" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, order: "most-used" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, multipliers: true } },
@@ -166,6 +177,8 @@ describe("TUI status configuration reload", () => {
 			{ ...base, quotaStatus: { ...base.quotaStatus, resetTimes: "always" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, resetCredits: true } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, recovery: true } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, recovery: "all" } },
+			{ ...base, quotaStatus: { ...base.quotaStatus, resetsMinUsedPercent: 80 } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, rows: 2 } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, showFor: "codex-models" } },
 		];

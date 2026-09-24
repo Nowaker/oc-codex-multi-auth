@@ -413,9 +413,17 @@ does at 50%, so an unweighted average would describe a pool nobody has. The
 per-plan ratios are listed in [docs/plan-allotments.md](docs/plan-allotments.md),
 and `"allotment": true` shows what they add up to.
 
+For just that total and its recovery forecast, use `"layout": "total"`,
+`"recovery": "all"`, and `"allotment": false`. This reads, for example,
+`25% +1% in 3h, +12% in 3d, +5% in 4d`: each positive figure is incremental
+capacity returned in percentage points, even with `quotaDisplay: "used"`.
+See the [forecast semantics](docs/configuration.md#what-the-line-says).
+
 `mode` also accepts a list, and the line then alternates between those screens
-every `rotateMs` (default 5000). The third screen, `resets`, appears only once
-every account is spent and lists the banked reset credits worth redeeming,
+every `rotateMs` (default 5000). The third screen, `resets`, appears by default
+once every readable account is spent. Set `resetsMinUsedPercent` (0-100) to
+show it earlier, for example at 90% total weighted usage. It lists known
+applicable banked reset credits,
 latest reset first - redeeming one on an account that renews by itself tomorrow
 throws it away:
 
@@ -444,6 +452,8 @@ Add the object to `~/.opencode/openai-codex-auth-config.json`. It is read from
 that file only - a display preference belongs to a person, not to a shell - and
 the status line re-reads it while sessions are open, so an edit takes effect
 within a couple of seconds without a restart.
+New plugin code still needs a one-time process restart after an upgrade;
+subsequent changes to these settings reload live.
 
 ### Desktop quota notifications
 

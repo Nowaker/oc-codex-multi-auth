@@ -434,6 +434,7 @@ export function samePromptStatusOptions(
 		leftStatus.resetTimes === rightStatus.resetTimes &&
 		leftStatus.resetCredits === rightStatus.resetCredits &&
 		leftStatus.recovery === rightStatus.recovery &&
+		leftStatus.resetsMinUsedPercent === rightStatus.resetsMinUsedPercent &&
 		leftStatus.rows === rightStatus.rows &&
 		leftStatus.showFor === rightStatus.showFor
 	);
@@ -646,6 +647,7 @@ function createOverviewQuotaController(
 			return render({
 				accounts: current.accounts,
 				options: toQuotaOverviewOptions(options, Date.now()),
+				resetsMinUsedPercent: options.quotaStatus.resetsMinUsedPercent,
 				width: api.renderer.width,
 				availableChars: layout.availableChars,
 				maxRows: layout.maxRows,

@@ -455,14 +455,15 @@ started OpenCode, so there is no environment override for any field in it.
 
 | Field | Default | Effect |
 | --- | --- | --- |
-| `layout` | `accounts` | `accounts` gives one segment per account; `aggregate` collapses accounts that share a percentage; `count` gives `24%: 3 accounts` |
+| `layout` | `accounts` | `accounts` gives one segment per account; `aggregate` collapses accounts that share a percentage; `count` gives `24%: 3 accounts`; `total` shows only the pool percentage plus any enabled allotment/recovery |
 | `accountNames` | `number` | `number` gives `#1`; `label` gives the account's `codex-label` label, or its email's local part; `none` drops the name |
 | `order` | `number` | `number`, `most-used`, `least-used`, `renewing-earliest`, `renewing-latest` |
 | `multipliers` | `false` | `5x` / `20x` plan allotment badges |
 | `allotment` | `false` | `24% of 26x`, what the pool the percentage is averaged over adds up to |
 | `resetTimes` | `low` | `never`, `low` (only accounts at or below 25% headroom), or `always` |
 | `resetCredits` | `false` | `1r` for banked rate-limit resets redeemable now |
-| `recovery` | `false` | `+12% in 3d`, how far the pool total moves at the next reset |
+| `recovery` | `false` | `true` shows the next capacity gain with the display-direction sign; `"all"` shows all known gains with a positive capacity-return sign |
+| `resetsMinUsedPercent` | `100` | Minimum total weighted usage (0-100) for the `resets` screen, independent of `quotaDisplay` |
 
 With everything on:
 
@@ -496,8 +497,40 @@ works while they are in `number` order and every one of them is readable:
 24%: 87%, 0% 3d, 88%
 ```
 
-The recovery clause is signed to match the direction the figure beside it
-moves, so it reads `+12% in 3d` under `free` and `-12% in 3d` under `used`.
+With `recovery: true`, the next recovery clause is signed to match the direction
+the figure moves: `+12% in 3d` under `free`, `-12% in 3d` under `used`.
+
+Use `recovery: "all"` for a chronological capacity forecast. Each `+N%` means
+**incremental percentage points of pool capacity returned at that timestamp**,
+not a cumulative gain. The sign is positive even under `quotaDisplay: "used"`.
+Known ordinary windows are simulated cumulatively, simultaneous resets are
+batched, and a reset that leaves another window blocking the account adds no
+gain. Invalid/past timestamps and unreadable windows are not refilled, and no
+future recurrence is invented. Differences between rounded weighted totals
+keep the gains from adding up to more than the displayed used capacity.
+
+For just the total and forecast, with no account count, account segments, or
+allotment:
+
+```json
+{
+  "quotaDisplay": "used",
+  "quotaStatus": {
+    "mode": ["overview", "resets"],
+    "layout": "total",
+    "allotment": false,
+    "recovery": "all",
+    "resetsMinUsedPercent": 90
+  }
+}
+```
+
+```text
+25% +1% in 3h, +12% in 3d, +5% in 4d
+```
+
+Recovery works with every layout. Narrow candidates omit `in`, then retain a
+chronological prefix; `total` never falls back to an account count.
 
 #### Rotating between screens
 
@@ -514,8 +547,11 @@ moves, so it reads `+12% in 3d` under `free` and `-12% in 3d` under `used`.
 ```
 
 A screen with nothing to say is skipped rather than shown blank, which is what
-makes `resets` worth leaving in the list permanently. It renders only once
-**every** account is spent, and lists the banked reset credits worth redeeming,
+makes `resets` worth leaving in the list permanently. By default it renders only
+once **every readable** account is spent. Set `resetsMinUsedPercent` to show it
+earlier, for example at 90% total weighted usage. The threshold uses the exact
+weighted usage before display rounding, regardless of free/used wording.
+The page lists only accounts with applicable banked reset credits,
 latest reset first - because redeeming a credit on an account that renews by
 itself tomorrow throws the credit away, while the account six days out is the
 one worth spending it on:
@@ -523,6 +559,11 @@ one worth spending it on:
 ```text
 Free resets: 6d 1r damian@nowaker.net, 4d 2r work@example.com
 ```
+
+Unknown applicability is not treated as redeemable, nor as proof that no
+actionable credits exist. Old cache counts are considered only for spent
+accounts; newly fetched readings preserve explicit applicability. A page with
+no known applicable credits is skipped. This display never redeems a credit.
 
 That line honours [`maskEmail`](#options). It shortens by giving up the word
 `Free`, then the address (to a label, then to `#1`), then the countdown, then
@@ -584,6 +625,8 @@ figure stays live between polls.
 Add the configuration to `~/.opencode/openai-codex-auth-config.json`. The
 status line re-reads that file while sessions are open, so an edit takes effect
 within a couple of seconds without a restart.
+This reload applies to settings, not plugin code. After upgrading a build to
+introduce new options, restart each older OpenCode process once to load it.
 
 ### Beginner Safe Mode Behavior
 

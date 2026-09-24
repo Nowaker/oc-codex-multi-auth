@@ -29,6 +29,9 @@
  */
 
 import { maskEmailForDisplay } from "./account-display.js";
+import { computeWeightedLeftPercent, resolveGoverningWindow } from "./quota-capacity.js";
+import { resolveQuotaRecoveryEvents } from "./quota-recovery.js";
+export { computeWeightedLeftPercent, resolveGoverningWindow } from "./quota-capacity.js";
 import { formatPlanMultiplier, getPlanWeight } from "./plan-allotment.js";
 import {
 	formatQuotaPercent,
@@ -54,9 +57,6 @@ const MS_PER_DAY = 24 * MS_PER_HOUR;
  */
 export const OVERVIEW_RESET_LEFT_PERCENT = 25;
 
-/** Smallest pool-total movement worth spending characters on. */
-const MIN_RECOVERY_DELTA_PERCENT = 1;
-
 export type QuotaOverviewWindow = {
 	/** Percentage of this window still free, 0-100. */
 	leftPercent?: number;
@@ -80,6 +80,8 @@ export type QuotaOverviewAccount = {
 	windows: readonly QuotaOverviewWindow[];
 	/** Banked rate-limit resets redeemable now, rendered as `1r`. */
 	resetCredits?: number;
+	/** Explicit applicability; null is unknown, absence identifies a legacy cache. */
+	resetCreditsApplicable?: number | null;
 };
 
 /** How the accounts are arranged on the line. */
@@ -89,7 +91,8 @@ export type QuotaOverviewLayout =
 	/** Accounts sharing a percentage collapse: `100% 3d 4d 5d`. */
 	| "aggregate"
 	/** No accounts at all, just how many there are: `3 accounts`. */
-	| "count";
+	| "count"
+	| "total";
 
 /** What identifies an account on the line. */
 export type QuotaOverviewNames =
@@ -131,8 +134,8 @@ export type QuotaOverviewOptions = {
 	resetTimes: QuotaOverviewResetTimes;
 	/** `1r` for redeemable banked resets. */
 	resetCredits: boolean;
-	/** `+12% in 3d`: how far the pool total moves at the next reset. */
-	recovery: boolean;
+	/** `true`: next signed movement; `all`: positive incremental capacity returns. */
+	recovery: boolean | "all";
 	/** Masks any email this line would otherwise print in full. */
 	maskEmail?: boolean;
 	now?: number;
@@ -141,9 +144,8 @@ export type QuotaOverviewOptions = {
 export type QuotaOverviewRecovery = {
 	/**
 	 * Pool-total movement at {@link atMs}, in percentage points, always
-	 * positive - it is capacity returning. The rendered sign follows the
-	 * display mode, since the number a reader is watching moves up under
-	 * `free` and down under `used`.
+	 * positive - it is capacity returning. Legacy `recovery: true` follows the
+	 * display-direction sign; `all` always renders capacity with a plus sign.
 	 */
 	deltaPercent: number;
 	atMs: number;
@@ -164,64 +166,6 @@ export function formatCompactDuration(ms: number): string | undefined {
 	if (ms >= MS_PER_DAY) return `${Math.floor(ms / MS_PER_DAY)}d`;
 	if (ms >= MS_PER_HOUR) return `${Math.floor(ms / MS_PER_HOUR)}h`;
 	return `${Math.max(1, Math.floor(ms / MS_PER_MINUTE))}m`;
-}
-
-/**
- * The window that decides what an account can still do.
- *
- * An account reports several windows at once - typically a 5-hour and a weekly
- * one - and the one with the least headroom is the one that stops a request,
- * so it is the one the account is described by. On a tie the window that
- * blocks for longer governs: two windows both fully spent are not equally
- * costly when one returns in four hours and the other in three days.
- */
-export function resolveGoverningWindow(
-	account: QuotaOverviewAccount,
-): QuotaOverviewWindow | undefined {
-	let governing: QuotaOverviewWindow | undefined;
-	for (const window of account.windows) {
-		if (!isPercent(window.leftPercent)) continue;
-		if (!governing) {
-			governing = window;
-			continue;
-		}
-		const governingLeft = governing.leftPercent ?? 100;
-		if (window.leftPercent < governingLeft) {
-			governing = window;
-			continue;
-		}
-		if (
-			window.leftPercent === governingLeft &&
-			isPercent(window.resetAtMs) &&
-			(!isPercent(governing.resetAtMs) || window.resetAtMs > governing.resetAtMs)
-		) {
-			governing = window;
-		}
-	}
-	return governing;
-}
-
-/**
- * Weighted mean headroom across the pool, or `undefined` when no account
- * reported a readable window.
- *
- * Accounts with no readable window are left out rather than counted as full:
- * a quota we could not read is not capacity we know we have.
- */
-export function computeWeightedLeftPercent(
-	accounts: readonly QuotaOverviewAccount[],
-): number | undefined {
-	let weighted = 0;
-	let totalWeight = 0;
-	for (const account of accounts) {
-		const governing = resolveGoverningWindow(account);
-		if (!governing || !isPercent(governing.leftPercent)) continue;
-		const weight = getPlanWeight(account.planType);
-		if (!Number.isFinite(weight) || weight <= 0) continue;
-		weighted += weight * governing.leftPercent;
-		totalWeight += weight;
-	}
-	return totalWeight > 0 ? Math.round(weighted / totalWeight) : undefined;
 }
 
 /**
@@ -259,33 +203,7 @@ export function resolveQuotaOverviewRecovery(
 	accounts: readonly QuotaOverviewAccount[],
 	now: number = Date.now(),
 ): QuotaOverviewRecovery | undefined {
-	const current = computeWeightedLeftPercent(accounts);
-	if (current === undefined) return undefined;
-
-	let earliest: number | undefined;
-	for (const account of accounts) {
-		for (const window of account.windows) {
-			if (!isPercent(window.leftPercent) || window.leftPercent >= 100) continue;
-			const resetAtMs = window.resetAtMs;
-			if (!isPercent(resetAtMs) || resetAtMs <= now) continue;
-			if (earliest === undefined || resetAtMs < earliest) earliest = resetAtMs;
-		}
-	}
-	if (earliest === undefined) return undefined;
-
-	const refilled = accounts.map((account) => ({
-		...account,
-		windows: account.windows.map((window) =>
-			isPercent(window.resetAtMs) && window.resetAtMs <= earliest
-				? { ...window, leftPercent: 100 }
-				: window,
-		),
-	}));
-	const recovered = computeWeightedLeftPercent(refilled);
-	if (recovered === undefined) return undefined;
-	const deltaPercent = recovered - current;
-	if (deltaPercent < MIN_RECOVERY_DELTA_PERCENT) return undefined;
-	return { deltaPercent, atMs: earliest };
+	return resolveQuotaRecoveryEvents(accounts, now)[0];
 }
 
 /**
@@ -448,6 +366,13 @@ function resolveResetCredits(account: QuotaOverviewAccount): number {
 		: 0;
 }
 
+function resolveApplicableResetCredits(account: QuotaOverviewAccount): number {
+	const applicable = account.resetCreditsApplicable;
+	if (applicable === null) return 0;
+	if (applicable !== undefined) return Math.min(resolveResetCredits(account), applicable);
+	return (governingLeftPercent(account) ?? 100) <= 0 ? resolveResetCredits(account) : 0;
+}
+
 /** How much of an account's segment is annotation rather than percentage. */
 type AnnotationRung = {
 	names: QuotaOverviewNames;
@@ -581,6 +506,20 @@ function formatRecovery(
 	return `${sign}${recovery.deltaPercent}% ${options.words ? "in " : ""}${at}`;
 }
 
+function formatRecoveryEventForms(
+	events: readonly QuotaOverviewRecovery[],
+	now: number,
+): string[] {
+	if (events.length === 0) return [];
+	const long = events.map((event) => formatRecovery(event, { mode: "free", now, words: true }));
+	const short = events.map((event) => formatRecovery(event, { mode: "free", now, words: false }));
+	const forms = [long.join(", ")];
+	for (let count = short.length; count > 0; count -= 1) {
+		forms.push(short.slice(0, count).join(", "));
+	}
+	return forms;
+}
+
 /** `3 accounts` -> `3 acct.` -> `3`, in the order they are given up. */
 export type QuotaOverviewCountStyle = "long" | "short" | "bare";
 
@@ -663,10 +602,12 @@ export function formatQuotaOverviewCandidates(
 
 	const ordered = orderOverviewAccounts(accounts, options.order);
 	const usable = ordered.filter((account) => resolveGoverningWindow(account));
-	const recovery = options.recovery
+	const recovery = options.recovery === true
 		? resolveQuotaOverviewRecovery(accounts, now)
 		: undefined;
-	const recoveryForms = recovery
+	const recoveryForms = options.recovery === "all"
+		? formatRecoveryEventForms(resolveQuotaRecoveryEvents(accounts, now), now)
+		: recovery
 		? [true, false]
 				.map((words) =>
 					formatRecovery(recovery, { mode: options.mode, now, words }),
@@ -675,7 +616,7 @@ export function formatQuotaOverviewCandidates(
 		: [];
 
 	const bodies: string[] = [];
-	if (options.layout !== "count") {
+	if (options.layout !== "count" && options.layout !== "total") {
 		// Position identifies an account only when the accounts are in number
 		// order, none of them is missing from the line, and the numbers run
 		// 1..n with no gap - a deduplicated or disabled account leaves indices
@@ -712,6 +653,11 @@ export function formatQuotaOverviewCandidates(
 		if (allotment !== undefined) heads.push(`${totalText} of ${allotment}x`);
 	}
 	if (!heads.includes(totalText)) heads.push(totalText);
+	if (options.layout === "total") {
+		return heads.flatMap((head) => [
+			...recoveryForms.map((form) => `${head} ${form}`), head,
+		]);
+	}
 
 	const candidates: string[] = [];
 	const push = (head: string, ...tail: Array<string | undefined>): void => {
@@ -765,22 +711,23 @@ export function formatQuotaOverviewText(
  * tomorrow throws the credit away, while the account six days out is the one
  * worth spending it on.
  *
- * Returns nothing at all unless the pool is spent and something is redeemable.
- * A reset credit is only an answer to "everything is used up"; offered while
- * accounts still have headroom it is an invitation to waste it.
+ * Returns nothing unless the weighted-usage threshold is met and a credit is
+ * known to be applicable. The default threshold preserves full exhaustion.
  */
 export function formatQuotaResetsCandidates(
 	accounts: readonly QuotaOverviewAccount[],
 	options: Pick<QuotaOverviewOptions, "maskEmail"> & {
 		names?: QuotaOverviewNames;
 		now?: number;
+		minUsedPercent?: number;
 	},
 ): string[] {
-	if (!isPoolFullySpent(accounts)) return [];
+	const total = computeWeightedLeftPercent(accounts, "exact");
+	if (total === undefined || 100 - total < (options.minUsedPercent ?? 100)) return [];
 	const now = options.now ?? Date.now();
 	const maskEmail = options.maskEmail ?? false;
 	const redeemable = orderOverviewAccounts(accounts, "renewing-latest").filter(
-		(account) => resolveResetCredits(account) > 0,
+		(account) => resolveApplicableResetCredits(account) > 0,
 	);
 	if (redeemable.length === 0) return [];
 
@@ -790,7 +737,7 @@ export function formatQuotaResetsCandidates(
 			? undefined
 			: formatCompactDuration(resetAtMs - now);
 	});
-	const credits = redeemable.map((account) => resolveResetCredits(account));
+	const credits = redeemable.map((account) => resolveApplicableResetCredits(account));
 	const everyAccountHasOneCredit = credits.every((count) => count === 1);
 
 	// The identity follows `accountNames` like the pool line does: the full
