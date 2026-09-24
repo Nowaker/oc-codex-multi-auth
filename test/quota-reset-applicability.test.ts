@@ -16,7 +16,7 @@ describe("reset applicability cache", () => {
 			usage: parseCodexUsagePayload({
 				rate_limit: { primary_window: { used_percent: 100, limit_window_seconds: 18000 } },
 				rate_limit_reset_credits: { available_count: 2,
-					applicable_available_count: applicable === null ? "unreadable" : applicable },
+					applicable_available_count: applicable === null ? -1 : applicable },
 			}),
 		});
 		try {
