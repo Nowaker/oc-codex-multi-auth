@@ -487,7 +487,10 @@ the figure moves: `+12% in 3d` under `free`, `-12% in 3d` under `used`.
 
 Use `recovery: "all"` for a chronological capacity forecast. Each `+N%` means
 **incremental percentage points of pool capacity returned at that timestamp**,
-not a cumulative gain. The sign is positive even under `quotaDisplay: "used"`.
+not a cumulative gain. Exact-time gains sharing the same displayed countdown
+are summed before shortening: `+7% in 5d, +24% in 5d, +2% in 5d` becomes
+`+33% in 5d`. Distinct hour/day labels remain separate, in chronological order.
+The sign is positive even under `quotaDisplay: "used"`.
 Known ordinary windows are simulated cumulatively, simultaneous resets are
 batched, and a reset that leaves another window blocking the account adds no
 gain. Invalid/past timestamps and unreadable windows are not refilled, and no
