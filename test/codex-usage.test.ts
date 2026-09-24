@@ -8,6 +8,7 @@ import {
 	fetchCodexUsage,
 	formatResetCredits,
 	formatUsageLimitSummary,
+	formatUsagePoolSummary,
 	formatUsageReset,
 	formatUsageWindowLabel,
 	getUsageQuotaExhaustedResetAtMs,
@@ -18,7 +19,9 @@ import {
 	persistUsageQuotaRecovery,
 	isUsageQuotaRecovered,
 	resolveCodexUsageActiveAccount,
+	summarizeUsagePool,
 	type UsagePayload,
+	type UsagePoolMember,
 } from "../lib/codex-usage.js";
 import { loadAccounts, saveAccounts, type AccountStorageV3 } from "../lib/storage.js";
 import { setStoragePathDirect } from "../lib/storage/state.js";
@@ -785,5 +788,122 @@ describe("usage account resolution hostile storage", () => {
 			activeIndex: 0,
 		});
 		expect(indices).toEqual([0, 2]);
+	});
+});
+
+describe("summarizeUsagePool", () => {
+	const WEEK = 10080;
+	const FIVE_HOURS = 300;
+
+	function member(
+		planType: string | null,
+		usedPercent: number | undefined,
+		overrides: Partial<UsagePoolMember> = {},
+	): UsagePoolMember {
+		return {
+			planType,
+			primary: { usedPercent, windowMinutes: WEEK },
+			secondary: {},
+			...overrides,
+		};
+	}
+
+	it("weighs each seat by its plan rather than averaging them as equals", () => {
+		// One spent Pro seat and one untouched Plus seat. The plain mean says
+		// the pool is half full; weighting says a 20x seat being empty costs
+		// far more than a 1x seat being full.
+		const pool = summarizeUsagePool([
+			member("pro", 100),
+			member("plus", 0),
+		]);
+		expect(pool).toEqual({ leftPercent: 5, allotment: 21, countedAccounts: 2 });
+	});
+
+	it("sums the allotment over exactly the seats the mean divides by", () => {
+		// Two Pro seats, eight Business Premium seats and one Free seat: the
+		// real shape of an eleven-account pool.
+		const pool = summarizeUsagePool([
+			member("pro", 100),
+			member("self_serve_business_prolite", 79),
+			...Array.from({ length: 7 }, () =>
+				member("self_serve_business_prolite", 100),
+			),
+			member("pro", 100),
+			member("free", 100),
+		]);
+		expect(pool?.allotment).toBe(81);
+		expect(pool?.countedAccounts).toBe(11);
+	});
+
+	it("weighs a plan that publishes no ratio as one baseline seat", () => {
+		expect(summarizeUsagePool([member("free", 0)])?.allotment).toBe(1);
+		expect(summarizeUsagePool([member("enterprise", 0)])?.allotment).toBe(1);
+	});
+
+	it("describes an account by the window with the least headroom left", () => {
+		// The weekly window is what would stop a request, so a fresh 5-hour
+		// window must not report this account as nearly full.
+		const pool = summarizeUsagePool([
+			{
+				planType: "plus",
+				primary: { usedPercent: 10, windowMinutes: FIVE_HOURS },
+				secondary: { usedPercent: 90, windowMinutes: WEEK },
+			},
+		]);
+		expect(pool?.leftPercent).toBe(10);
+	});
+
+	it("leaves an unreadable account out of both figures", () => {
+		const pool = summarizeUsagePool([
+			member("plus", 40),
+			member("pro", undefined, { primary: {}, secondary: {} }),
+		]);
+		expect(pool).toEqual({ leftPercent: 60, allotment: 1, countedAccounts: 1 });
+	});
+
+	it("ignores a window the plan has switched off rather than counting it full", () => {
+		// A disabled window still reports `used_percent: 0`, so counting it
+		// would credit this account with a full quota it does not have.
+		const pool = summarizeUsagePool([
+			{
+				planType: "plus",
+				primary: { usedPercent: 0, windowMinutes: 0 },
+				secondary: { usedPercent: 100, windowMinutes: WEEK },
+			},
+		]);
+		expect(pool?.leftPercent).toBe(0);
+		expect(pool?.countedAccounts).toBe(1);
+	});
+
+	it("reports nothing rather than 0% when no account could be read", () => {
+		expect(summarizeUsagePool([])).toBeUndefined();
+		expect(
+			summarizeUsagePool([member("pro", undefined, { primary: {}, secondary: {} })]),
+		).toBeUndefined();
+	});
+});
+
+describe("formatUsagePoolSummary", () => {
+	const pool = { leftPercent: 7, allotment: 81, countedAccounts: 11 };
+
+	it("words the percentage the way the rest of the surfaces do", () => {
+		expect(formatUsagePoolSummary(pool, "used")).toBe(
+			"93% used of 81x across 11 accounts",
+		);
+		expect(formatUsagePoolSummary(pool, "free")).toBe(
+			"7% left of 81x across 11 accounts",
+		);
+	});
+
+	it("defaults to headroom, matching how Codex reports a quota", () => {
+		expect(formatUsagePoolSummary(pool)).toBe(
+			"7% left of 81x across 11 accounts",
+		);
+	});
+
+	it("says `1 account` rather than `1 accounts`", () => {
+		expect(
+			formatUsagePoolSummary({ leftPercent: 50, allotment: 20, countedAccounts: 1 }),
+		).toBe("50% left of 20x across 1 account");
 	});
 });

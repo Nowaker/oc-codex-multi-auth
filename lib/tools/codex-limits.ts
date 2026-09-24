@@ -12,6 +12,7 @@ import {
 	formatResetCredits,
 	formatUsageLimitSummary,
 	formatUsageLimitTitle,
+	formatUsagePoolSummary,
 	getUsageQuotaExhaustedResetAtMs,
 	getUsageAccountDedupeKey,
 	hasUsageWindow,
@@ -20,7 +21,10 @@ import {
 	persistUsageQuotaRecovery,
 	isUsageQuotaRecovered,
 	resolveCodexUsageAccountId,
+	summarizeUsagePool,
+	type UsagePoolMember,
 } from "../codex-usage.js";
+import { formatPlanMultiplier } from "../plan-allotment.js";
 import { getQuotaDisplay, loadPluginConfig } from "../config.js";
 import { PLUGIN_NAME } from "../constants.js";
 import { logWarn } from "../logger.js";
@@ -33,6 +37,22 @@ import {
 import { normalizeToolOutputFormat, renderJsonOutput } from "../runtime.js";
 import { formatPlanType } from "../auth/plan-tier.js";
 import type { ToolContext } from "./index.js";
+
+/**
+ * `Pro (20x)` - the plan, and what one of its seats is worth beside the others.
+ *
+ * The ratio is appended only when the plan states one. Free, Go and Enterprise
+ * publish no per-seat figure, and rendering `1x` for them would assert a
+ * baseline OpenAI never set.
+ */
+function formatPlanWithAllotment(
+	planType: string | null | undefined,
+): string | undefined {
+	const label = formatPlanType(planType);
+	if (!label) return undefined;
+	const multiplier = formatPlanMultiplier(planType);
+	return multiplier ? `${label} (${multiplier})` : label;
+}
 
 /**
  * Build the `codex-limits` tool.
@@ -145,6 +165,11 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 					`[${PLUGIN_NAME}] active account index ${activeIndex} was deduplicated out of the usage list; matching the active workspace by identity instead.`,
 				);
 			}
+			// Only accounts that answered contribute to the pool total. An
+			// account that failed to report is left out entirely rather than
+			// counted as full or as empty, since either would state capacity
+			// nobody measured.
+			const poolMembers: UsagePoolMember[] = [];
 			let storageChanged = false;
 			let quotaExhaustionPersistedOrKnown = false;
 			const jsonAccounts: Array<Record<string, unknown>> = [];
@@ -250,6 +275,11 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 							logWarn("Failed to persist recovered usage quota");
 						}
 					}
+					poolMembers.push({
+						planType: usage.planType,
+						primary: usage.primary,
+						secondary: usage.secondary,
+					});
 					jsonAccounts.push({
 						...buildJsonAccountIdentity(displayIndex, {
 							includeSensitive: includeSensitiveOutput,
@@ -260,6 +290,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						isActive,
 						sharesActiveCredential,
 						planType: usage.planType,
+						planMultiplier: formatPlanMultiplier(usage.planType) ?? null,
 						credits: usage.credits,
 						resetCredits: usage.resetCredits,
 						limits: usage.limits,
@@ -283,7 +314,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 								`  ${formatUiKeyValue(ui, limit.name, formatUsageLimitSummary(limit.window, quotaDisplay), "muted")}`,
 							);
 						}
-						const planLabel = formatPlanType(usage.planType);
+						const planLabel = formatPlanWithAllotment(usage.planType);
 						if (planLabel) {
 							lines.push(
 								`  ${formatUiKeyValue(ui, "Plan", planLabel, "muted")}`,
@@ -317,7 +348,7 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 								`  ${limit.name}: ${formatUsageLimitSummary(limit.window, quotaDisplay)}`,
 							);
 						}
-						const planLabel = formatPlanType(usage.planType);
+						const planLabel = formatPlanWithAllotment(usage.planType);
 						if (planLabel) {
 							lines.push(`  Plan: ${planLabel}`);
 						}
@@ -361,17 +392,38 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 			if (storageChanged || quotaExhaustionPersistedOrKnown) {
 				invalidateAccountManagerCache();
 			}
+			const pool = summarizeUsagePool(poolMembers);
 			if (outputFormat === "json") {
 				return renderJsonOutput({
 					totalAccounts: storage.accounts.length,
 					uniqueCredentialCount: uniqueIndices.length,
 					activeIndex: activeIndex + 1,
+					// Both percentages are stated so a consumer never has to
+					// know which way `quotaDisplay` was pointing to read them.
+					pool: pool
+						? {
+								leftPercent: pool.leftPercent,
+								usedPercent: 100 - pool.leftPercent,
+								allotment: pool.allotment,
+								countedAccounts: pool.countedAccounts,
+							}
+						: null,
 					accounts: jsonAccounts,
 				});
 			}
 
 			while (lines.length > 0 && lines[lines.length - 1] === "") {
 				lines.pop();
+			}
+
+			if (pool) {
+				lines.push("");
+				const summary = formatUsagePoolSummary(pool, quotaDisplay);
+				lines.push(
+					ui.v2Enabled
+						? formatUiKeyValue(ui, "Pool", summary, "muted")
+						: `Pool: ${summary}`,
+				);
 			}
 
 			return lines.join("\n");

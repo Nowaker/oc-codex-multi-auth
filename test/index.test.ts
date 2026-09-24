@@ -1777,6 +1777,112 @@ describe("OpenAIOAuthPlugin", () => {
 			);
 		});
 
+		it("names what a seat is worth and what the pool adds up to", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-pro",
+					email: "pro@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+				{
+					refreshToken: "r2",
+					accountId: "acc-team",
+					email: "team@example.com",
+					accessToken: "access-2",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			const usage = (planType: string, usedPercent: number) =>
+				new Response(
+					JSON.stringify({
+						plan_type: planType,
+						rate_limit: {
+							secondary_window: {
+								used_percent: usedPercent,
+								limit_window_seconds: 604800,
+								reset_at: Math.floor(Date.now() / 1000) + 86400,
+							},
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValueOnce(usage("pro", 100))
+				.mockResolvedValueOnce(usage("team", 0));
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Plan: Pro (20x)");
+			expect(result).toContain("Plan: Business (1x)");
+			// A spent 20x seat beside an untouched 1x seat. A plain mean would
+			// call this pool half full; weighting reports the 5% it holds.
+			expect(result).toContain("Pool: 5% left of 21x across 2 accounts");
+		});
+
+		it("carries the pool figures and each seat's ratio in json", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						plan_type: "free",
+						rate_limit: {
+							secondary_window: {
+								used_percent: 40,
+								limit_window_seconds: 2592000,
+								reset_at: Math.floor(Date.now() / 1000) + 86400,
+							},
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			const parsed = JSON.parse(
+				await plugin.tool["codex-limits"].execute({ format: "json" }),
+			);
+
+			// Free publishes no per-seat ratio, so the badge is withheld rather
+			// than asserting a 1x baseline OpenAI never set. It still weighs 1.
+			expect(parsed.accounts[0].planMultiplier).toBeNull();
+			expect(parsed.pool).toEqual({
+				leftPercent: 60,
+				usedPercent: 40,
+				allotment: 1,
+				countedAccounts: 1,
+			});
+		});
+
+		it("omits the pool when no account could be read", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue(new Response("nope", { status: 500 }));
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			// Reporting `0%` here would state a pool that was never measured.
+			expect(result).not.toContain("Pool:");
+		});
+
 		it("reports consumption instead of headroom when quotaDisplay is used", async () => {
 			const configModule = await import("../lib/config.js");
 			vi.mocked(configModule.getQuotaDisplay).mockReturnValue("used");

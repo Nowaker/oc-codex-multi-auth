@@ -59,22 +59,35 @@ measured token allowance.
 
 ## What uses it
 
-The pool-wide prompt status line (`quotaStatus.mode: "overview"`, see
-[configuration](configuration.md#pool-wide-quota-status)). A pool of mixed
-plans has no single "percent used": a Pro seat spent to 50% has given up twenty
-times the capacity a Business Standard seat does at 50%, so the pool total is a
-mean weighted by these allotments rather than a plain average.
+A pool of mixed plans has no single "percent used": a Pro seat spent to 50% has
+given up twenty times the capacity a Business Standard seat does at 50%, so
+every pool figure in this project is a mean weighted by these allotments rather
+than a plain average.
 
 A plan that states no ratio is weighted as one baseline seat. That
 under-weights it, which understates one account; weighting it higher would let
 a plan the code failed to recognize dominate the figure the whole pool is
 judged by.
 
-Turn `quotaStatus.multipliers` on to print the badge beside each account:
+**The pool-wide prompt status line** (`quotaStatus.mode: "overview"`, see
+[configuration](configuration.md#pool-wide-quota-status)). Turn
+`quotaStatus.multipliers` on to print the badge beside each account:
 
 ```text
 24%: #1 5x 13%, #2 20x 100% 3d, #3 1x 12%
 ```
+
+**`codex-limits` and the standalone `limits` CLI**, which name the ratio beside
+each plan and close with what the pool holds between them:
+
+```text
+  Plan: Pro (20x)
+  ...
+Pool: 93% used of 81x across 11 accounts
+```
+
+Both surfaces take the same weighting from the same module, so the figure
+`limits` prints and the figure the status line shows cannot drift apart.
 
 ## Keeping it current
 
