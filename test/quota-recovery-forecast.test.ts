@@ -18,6 +18,15 @@ const options = {
 } satisfies QuotaOverviewOptions;
 
 describe("capacity recovery forecast", () => {
+	it("preserves legacy silence when the earliest reset remains blocked", () => {
+		const accounts = [{ index: 1, windows: [
+			{ leftPercent: 0, resetAtMs: now + hour },
+			{ leftPercent: 0, resetAtMs: now + 3 * hour },
+		] }];
+		expect(formatQuotaOverviewText(accounts, { ...options, recovery: true })).toBe("100%");
+		expect(formatQuotaOverviewText(accounts, options)).toBe("100% +100% in 3h");
+	});
+
 	it("recovers only to the next governing limit before that window also resets", () => {
 		// Given
 		const accounts = [{ index: 1, windows: [

@@ -258,6 +258,8 @@ export function toQuotaOverviewAccounts(
 		resetCreditsApplicable: account.resetCreditsApplicable,
 		windows: account.limits.map((limit) => ({
 			leftPercent: limit.leftPercent ?? undefined,
+			exactLeftPercent: typeof limit.usedPercent === "number" && Number.isFinite(limit.usedPercent)
+				? Math.max(0, Math.min(100, 100 - limit.usedPercent)) : undefined,
 			resetAtMs: limit.resetAtMs,
 		})),
 	}));

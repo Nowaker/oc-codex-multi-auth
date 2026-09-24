@@ -34,7 +34,12 @@ export function computeWeightedLeftPercent(
 	let weighted = 0;
 	let totalWeight = 0;
 	for (const account of accounts) {
-		const governing = resolveGoverningWindow(account);
+		const governing = resolveGoverningWindow(precision === "exact" ? {
+			...account,
+			windows: account.windows.map((window) => ({
+				...window, leftPercent: window.exactLeftPercent ?? window.leftPercent,
+			})),
+		} : account);
 		if (governing?.leftPercent === undefined) continue;
 		const weight = getPlanWeight(account.planType);
 		if (!Number.isFinite(weight) || weight <= 0) continue;
