@@ -1160,6 +1160,9 @@ export async function runLimitsCommand(parsed, options = {}) {
 			command: "limits",
 			storagePath,
 			totalAccounts: 0,
+			// Same shape as a populated pool: `null` when nothing is readable.
+			pool: null,
+			poolSummary: null,
 			accounts: [],
 			message: "No accounts configured.",
 			nextAction: "Run opencode auth login.",

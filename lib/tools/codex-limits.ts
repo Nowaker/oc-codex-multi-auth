@@ -111,6 +111,8 @@ export function createCodexLimitsTool(ctx: ToolContext): ToolDefinition {
 						totalAccounts: 0,
 						uniqueCredentialCount: 0,
 						activeIndex: null,
+						// Same shape as a populated pool: `null` when nothing is readable.
+						pool: null,
 						accounts: [],
 					});
 				}

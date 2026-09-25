@@ -1047,7 +1047,7 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		).resolves.toMatchObject({ action: "limits", exitCode: 0 });
 
 		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
-		expect(output).toMatchObject({ totalAccounts: 0, accounts: [] });
+		expect(output).toMatchObject({ totalAccounts: 0, accounts: [], pool: null, poolSummary: null });
 	});
 
 	it("limits: reports live 5h and weekly windows per account (#209)", async () => {

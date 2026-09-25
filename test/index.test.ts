@@ -1720,6 +1720,8 @@ describe("OpenAIOAuthPlugin", () => {
 			mockStorage.accounts = [];
 			const result = await plugin.tool["codex-limits"].execute();
 			expect(result).toContain("No Codex accounts configured");
+			const parsed = JSON.parse(await plugin.tool["codex-limits"].execute({ format: "json" }));
+			expect(parsed).toHaveProperty("pool", null);
 		});
 
 		it("shows live usage windows from wham usage", async () => {
