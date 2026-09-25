@@ -729,8 +729,15 @@ export function formatQuotaResetsCandidates(
 		minUsedPercent?: number;
 	},
 ): string[] {
-	const total = computeWeightedLeftPercent(accounts, "exact");
-	if (total === undefined || 100 - total < (options.minUsedPercent ?? 100)) return [];
+	const minUsedPercent = options.minUsedPercent ?? 100;
+	if (minUsedPercent >= 100) {
+		// The default keeps the old rule on the DISPLAYED headroom: an account
+		// at 99.6% used reads `0%` left and counts as spent.
+		if (!isPoolFullySpent(accounts)) return [];
+	} else {
+		const total = computeWeightedLeftPercent(accounts, "exact");
+		if (total === undefined || 100 - total < minUsedPercent) return [];
+	}
 	const now = options.now ?? Date.now();
 	const maskEmail = options.maskEmail ?? false;
 	const redeemable = orderOverviewAccounts(accounts, "renewing-latest").filter(

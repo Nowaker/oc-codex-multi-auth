@@ -50,6 +50,18 @@ describe("reset applicability cache", () => {
 		}
 	});
 
+	it("treats a pool whose displayed headroom is 0% as spent at the default threshold", () => {
+		const account = toOverviewAccount({ fingerprint: "fixture", index: 1,
+			usage: parseCodexUsagePayload({
+				plan_type: "plus",
+				rate_limit: { primary_window: { used_percent: 99.6, limit_window_seconds: 18000 } },
+				rate_limit_reset_credits: { available_count: 1, applicable_available_count: 1 },
+			}),
+		});
+		const snapshot = { version: 1 as const, fetchedAt: 1000, accounts: [account] } satisfies TuiQuotaOverviewSnapshot;
+		expect(formatQuotaResetsCandidates(toQuotaOverviewAccounts(snapshot), {}).length).toBeGreaterThan(0);
+	});
+
 	it.each([-1, 0.5, "1", Infinity])("rejects invalid cached applicability %s", (applicable) => {
 		// Given
 		const snapshot = { version: 1, fetchedAt: 1000, accounts: [{ fingerprint: "fixture",

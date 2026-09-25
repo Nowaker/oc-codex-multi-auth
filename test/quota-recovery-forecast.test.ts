@@ -3,6 +3,7 @@ import {
 	formatQuotaOverviewCandidates,
 	formatQuotaOverviewText,
 	formatQuotaResetsCandidates,
+	resolveQuotaOverviewRecovery,
 	type QuotaOverviewAccount,
 	type QuotaOverviewOptions,
 } from "../lib/quota-overview.js";
@@ -83,6 +84,19 @@ describe("capacity recovery forecast", () => {
 		const text = formatQuotaOverviewText(accounts, options);
 		// Then
 		expect(text).toBe("75% +25% in 1h");
+	});
+
+	it("legacy next-recovery never refills unreadable or past windows", () => {
+		// Given: the same pool as above, one delta instead of a forecast.
+		const accounts: QuotaOverviewAccount[] = [
+			{ index: 1, windows: [{ leftPercent: 50, resetAtMs: now + hour }] },
+			{ index: 2, windows: [{ leftPercent: 50, resetAtMs: now + hour }] },
+			{ index: 3, windows: [{ leftPercent: 0, resetAtMs: now - hour }] },
+			{ index: 4, windows: [{ leftPercent: 0, resetAtMs: NaN }] },
+			{ index: 5, windows: [{ resetAtMs: now + hour }] },
+		];
+		// When / Then: +25, matching the forecast, not +55.
+		expect(resolveQuotaOverviewRecovery(accounts, now)).toEqual({ atMs: now + hour, deltaPercent: 25 });
 	});
 
 	it("keeps only chronological prefixes on narrow total-only candidates", () => {

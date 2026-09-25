@@ -26,7 +26,9 @@ export function resolveNextQuotaRecovery(
 	const refilled = accounts.map((account) => ({
 		...account,
 		windows: account.windows.map((window) =>
-			typeof window.resetAtMs === "number" && Number.isFinite(window.resetAtMs) && window.resetAtMs <= atMs
+			// Only readable future resets refill: an unreadable window would add
+			// an account `current` never counted, and a past reset is not news.
+			isFutureReset(window, now) && window.resetAtMs !== undefined && window.resetAtMs <= atMs
 				? { ...window, leftPercent: 100 } : window),
 	}));
 	const recovered = computeWeightedLeftPercent(refilled);
