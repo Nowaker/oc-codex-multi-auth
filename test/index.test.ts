@@ -194,6 +194,7 @@ vi.mock("../lib/config.js", () => ({
 	getEmptyResponseRetryDelayMs: () => 1000,
 	getPidOffsetEnabled: () => false,
 	getRotationStrategy: () => "hybrid",
+	getCreditsReserve: vi.fn(() => false),
 	getModelAccountPool: vi.fn(() => []),
 	getModelAccountPoolMode: vi.fn(() => "preferred"),
 	getFetchTimeoutMs: () => 60000,
@@ -4925,6 +4926,116 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			// The info toast is skipped, so its debounce marker is never consumed —
 			// which keeps warning toasts fully eligible rather than suppressing them.
 			expect(manager.markToastShown).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("creditsReserve: serving on Codex credits once no plan quota is left", () => {
+		const buildSpentPlanManager = () => {
+			const quotaExhaustedUntil = Date.now() + 3 * 86_400_000;
+			const account = {
+				index: 0,
+				accountId: "acc-1",
+				email: "user@example.com",
+				refreshToken: "refresh-1",
+				addedAt: 1,
+				quotaExhaustedUntil,
+			};
+			return {
+				getAccountCount: () => 1,
+				getCurrentOrNextForFamilyHybrid: () => account,
+				// Hybrid's last resort: the blocked account comes back anyway.
+				getAccountForStrategy: () => account,
+				getAccountAt: (index: number) => (index === 0 ? account : null),
+				getSelectionExplainability: () => [
+					{
+						index: 0,
+						enabled: true,
+						isCurrentForFamily: true,
+						eligible: false,
+						reasons: ["quota-exhausted"],
+						healthScore: 100,
+						tokensAvailable: 50,
+						quotaExhaustedUntil,
+						lastUsed: 1,
+					},
+				],
+				toAuthDetails: () => ({
+					type: "oauth" as const,
+					access: "access-1",
+					refresh: account.refreshToken,
+					expires: Date.now() + 3_600_000,
+				}),
+				hasRefreshToken: () => true,
+				saveToDiskDebounced: vi.fn(),
+				updateFromAuth: vi.fn(),
+				clearAuthFailures: vi.fn(),
+				incrementAuthFailures: vi.fn(() => 1),
+				markAccountCoolingDown: vi.fn(),
+				markRateLimitedWithReason: vi.fn(),
+				markQuotaExhausted: vi.fn(() => false),
+				recordRateLimit: vi.fn(),
+				consumeToken: vi.fn(() => true),
+				refundToken: vi.fn(),
+				markSwitched: vi.fn(),
+				removeAccount: vi.fn(() => false),
+				removeAccountsWithSameRefreshToken: vi.fn(() => 0),
+				recordFailure: vi.fn(),
+				recordSuccess: vi.fn(),
+				getMinWaitTimeForFamily: vi.fn(() => 0),
+				shouldShowAccountToast: vi.fn(() => false),
+				markToastShown: vi.fn(),
+				setActiveIndex: vi.fn(() => account),
+				getAccountsSnapshot: vi.fn(() => [account]),
+				disposeShutdownHandler: vi.fn(),
+			};
+		};
+
+		const withReserve = async (enabled: boolean) => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCreditsReserve).mockReturnValue(enabled);
+			const { AccountManager } = await import("../lib/accounts.js");
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(buildSpentPlanManager() as never);
+			return setupPlugin();
+		};
+		const prompt = (sdk: Awaited<ReturnType<typeof setupPlugin>>["sdk"]) =>
+			sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+		afterEach(async () => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCreditsReserve).mockReturnValue(false);
+		});
+
+		it("keeps protecting credits by default: a spent-plan account is not sent", async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+			const { sdk } = await withReserve(false);
+			const response = await prompt(sdk);
+			expect(response.status).not.toBe(200);
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+		});
+
+		it("serves the spent-plan account when no account has plan quota left", async () => {
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+			const { sdk } = await withReserve(true);
+			const response = await prompt(sdk);
+			expect(response.status).toBe(200);
+			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		});
+
+		it("stops offering an account whose credits turn was refused", async () => {
+			globalThis.fetch = vi.fn().mockImplementation(async () =>
+				new Response(JSON.stringify({ error: { code: "usage_limit_reached" } }), { status: 429 }),
+			);
+			const { sdk } = await withReserve(true);
+			await prompt(sdk);
+			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+			const second = await prompt(sdk);
+			expect(second.status).not.toBe(200);
+			expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 		});
 	});
 

@@ -94,6 +94,7 @@ import {
 	getEmptyResponseRetryDelayMs,
 	getPidOffsetEnabled,
 	getRotationStrategy,
+	getCreditsReserve,
 	getModelAccountPool,
 	getModelAccountPoolMode,
 	getFetchTimeoutMs,
@@ -271,6 +272,7 @@ import {
 	type CodexUsageSummary,
 } from "./lib/codex-usage.js";
 import { getQuotaExhaustedResetAtMs } from "./lib/quota-windows.js";
+import { CreditsRefusals, pickCreditsReserveIndex } from "./lib/accounts/credits-reserve.js";
 import {
 	clearTuiQuotaSnapshot,
 	parseTuiQuotaSnapshotFromHeaders,
@@ -316,6 +318,9 @@ function isLoopbackGatewayHost(hostname: string): boolean {
 	}
 	return LOOPBACK_GATEWAY_HOSTS.has(hostname);
 }
+
+/** How long a refused credits turn keeps an account out of the reserve when the refusal named no reset. */
+const CREDITS_REFUSAL_DEFAULT_MS = 10 * 60_000;
 
 /** Stable per-seat identity used only for in-memory traversal diagnostics. */
 function getAccountDiagnosticsKey(account: ManagedAccount): string {
@@ -533,6 +538,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 	// CODEX_RETRY_ALL_UNBOUNDED=1.
 	const INTERACTIVE_ALL_LIMITED_CEILING_MS = 10 * 60_000;
 
+	const creditsRefusals = new CreditsRefusals();
 	const runtimeMetrics: RuntimeMetrics = {
 		startedAt: Date.now(),
 		totalRequests: 0,
@@ -2700,6 +2706,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 							const emptyResponseRetryDelayMs = getEmptyResponseRetryDelayMs(pluginConfig);
 							const pidOffsetEnabled = getPidOffsetEnabled(pluginConfig);
 							const rotationStrategy = getRotationStrategy(pluginConfig);
+							const creditsReserveEnabled = getCreditsReserve(pluginConfig);
 							const effectiveUserConfig = fastSessionEnabled ? applyFastSessionDefaults(userConfig) : userConfig;
 							let accountManager = cachedAccountManager;
 
@@ -3163,7 +3170,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					configuredAccountPoolSize: preferredAccountIds.length,
 					accountPoolMode: strictAccountPool ? "strict" : undefined,
 				};
-				const account = accountManager.getAccountForStrategy(
+				const selected = accountManager.getAccountForStrategy(
 					rotationStrategy,
 					modelFamily,
 					model,
@@ -3172,14 +3179,40 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					accountPoolMode,
 					attempted,
 				);
+				const selectedIneligible = selected !== null &&
+					selectionExplainability.some((entry) => entry.index === selected.index && !entry.eligible);
+				// With the credits reserve on, a pool with no plan quota left serves
+				// from an account blocked only by its spent subscription window.
+				const reserveIndex = creditsReserveEnabled && (!selected || attempted.has(selected.index) || selectedIneligible)
+					? pickCreditsReserveIndex(selectionExplainability, {
+						attempted,
+						inPool: (index) => {
+							if (!strictAccountPool) return true;
+							const candidate = accountManager.getAccountAt(index);
+							return candidate !== null && preferredAccountIds.some((key) => matchesModelPoolAccountKey(candidate, key));
+						},
+						refused: (index) => {
+							const candidate = accountManager.getAccountAt(index);
+							return candidate === null || creditsRefusals.isRefused(getAccountDiagnosticsKey(candidate), quotaKey);
+						},
+					})
+					: undefined;
+				const reserveAccount = reserveIndex === undefined ? null : accountManager.getAccountAt(reserveIndex);
+				const servingOnCredits = reserveAccount !== null;
+				const account = reserveAccount ?? selected;
 				if (!account || attempted.has(account.index)) {
 					break;
 				}
 							attempted.add(account.index);
 							// Hybrid's last-resort result is not necessarily eligible. Requests
 							// must honor active blocks rather than sending it upstream anyway.
-							if (selectionExplainability.some((entry) => entry.index === account.index && !entry.eligible)) {
+							if (!servingOnCredits && selectedIneligible) {
 								continue;
+							}
+							if (servingOnCredits) {
+								logInfo(
+									`Account ${account.index + 1} has no plan quota left; serving on its Codex credits (creditsReserve).`,
+								);
 							}
 							runtimeMetrics.lastSelectedAccountIndex = account.index;
 							runtimeMetrics.lastQuotaKey = quotaKey;
@@ -3660,6 +3693,13 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					});
 					const quotaExhausted =
 						quotaHeadersAuthoritative === true && recordQuotaHeaders();
+					if (servingOnCredits && response.status === 429) {
+						creditsRefusals.mark(
+							getAccountDiagnosticsKey(account),
+							quotaKey,
+							getQuotaExhaustedResetAtMs(response.headers) ?? Date.now() + CREDITS_REFUSAL_DEFAULT_MS,
+						);
+					}
 
 			const workspaceDeactivated = isDeactivatedWorkspaceError(errorBody, response.status);
 				if (workspaceDeactivated) {

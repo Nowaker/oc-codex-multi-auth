@@ -70,6 +70,7 @@ logged warning) and keeps the rest of the file.
 | field | env | type | default | bounds | meaning |
 | --- | --- | --- | --- | --- | --- |
 | `rotationStrategy` | `CODEX_AUTH_ROTATION_STRATEGY` | `hybrid` \| `sticky` \| `round-robin` | `hybrid` | — | account selection policy; see configuration.md |
+| `creditsReserve` | `CODEX_AUTH_CREDITS_RESERVE` | boolean | `false` | — | last-resort pass over accounts blocked only by `quota-exhausted`, spending their Codex credits; see configuration.md |
 | `modelAccountPools` | (file only) | record: model → account-id array | `{}` | keys/values non-empty strings | pin an effective model to stable account/workspace identities; keys normalize case-insensitively after model normalization |
 | `modelAccountPoolModes` | (file only) | record: model → `preferred` \| `strict` | `{}` (all `preferred`) | — | `preferred` falls back to the general pool when the mapping has no selectable account; `strict` never leaves its list (`strict_pool_unavailable`) |
 | `perProjectAccounts` | `CODEX_AUTH_PER_PROJECT_ACCOUNTS` | boolean | `true` | — | `true`: per-project pools under `~/.opencode/projects/<project-key>/`; `false`: the global pool. Toggling switches scope live but never migrates or prunes the other scope's files |

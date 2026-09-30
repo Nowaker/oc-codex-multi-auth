@@ -35,6 +35,7 @@ export const PluginConfigSchema = z.object({
 	fastSession: z.boolean().optional(),
 	fastSessionStrategy: z.enum(["hybrid", "always"]).optional(),
 	rotationStrategy: z.enum(["hybrid", "sticky", "round-robin"]).optional(),
+	creditsReserve: z.boolean().optional(),
 	modelAccountPools: z.record(
 		z.string().min(1),
 		z.array(z.string().min(1)),

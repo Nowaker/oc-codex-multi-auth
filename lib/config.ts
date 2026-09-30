@@ -913,6 +913,20 @@ export function getFastSession(pluginConfig: PluginConfig): boolean {
 	);
 }
 
+/**
+ * Serve on Codex credits once no account has plan quota left: an account whose
+ * only block is a spent subscription window is offered as a last resort, and
+ * the backend bills its purchased credits. Off by default, which keeps the
+ * `autoProtectCredits` contract of never spending them.
+ */
+export function getCreditsReserve(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_CREDITS_RESERVE",
+		pluginConfig.creditsReserve,
+		false,
+	);
+}
+
 export function getBeginnerSafeMode(pluginConfig: PluginConfig): boolean {
 	return resolveBooleanSetting(
 		"CODEX_AUTH_BEGINNER_SAFE_MODE",
